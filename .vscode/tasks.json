@@ -1,0 +1,28 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "process",
+			"command": "cargo",
+			"args": [
+				"run",
+				"--",
+				"--debug"
+			],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"env": {
+				//"RUST_BACKTRACE": "1"
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"label": "rust: cargo run",
+			"presentation": {
+				"clear": true
+			}
+		}
+	]
+}
