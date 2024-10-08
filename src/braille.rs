@@ -17,7 +17,11 @@ pub struct Braille<T> {
 }
 
 impl<T> Braille<T> {
-	pub fn as_pixels(&self) -> [[&T; WIDTH]; HEIGHT] {
+	pub fn char(&self) -> char {
+		std::char::from_u32('⠀' as u32 + self.id as u32).unwrap() //unwrap is safe: we know the unicode range to be valid
+	}
+
+	pub fn raster(&self) -> [[&T; WIDTH]; HEIGHT] {
 		std::array::from_fn::<_, { HEIGHT }, _>(move |y|
 			std::array::from_fn::<_, { WIDTH }, _>(move |x| {
 				let i = y * WIDTH + x;
@@ -27,30 +31,29 @@ impl<T> Braille<T> {
 }
 
 impl Braille<RGB8> {
-	fn compute_bin_bleed(x: usize, y: usize, group: u8, bg: Option<RGB8>, fg: Option<RGB8>, pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> u32 {
+	fn compute_bin_bleed(&self, pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> u32 {
 		let mut output = 0;
 		for i in 0..BITS {
-			if (group >> i) & 1 == 0 {
-				if let Some(bg) = bg {
-					output += bg.perceptual_delta(pixels[y].borrow()[x])
+			if (self.id >> i) & 1 == 0 {
+				if self.id != 0xff {
+					output += self.bg.perceptual_delta(pixels[i / WIDTH].borrow()[i % WIDTH])
 				}
 			} else {
-				if let Some(fg) = fg {
-					output += fg.perceptual_delta(pixels[y].borrow()[x])
+				if self.id != 0x00 {
+					output += self.fg.perceptual_delta(pixels[i / WIDTH].borrow()[i % WIDTH])
 				}
 			}
 		}
 		output
 	}
 	
-	fn compute_cross_bin_sharpness(group: u8, bg: Option<RGB8>, fg: Option<RGB8>) -> u32 {
-		if matches!(group, 0x00 | 0xff) { 0 } else { bg.unwrap().perceptual_delta(fg.unwrap()) }
+	fn compute_cross_bin_sharpness(&self) -> u32 {
+		if matches!(self.id, 0x00 | 0xff) { 0 } else { self.bg.perceptual_delta(self.fg) }
 	}
 
 	pub fn from_pixels(pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> Self {
-		(0..HEIGHT).flat_map(move |y|
-			(0..WIDTH).map(move |x| {
-				let group = (y * WIDTH + x) as u8;
+		(0..(1 << BITS)).map(move |group| {
+				let group = group as u8;
 
 				let (bg, fg) = {
 					let mut bg_sum = RGB::<u32>::zero();
@@ -61,7 +64,7 @@ impl Braille<RGB8> {
 						} else {
 							&mut fg_sum
 						};
-						*bin_sum += pixels[y].borrow()[x].into();
+						*bin_sum += pixels[i / WIDTH].borrow()[i % WIDTH].into();
 					}
 
 					fn div_rgb(lhs: RGB<u32>, rhs: u32) -> Option<RGB8> {
@@ -75,17 +78,17 @@ impl Braille<RGB8> {
 					(div_rgb(bg_sum, group.count_zeros()), div_rgb(fg_sum, group.count_ones()))
 				};
 
-				let bin_bleed = Self::compute_bin_bleed(x, y, group, bg, fg, pixels);
-				let cross_bin_sharpness = Self::compute_cross_bin_sharpness(group, bg, fg);
-				let score = cross_bin_sharpness as i32 - bin_bleed as i32;
-				
-				(Self {
+				Self {
 					id: group,
 					bg: bg.unwrap_or_else(|| fg.unwrap()),
 					fg: fg.unwrap_or_else(|| bg.unwrap()),
-				}, score)
+				}
 			})
-		).max_by_key(|(_char, score)| *score).unwrap().0 //unwrap is safe since iterator is Self::BITS long, that's always >0
+		.max_by_key(|char| {
+			let bin_bleed = Self::compute_bin_bleed(char, pixels);
+			let cross_bin_sharpness = Self::compute_cross_bin_sharpness(char);
+			cross_bin_sharpness as i32 - bin_bleed as i32
+		}).unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
 	}
 }
 
@@ -110,13 +113,13 @@ pub fn as_braille(input: &Bitmap<RGB8>) -> Bitmap<Braille<RGB8>> {
 	}
 }
 
-pub fn as_pixels<T: Copy>(input: &Bitmap<Braille<T>>) -> Bitmap<T> {
+pub fn raster<T: Copy>(input: &Bitmap<Braille<T>>) -> Bitmap<T> {
 	let output = input.buffer
 		.chunks_exact(input.width)
 		.flat_map(|row| row
 			.into_iter()
 			.map(|char| char
-				.as_pixels()
+				.raster()
 				.into_iter())
 			.multi_zip()
 			.flatten())

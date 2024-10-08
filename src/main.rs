@@ -78,7 +78,7 @@ fn run() -> Result<(), String> {
 		let img_in = stage("Preamble   | Importing...", || import_image(&img_in_raw));
 		
 		println!("           |");
-		let img_out = process1(img_in);
+		let img_out = process_high_quality(img_in);
 		println!("           |");
 
 		let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
@@ -94,20 +94,20 @@ fn run() -> Result<(), String> {
 	Ok(())
 }
 
-fn process0(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
-	let formatter = HybridFormatter::new();
-	let a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
-	//let b = stage("Processing | Braille", || braille::as_braille(&a));
-	//let c = stage("Processing | Pixels", || braille::as_pixels(&b));
-	stage("Processing | Inflate", || inflate_image(&formatter, &a))
-}
-
-fn process1(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
+fn process_low_quality(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
 	let formatter = HybridFormatter::new();
 	let a = stage("Processing | Braille", || braille::as_braille(&img_in));
 	let b = stage("Processing | Deflate", || deflate_braille(&formatter, &a));
-	let c = stage("Processing | Pixels ", || braille::as_pixels(&b));
+	let c = stage("Processing | Pixels ", || braille::raster(&b));
 	stage("Processing | Inflate", || inflate_image(&formatter, &c))
+}
+
+fn process_high_quality(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
+	let formatter = HybridFormatter::new();
+	let a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
+	let b =stage("Processing | Inflate", || inflate_image(&formatter, &a));
+	let c = stage("Processing | Braille", || braille::as_braille(&b));
+	stage("Processing | Raster ", || braille::raster(&c))
 }
 
 fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
