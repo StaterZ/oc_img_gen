@@ -1,5 +1,5 @@
+#![feature(iter_array_chunks, array_chunks, anonymous_lifetime_in_impl_trait)]
 #![allow(dead_code)]
-#![feature(iter_array_chunks, array_chunks)]
 
 use std::{
 	path::{Path, PathBuf},
@@ -8,6 +8,7 @@ use std::{
 use braille::Braille;
 use clap::Parser;
 use color_print::cprintln;
+use itertools::Itertools;
 use lodepng::{decode24, encode24, Bitmap};
 use stopwatch::Stopwatch;
 
@@ -28,7 +29,18 @@ struct Args {
 	in_path: Option<PathBuf>,
 	#[arg(short = 'o', long = "out_path")]
 	out_path: Option<PathBuf>,
+	#[arg(short = 'm', long = "mode")]
+	mode: Mode,
 }
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum Mode {
+	Png,
+	Szt,
+	Chr,
+}
+
+const LOG: bool = false;
 
 fn test(a: RGB8) {
 	let formatter = HybridFormatter::new();
@@ -65,6 +77,11 @@ fn run() -> Result<(), String> {
 		if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
 			path.set_file_name(format!("out_{}", name));
 		}
+		path.set_extension(match args.mode {
+			Mode::Png => "png",
+			Mode::Szt => "szt",
+			Mode::Chr => "txt",
+		});
 		path
 	});
 
@@ -77,46 +94,79 @@ fn run() -> Result<(), String> {
 		
 		let img_in = stage("Preamble   | Importing...", || import_image(&img_in_raw));
 		
-		println!("           |");
-		let img_out = process_high_quality(img_in);
-		println!("           |");
+		if LOG {
+			println!("           |");
+		}
+		let formatter = HybridFormatter::new();
+		let proc_a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
+		let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
+		let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
+		
+		let blob_out = match args.mode {
+			Mode::Png => {
+				let img_out = stage("Processing | Raster ", || braille::raster(&proc_c));
+				if LOG {
+					println!("           |");
+				}
 
-		let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
-		
-		let blob_out = stage("Postamble  | Encoding... ", || encode24(img_out_raw.buffer.as_slice(), img_out_raw.width, img_out_raw.height)
-			.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?;
-		
-		stage("Postamble  | Writing...  ", || std::fs::write(out_path, blob_out)
+				let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
+				
+				stage("Postamble  | Encoding... ", || encode24(&img_out_raw.buffer, img_out_raw.width, img_out_raw.height)
+					.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?
+			},
+			Mode::Szt => {
+				let img_out = stage("Processing | Raster ", || deflate_braille(&formatter, &proc_c));
+				if LOG {
+					println!("           |");
+				}
+
+				stage("Postamble  | Encoding... ", || img_out.buffer
+					.iter()
+					.flat_map(|c| [c.bg.into(), c.fg.into(), c.id])
+					.collect_vec())
+
+				// stage("Postamble  | Encoding... ", || img_out.buffer
+				// 	.iter()
+				// 	.flat_map(|c| [c.id, c.bg.into(), c.fg.into()])
+				// 	.map(|c| [c.id, c.bg.into(), c.fg.into()].into_iter())
+				// 	.multi_zip()
+				// 	.flatten()
+				// 	.rle()
+				// 	.flat_map(|g| [g.pattern, g.len])
+				// 	.collect_vec())
+			},
+			Mode::Chr => {
+				proc_c.buffer
+					.chunks_exact(proc_c.width)
+					.map(|row| row
+						.into_iter()
+						.map(|c| c.char())
+						.collect::<String>())
+					.join("\n")
+					.bytes()
+					.collect()
+			},
+		};
+
+		stage("Postamble  | Writing...  ", || std::fs::write(&out_path, blob_out)
 			.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
 	}
 
-	println!("All Done!");
+	println!("All Done! saved to: {}", out_path.display());
 	Ok(())
 }
 
-fn process_low_quality(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
-	let formatter = HybridFormatter::new();
-	let a = stage("Processing | Braille", || braille::as_braille(&img_in));
-	let b = stage("Processing | Deflate", || deflate_braille(&formatter, &a));
-	let c = stage("Processing | Pixels ", || braille::raster(&b));
-	stage("Processing | Inflate", || inflate_image(&formatter, &c))
-}
-
-fn process_high_quality(img_in: Bitmap<RGB8>) -> Bitmap<RGB8> {
-	let formatter = HybridFormatter::new();
-	let a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
-	let b =stage("Processing | Inflate", || inflate_image(&formatter, &a));
-	let c = stage("Processing | Braille", || braille::as_braille(&b));
-	stage("Processing | Raster ", || braille::raster(&c))
-}
-
 fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
-	flush_print!("{}", title);
-	let mut timer = Stopwatch::start_new();
-	let output = f();
-	timer.stop();
-	println!(" time: {}ms", timer.elapsed().as_millis());
-	output
+	if !LOG {
+		f()
+	} else {
+		flush_print!("{}", title);
+		let mut timer = Stopwatch::start_new();
+		let output = f();
+		timer.stop();
+		println!(" time: {}ms", timer.elapsed().as_millis());
+		output
+	}
 }
 
 fn inflate_image(formatter: &impl Formatter, input: &Bitmap<PackedColor>) -> Bitmap<RGB8> {
@@ -132,14 +182,11 @@ fn inflate_image(formatter: &impl Formatter, input: &Bitmap<PackedColor>) -> Bit
 	}
 }
 
-fn deflate_braille(formatter: &impl Formatter, input: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
+fn deflate_image(formatter: &impl Formatter, input: &Bitmap<RGB8>) -> Bitmap<PackedColor> {
 	let output = input.buffer
 		.iter()
-		.map(|pixel| Braille {
-			id: pixel.id,
-			bg: formatter.deflate(PaletteOr::NonPalette(pixel.bg)),
-			fg: formatter.deflate(PaletteOr::NonPalette(pixel.fg)),
-		}).collect();
+		.map(|pixel| formatter.deflate(PaletteOr::NonPalette(*pixel)))
+		.collect();
 
 	Bitmap {
 		buffer: output,
@@ -148,11 +195,14 @@ fn deflate_braille(formatter: &impl Formatter, input: &Bitmap<Braille<RGB8>>) ->
 	}
 }
 
-fn deflate_image(formatter: &impl Formatter, input: &Bitmap<RGB8>) -> Bitmap<PackedColor> {
+fn deflate_braille(formatter: &impl Formatter, input: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
 	let output = input.buffer
 		.iter()
-		.map(|pixel| formatter.deflate(PaletteOr::NonPalette(*pixel)))
-		.collect();
+		.map(|c| Braille {
+			id: c.id,
+			bg: formatter.deflate(PaletteOr::NonPalette(c.bg)),
+			fg: formatter.deflate(PaletteOr::NonPalette(c.fg)),
+		}).collect();
 
 	Bitmap {
 		buffer: output,

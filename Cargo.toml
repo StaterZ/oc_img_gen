@@ -1,11 +1,13 @@
+cargo-features = ["edition2024"]
+
 [package]
 name = "oc_img_gen"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.19", features= ["derive"] }
-color-print = "0.3.6"
+color-print = "0.3.7"
 itertools = "0.13.0"
 lazy_static = "1.5.0"
 lodepng = "3.10.7"

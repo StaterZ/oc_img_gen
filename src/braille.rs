@@ -52,7 +52,7 @@ impl Braille<RGB8> {
 	}
 
 	pub fn from_pixels(pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> Self {
-		(0..(1 << BITS)).map(move |group| {
+		(0..(1 << (BITS - 1))).map(move |group| {
 				let group = group as u8;
 
 				let (bg, fg) = {

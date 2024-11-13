@@ -21,7 +21,7 @@ impl<T: Signed> RGB<T> {
 	}
 }
 
-impl<T: Zero + Eq> Zero for RGB<T> {
+impl<T: Zero> Zero for RGB<T> {
 	fn zero() -> Self {
 		Self {
 			r: T::zero(),
@@ -31,7 +31,7 @@ impl<T: Zero + Eq> Zero for RGB<T> {
 	}
 	
 	fn is_zero(&self) -> bool {
-		*self == Self::zero()
+		self.r.is_zero() && self.g.is_zero() && self.b.is_zero()
 	}
 }
 
