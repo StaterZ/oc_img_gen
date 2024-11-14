@@ -11,14 +11,23 @@ pub const HEIGHT: usize = 4;
 pub const BITS: usize = WIDTH * HEIGHT;
 
 pub struct Braille<T> {
-	pub id: u8,
+	id: u8,
 	pub bg: T,
 	pub fg: T,
 }
 
 impl<T> Braille<T> {
 	pub fn char(&self) -> char {
-		std::char::from_u32('⠀' as u32 + self.id as u32).unwrap() //unwrap is safe: we know the unicode range to be valid
+		std::char::from_u32('⠀' as u32 + self.char_index() as u32).unwrap() //unwrap is safe: we know the unicode range to be valid
+	}
+
+	pub fn char_index(&self) -> u8 {
+		let bit7650 = (self.id & 0b1110_0001) >> 0 << 0;
+		let bit1    = (self.id & 0b0000_0100) >> 2 << 1;
+		let bit2    = (self.id & 0b0001_0000) >> 4 << 2;
+		let bit3    = (self.id & 0b0000_0010) >> 1 << 3;
+		let bit4    = (self.id & 0b0000_1000) >> 3 << 4;
+		bit4 | bit3 | bit2 | bit1 | bit7650
 	}
 
 	pub fn raster(&self) -> [[&T; WIDTH]; HEIGHT] {
@@ -27,6 +36,14 @@ impl<T> Braille<T> {
 				let i = y * WIDTH + x;
 				if (self.id >> i) & 1 == 0 { &self.bg } else { &self.fg }
 			}))
+	}
+
+	pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Braille<U> {
+		Braille::<U> {
+			id: self.id,
+			bg: f(&self.bg),
+			fg: f(&self.fg),
+		}
 	}
 }
 

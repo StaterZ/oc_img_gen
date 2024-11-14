@@ -122,7 +122,7 @@ fn run() -> Result<(), String> {
 
 				stage("Postamble  | Encoding... ", || img_out.buffer
 					.iter()
-					.flat_map(|c| [c.bg.into(), c.fg.into(), c.id])
+					.flat_map(|c| [c.bg.into(), c.fg.into(), c.char_index()])
 					.collect_vec())
 
 				// stage("Postamble  | Encoding... ", || img_out.buffer
@@ -198,11 +198,10 @@ fn deflate_image(formatter: &impl Formatter, input: &Bitmap<RGB8>) -> Bitmap<Pac
 fn deflate_braille(formatter: &impl Formatter, input: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
 	let output = input.buffer
 		.iter()
-		.map(|c| Braille {
-			id: c.id,
-			bg: formatter.deflate(PaletteOr::NonPalette(c.bg)),
-			fg: formatter.deflate(PaletteOr::NonPalette(c.fg)),
-		}).collect();
+		.map(|braille| braille
+			.map(|color|
+				formatter.deflate(PaletteOr::NonPalette(*color))))
+		.collect();
 
 	Bitmap {
 		buffer: output,
