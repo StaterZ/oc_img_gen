@@ -1,0 +1,4 @@
+chars  : 19.531
+lines  : 11.404
+batch  : 04.425
+batch2 : 11.056

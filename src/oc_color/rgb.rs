@@ -63,13 +63,17 @@ impl RGB8 {
 	const B_SHIFT: u32 = 8 * 0;
 
 	pub fn new(value: u32) -> Self {
-		debug_assert_lt!(value, 0xffffff);
+		debug_assert_le!(value, 0xffffff);
 
 		Self {
 			r: (value >> Self::R_SHIFT) as u8,
 			g: (value >> Self::G_SHIFT) as u8,
 			b: (value >> Self::B_SHIFT) as u8,
 		}
+	}
+
+	pub fn value(&self) -> u32 {
+		(self.r as u32) << Self::R_SHIFT | (self.g as u32) << Self::G_SHIFT | (self.b as u32) << Self::B_SHIFT
 	}
 
 	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)

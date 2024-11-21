@@ -3,7 +3,7 @@ use std::fmt::Display;
 use super::formatters::hybrid_formatter::StaticColor;
 use super::palette::{Palette, PaletteColor, PaletteOr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PackedColor(u8);
 
 impl PackedColor {

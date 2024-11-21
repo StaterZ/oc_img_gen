@@ -104,11 +104,11 @@ impl StaticColor {
 		self.0
 	}
 	
-	fn inflate(self) -> RGB8 {
+	pub fn inflate(self) -> RGB8 {
 		STATIC_PALETTE[self.into_inner() as usize]
 	}
 
-	fn deflate(color: RGB8) -> StaticColor {
+	pub fn deflate(color: RGB8) -> StaticColor {
 		let i_r = int_div_round(color.r as usize * (StaticColor::NUM_REDS - 1), 0xFF) as u8;
 		let i_g = int_div_round(color.g as usize * (StaticColor::NUM_GREENS - 1), 0xFF) as u8;
 		let i_b = int_div_round(color.b as usize * (StaticColor::NUM_BLUES - 1), 0xFF) as u8;

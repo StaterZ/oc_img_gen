@@ -12,15 +12,17 @@
 				"args": [
 					"build",
 					"--bin=oc_img_gen",
-					"--package=oc_img_gen",
-					"--debug"
+					"--package=oc_img_gen"
 				],
 				"filter": {
 					"name": "oc_img_gen",
 					"kind": "bin"
 				}
 			},
-			"args": [],
+			"args": [
+				"--debug",
+				"--mode=lua"
+			],
 			"cwd": "${workspaceFolder}"
 		},
 		{

@@ -1,10 +1,7 @@
-#![feature(iter_array_chunks, array_chunks, anonymous_lifetime_in_impl_trait)]
+#![feature(iter_array_chunks, array_chunks, anonymous_lifetime_in_impl_trait, const_for, const_range_bounds)]
 #![allow(dead_code)]
 
-use std::{
-	path::{Path, PathBuf},
-	io::Write,
-};
+use std::{io::Write, path::{Path, PathBuf}};
 use braille::Braille;
 use clap::Parser;
 use color_print::cprintln;
@@ -18,6 +15,8 @@ use szu::flush_print;
 
 mod oc_color;
 mod braille;
+mod cmd;
+mod math;
 
 #[derive(Parser, Debug)]
 #[clap(author = "StaterZ")]
@@ -37,10 +36,11 @@ struct Args {
 enum Mode {
 	Png,
 	Szt,
+	Lua,
 	Chr,
 }
 
-const LOG: bool = false;
+const LOG: bool = true;
 
 fn test(a: RGB8) {
 	let formatter = HybridFormatter::new();
@@ -80,6 +80,7 @@ fn run() -> Result<(), String> {
 		path.set_extension(match args.mode {
 			Mode::Png => "png",
 			Mode::Szt => "szt",
+			Mode::Lua => "lua",
 			Mode::Chr => "txt",
 		});
 		path
@@ -115,7 +116,7 @@ fn run() -> Result<(), String> {
 					.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?
 			},
 			Mode::Szt => {
-				let img_out = stage("Processing | Raster ", || deflate_braille(&formatter, &proc_c));
+				let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
 				if LOG {
 					println!("           |");
 				}
@@ -124,16 +125,17 @@ fn run() -> Result<(), String> {
 					.iter()
 					.flat_map(|c| [c.bg.into(), c.fg.into(), c.char_index()])
 					.collect_vec())
+			},
+			Mode::Lua => {
+				let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
+				if LOG {
+					println!("           |");
+				}
 
-				// stage("Postamble  | Encoding... ", || img_out.buffer
-				// 	.iter()
-				// 	.flat_map(|c| [c.id, c.bg.into(), c.fg.into()])
-				// 	.map(|c| [c.id, c.bg.into(), c.fg.into()].into_iter())
-				// 	.multi_zip()
-				// 	.flatten()
-				// 	.rle()
-				// 	.flat_map(|g| [g.pattern, g.len])
-				// 	.collect_vec())
+				let char_buffer = map_bitmap(&img_out, |braille| braille.into());
+				stage("Postamble  | Cmd Gen", || cmd::code_gen(&char_buffer, &formatter)
+					.bytes()
+					.collect())
 			},
 			Mode::Chr => {
 				proc_c.buffer
@@ -169,65 +171,37 @@ fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 	}
 }
 
-fn inflate_image(formatter: &impl Formatter, input: &Bitmap<PackedColor>) -> Bitmap<RGB8> {
-	let output = input.buffer
+fn map_bitmap<T, B>(value: &Bitmap<T>, f: impl FnMut(&T) -> B) -> Bitmap<B> {
+	let buffer = value.buffer
 		.iter()
-		.map(|pixel| formatter.inflate(*pixel))
+		.map(f)
 		.collect();
 
 	Bitmap {
-		buffer: output,
-		width: input.width,
-		height: input.height,
+		buffer,
+		width: value.width,
+		height: value.height,
 	}
 }
 
-fn deflate_image(formatter: &impl Formatter, input: &Bitmap<RGB8>) -> Bitmap<PackedColor> {
-	let output = input.buffer
-		.iter()
-		.map(|pixel| formatter.deflate(PaletteOr::NonPalette(*pixel)))
-		.collect();
-
-	Bitmap {
-		buffer: output,
-		width: input.width,
-		height: input.height,
-	}
+fn inflate_image(formatter: &impl Formatter, value: &Bitmap<PackedColor>) -> Bitmap<RGB8> {
+	map_bitmap(&value, |pixel| formatter.inflate(*pixel))
 }
 
-fn deflate_braille(formatter: &impl Formatter, input: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
-	let output = input.buffer
-		.iter()
-		.map(|braille| braille
-			.map(|color|
-				formatter.deflate(PaletteOr::NonPalette(*color))))
-		.collect();
-
-	Bitmap {
-		buffer: output,
-		width: input.width,
-		height: input.height,
-	}
+fn deflate_image(formatter: &impl Formatter, value: &Bitmap<RGB8>) -> Bitmap<PackedColor> {
+	map_bitmap(&value, |pixel| formatter.deflate(PaletteOr::NonPalette(*pixel)))
 }
 
-fn import_image(input: &Bitmap<lodepng::RGB<u8>>) -> Bitmap<RGB8> {
-	Bitmap {
-		buffer: input.buffer
-			.iter()
-			.map(|pixel| RGB8 { r: pixel.r, g: pixel.g, b: pixel.b })
-			.collect(),
-		width: input.width,
-		height: input.height,
-	}
+fn deflate_braille(formatter: &impl Formatter, value: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
+	map_bitmap(&value, |braille| braille
+		.map(|color| formatter
+			.deflate(PaletteOr::NonPalette(*color))))
 }
 
-fn export_image(input: &Bitmap<RGB8>) -> Bitmap<lodepng::RGB<u8>> {
-	Bitmap {
-		buffer: input.buffer
-			.iter()
-			.map(|pixel| lodepng::RGB { r: pixel.r, g: pixel.g, b: pixel.b })
-			.collect(),
-		width: input.width,
-		height: input.height,
-	}
+fn import_image(value: &Bitmap<lodepng::RGB<u8>>) -> Bitmap<RGB8> {
+	map_bitmap(&value, |pixel| RGB8 { r: pixel.r, g: pixel.g, b: pixel.b })
+}
+
+fn export_image(value: &Bitmap<RGB8>) -> Bitmap<lodepng::RGB<u8>> {
+	map_bitmap(&value, |pixel| lodepng::RGB { r: pixel.r, g: pixel.g, b: pixel.b })
 }
