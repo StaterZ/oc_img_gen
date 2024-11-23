@@ -8,7 +8,8 @@
 				"run",
 				"--",
 				"--debug",
-				"--mode=lua"
+				"--mode=image",
+				"--format=szt",
 			],
 			"problemMatcher": [
 				"$rustc"

@@ -21,7 +21,8 @@
 			},
 			"args": [
 				"--debug",
-				"--mode=lua"
+				"--mode=image",
+				"--format=szt"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -43,6 +44,18 @@
 			},
 			"args": [],
 			"cwd": "${workspaceFolder}"
+		},
+		{
+			"name": "(Windows) Launch",
+			"type": "cppvsdbg",
+			"request": "launch",
+			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
+			"args": [
+				"--debug",
+				"--mode=image",
+				"--format=szt"
+			],
+			"cwd": "${workspaceFolder}",
 		}
 	]
 }

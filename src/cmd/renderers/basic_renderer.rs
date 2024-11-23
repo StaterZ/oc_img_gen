@@ -1,10 +1,11 @@
-use crate::{hybrid_formatter::StaticColor, oc_color::{PackedColor, PaletteOr, RGB8}, math::Point};
+use crate::{math::{Point, Size}, oc_color::PackedColor};
 
 use super::Renderer;
 
 pub struct RenderState {
-	pub background: PackedColor,
-	pub foreground: PackedColor,
+	pub resolution: Option<Size<usize>>,
+	pub background: Option<PackedColor>,
+	pub foreground: Option<PackedColor>,
 }
 
 pub struct CachedRenderer<T: BasicRenderer> {
@@ -13,8 +14,9 @@ pub struct CachedRenderer<T: BasicRenderer> {
 }
 
 pub trait BasicRenderer {
-	fn set_background(&mut self, state: &RenderState, prev_value: PackedColor);
-	fn set_foreground(&mut self, state: &RenderState, prev_value: PackedColor);
+	fn set_resolution(&mut self, _state: &RenderState, value: Size<usize>);
+	fn set_background(&mut self, state: &RenderState, value: PackedColor);
+	fn set_foreground(&mut self, state: &RenderState, value: PackedColor);
 	fn set(&mut self, state: &RenderState, pos: &Point, value: &str);
 }
 
@@ -23,8 +25,9 @@ impl<T: BasicRenderer> CachedRenderer<T> {
 		Self {
 			renderer,
 			render_state: RenderState {
-				background: PackedColor::new(PaletteOr::NonPalette(StaticColor::deflate(RGB8::new(0x000000)))),
-				foreground: PackedColor::new(PaletteOr::NonPalette(StaticColor::deflate(RGB8::new(0xffffff)))),
+				resolution: None,
+				background: None,
+				foreground: None,
 			},
 		}
 	}
@@ -35,28 +38,40 @@ impl<T: BasicRenderer> CachedRenderer<T> {
 }
 
 impl<T: BasicRenderer> Renderer for CachedRenderer<T> {
+	fn get_resolution(&self) -> Size<usize> {
+		debug_assert_ne!(self.render_state.resolution, None);
+		self.render_state.resolution.unwrap()
+	}
+
+	fn set_resolution(&mut self, value: Size<usize>) {
+		if self.render_state.resolution == Some(value) { return; }
+
+		self.renderer.set_resolution(&self.render_state, value);
+		self.render_state.resolution = Some(value);
+	}
+
 	fn get_background(&self) -> PackedColor {
-		self.render_state.background
+		debug_assert_ne!(self.render_state.background, None);
+		self.render_state.background.unwrap()
 	}
 
 	fn set_background(&mut self, value: PackedColor) {
-		if self.render_state.background == value { return; }
+		if self.render_state.background == Some(value) { return; }
 
-		let prev_value = self.render_state.background;
-		self.render_state.background = value;
-		self.renderer.set_background(&self.render_state, prev_value);
+		self.renderer.set_background(&self.render_state, value);
+		self.render_state.background = Some(value);
 	}
 
 	fn get_foreground(&self) -> PackedColor { 
-		self.render_state.foreground
+		debug_assert_ne!(self.render_state.foreground, None);
+		self.render_state.foreground.unwrap()
 	}
 
 	fn set_foreground(&mut self, value: PackedColor) {
-		if self.render_state.foreground == value { return; }
+		if self.render_state.foreground == Some(value) { return; }
 
-		let prev_value = self.render_state.foreground;
-		self.render_state.foreground = value;
-		self.renderer.set_foreground(&self.render_state, prev_value);
+		self.renderer.set_foreground(&self.render_state, value);
+		self.render_state.foreground = Some(value);
 	}
 	
 	fn set(&mut self, pos: &Point, value: &str) {

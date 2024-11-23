@@ -4,9 +4,12 @@
 use std::{io::Write, path::{Path, PathBuf}};
 use braille::Braille;
 use clap::Parser;
+use cmd::szt_file::SztWriter;
 use color_print::cprintln;
+use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use lodepng::{decode24, encode24, Bitmap};
+use math::Size;
 use stopwatch::Stopwatch;
 
 use oc_color::{formatters::*, PackedColor};
@@ -30,17 +33,32 @@ struct Args {
 	out_path: Option<PathBuf>,
 	#[arg(short = 'm', long = "mode")]
 	mode: Mode,
+	#[arg(short = 'f', long = "format")]
+	format: Format,
+
+	#[arg(long = "f_begin")]
+	begin_frame: Option<usize>,
+	#[arg(long = "f_end")]
+	end_frame: Option<usize>,
+	#[arg(long = "f_rate")]
+	frame_rate: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum Mode {
-	Png,
-	Szt,
-	Lua,
-	Chr,
+	Image,
+	Video,
 }
 
-const LOG: bool = true;
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum Format {
+	Png,
+	Chr,
+	Lua,
+	Szt,
+}
+
+const LOG: bool = false;
 
 fn test(a: RGB8) {
 	let formatter = HybridFormatter::new();
@@ -77,82 +95,155 @@ fn run() -> Result<(), String> {
 		if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
 			path.set_file_name(format!("out_{}", name));
 		}
-		path.set_extension(match args.mode {
-			Mode::Png => "png",
-			Mode::Szt => "szt",
-			Mode::Lua => "lua",
-			Mode::Chr => "txt",
+		path.set_extension(match args.format {
+			Format::Png => "png",
+			Format::Szt => "szt",
+			Format::Lua => "lua",
+			Format::Chr => "txt",
 		});
 		path
 	});
 
-	{
-		let blob_in = stage("Preamble   | Reading...  ", || std::fs::read(in_path)
-			.map_err(|err| format!("Failed to read input file. INNER: {}", err)))?;
+	match args.mode {
+		Mode::Image => compute(args.format, &in_path, &out_path),
+		Mode::Video => compute_video(
+			&in_path,
+			&out_path,
+			args.begin_frame.unwrap_or(0),
+			args.end_frame.unwrap() + 1,
+			args.frame_rate.unwrap(),
+		),
+	}
+}
 
-		let img_in_raw = stage("Preamble   | Decoding... ", || decode24(blob_in)
-			.map_err(|err| format!("Failed to decode input image. INNER: {}", err)))?;
+fn compute(format: Format, in_path: &Path, out_path: &Path) -> Result<(), String> {
+	let blob_in = stage("Preamble   | Reading...  ", || std::fs::read(in_path)
+		.map_err(|err| format!("Failed to read input file. INNER: {}", err)))?;
+
+	let img_in_raw = stage("Preamble   | Decoding... ", || decode24(blob_in)
+		.map_err(|err| format!("Failed to decode input image. INNER: {}", err)))?;
+	
+	let img_in = stage("Preamble   | Importing...", || import_image(&img_in_raw));
+	
+	if LOG {
+		println!("           |");
+	}
+	let formatter = HybridFormatter::new();
+	let proc_a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
+	let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
+	let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
+	
+	let blob_out = match format {
+		Format::Png => {
+			let img_out = stage("Processing | Raster ", || braille::raster(&proc_c));
+			if LOG {
+				println!("           |");
+			}
+
+			let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
+			
+			stage("Postamble  | Encoding... ", || encode24(&img_out_raw.buffer, img_out_raw.width, img_out_raw.height)
+				.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?
+		},
+		Format::Chr => {
+			proc_c.buffer
+				.chunks_exact(proc_c.width)
+				.map(|row| row
+					.into_iter()
+					.map(|c| c.char())
+					.collect::<String>())
+				.join("\n")
+				.bytes()
+				.collect()
+		},
+		Format::Lua => {
+			let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
+			if LOG {
+				println!("           |");
+			}
+
+			let char_buffer = map_bitmap(&img_out, |braille| braille.into());
+			stage("Postamble  | Cmd Gen", || cmd::code_gen(&char_buffer, None, &formatter)
+				.bytes()
+				.collect())
+		},
+		Format::Szt => {
+			let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
+			if LOG {
+				println!("           |");
+			}
+
+			let char_buffer = map_bitmap(&img_out, |braille| braille.into());
+			stage("Postamble  | Cmd Gen", || {
+				let size = Size::new(char_buffer.width as u8, char_buffer.height as u8);
+				let mut writer = SztWriter::new(size, 0);
+				writer.push_frame(char_buffer);
+				writer.serialize().unwrap()
+			})
+			
+			// stage("Postamble  | Encoding... ", || img_out.buffer
+			// 	.iter()
+			// 	.flat_map(|c| [c.bg.into(), c.fg.into(), c.char_index()])
+			// 	.collect_vec())
+		},
+	};
+
+	stage("Postamble  | Writing...  ", || std::fs::write(&out_path, blob_out)
+		.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
+
+	println!("All Done! saved to: {}", out_path.display());
+	Ok(())
+}
+
+fn compute_video(
+	in_path: &Path,
+	out_path: &Path,
+	begin_frame: usize,
+	end_frame: usize,
+	frame_rate: u16,
+) -> Result<(), String> {
+	let frame_iter = begin_frame..end_frame;
+
+	let progress = ProgressBar::new(frame_iter.len() as u64)
+		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
+			.unwrap()
+			.progress_chars("█▉▊▋▌▍▎▏ "));
+
+	let mut writer = SztWriter::new(Size::new(0, 0), frame_rate);
+
+	for i in frame_iter {
+		let in_path = in_path.to_string_lossy().replace('*', &format!("{:04}", i));
+		let blob_in = std::fs::read(&in_path)
+			.map_err(|err| format!("Failed to read input file. INNER: {}", err))?;
+
+		let img_in = decode24(blob_in)
+			.map_err(|err| format!("Failed to decode input image. INNER: {}", err))?;
+		let img_in = import_image(&img_in);
 		
-		let img_in = stage("Preamble   | Importing...", || import_image(&img_in_raw));
-		
-		if LOG {
-			println!("           |");
-		}
 		let formatter = HybridFormatter::new();
 		let proc_a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
 		let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
 		let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
+		let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
+
+		let char_buffer = map_bitmap(&img_out, |braille| braille.into());
 		
-		let blob_out = match args.mode {
-			Mode::Png => {
-				let img_out = stage("Processing | Raster ", || braille::raster(&proc_c));
-				if LOG {
-					println!("           |");
-				}
+		if i == begin_frame {
+			writer.file.header.size.x = char_buffer.width as u8;
+			writer.file.header.size.y = char_buffer.height as u8;
+		}
+		assert_eq!(char_buffer.width, writer.file.header.size.x as usize);
+		assert_eq!(char_buffer.height, writer.file.header.size.y as usize);
 
-				let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
-				
-				stage("Postamble  | Encoding... ", || encode24(&img_out_raw.buffer, img_out_raw.width, img_out_raw.height)
-					.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?
-			},
-			Mode::Szt => {
-				let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-				if LOG {
-					println!("           |");
-				}
+		stage("Postamble  | Cmd Gen", || writer.push_frame(char_buffer));
 
-				stage("Postamble  | Encoding... ", || img_out.buffer
-					.iter()
-					.flat_map(|c| [c.bg.into(), c.fg.into(), c.char_index()])
-					.collect_vec())
-			},
-			Mode::Lua => {
-				let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-				if LOG {
-					println!("           |");
-				}
-
-				let char_buffer = map_bitmap(&img_out, |braille| braille.into());
-				stage("Postamble  | Cmd Gen", || cmd::code_gen(&char_buffer, &formatter)
-					.bytes()
-					.collect())
-			},
-			Mode::Chr => {
-				proc_c.buffer
-					.chunks_exact(proc_c.width)
-					.map(|row| row
-						.into_iter()
-						.map(|c| c.char())
-						.collect::<String>())
-					.join("\n")
-					.bytes()
-					.collect()
-			},
-		};
-
-		stage("Postamble  | Writing...  ", || std::fs::write(&out_path, blob_out)
-			.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
+		progress.update(|s| s.set_pos((i - begin_frame) as u64));
 	}
+
+	progress.finish();
+
+	stage("Postamble  | Writing...  ", || std::fs::write(&out_path, writer.serialize().unwrap())
+		.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
 
 	println!("All Done! saved to: {}", out_path.display());
 	Ok(())

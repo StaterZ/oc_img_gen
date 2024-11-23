@@ -1,4 +1,4 @@
-use crate::{oc_color::PackedColor, Formatter, math::Point};
+use crate::{math::{Point, Size}, oc_color::PackedColor, Formatter};
 
 use super::basic_renderer::{BasicRenderer, RenderState};
 
@@ -6,7 +6,7 @@ pub struct CodeRenderer<'a, T: Formatter> {
 	code: String,
 	gpu_ident: String,
 	formatter: &'a T,
-	dbg: Vec<Point>,
+	//dbg: Vec<Point>,
 }
 
 impl<'a, T: Formatter> CodeRenderer<'a, T> {
@@ -15,7 +15,7 @@ impl<'a, T: Formatter> CodeRenderer<'a, T> {
 			code: prelude,
 			gpu_ident,
 			formatter,
-			dbg: Vec::new(),
+			//dbg: Vec::new(),
 		}
 	}
 
@@ -25,19 +25,23 @@ impl<'a, T: Formatter> CodeRenderer<'a, T> {
 }
 
 impl<'a, T: Formatter> BasicRenderer for CodeRenderer<'a, T> {
-	fn set_background(&mut self, state: &RenderState, _prev_value: PackedColor) {
-		self.code += &format!("{}.setBackground(0x{})\n", self.gpu_ident, self.formatter.inflate(state.background));
+	fn set_resolution(&mut self, _state: &RenderState, value: Size<usize>) {
+		self.code += &format!("{}.setResolution({},{})\n", self.gpu_ident, value.x, value.y);
 	}
 
-	fn set_foreground(&mut self, state: &RenderState, _prev_value: PackedColor) {
-		self.code += &format!("{}.setForeground(0x{})\n", self.gpu_ident, self.formatter.inflate(state.foreground));
+	fn set_background(&mut self, _state: &RenderState, value: PackedColor) {
+		self.code += &format!("{}.setBackground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
+	}
+
+	fn set_foreground(&mut self, _state: &RenderState, value: PackedColor) {
+		self.code += &format!("{}.setForeground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
 	}
 
 	fn set(&mut self, _state: &RenderState, pos: &Point, value: &str) {
-		if self.dbg.contains(pos) {
-			//panic!("ouf!");
-		}
-		self.dbg.push(*pos);
+		// if self.dbg.contains(pos) {
+		// 	panic!("ouf!");
+		// }
+		// self.dbg.push(*pos);
 
 		self.code += &format!("{}.set({}, {}, \"{}\")\n", self.gpu_ident, pos.x + 1, pos.y + 1, value);
 	}

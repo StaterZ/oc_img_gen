@@ -1,6 +1,9 @@
-use crate::{oc_color::PackedColor, math::Point};
+use crate::{math::{Point, Size}, oc_color::PackedColor};
 
 pub trait Renderer {
+	fn get_resolution(&self) -> Size<usize>;
+	fn set_resolution(&mut self, value: Size<usize>);
+
 	fn get_background(&self) -> PackedColor;
 	fn set_background(&mut self, value: PackedColor);
 	
