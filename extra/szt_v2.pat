@@ -40,7 +40,7 @@ fn len_trs(u8 len) {
 
 
 struct Command<auto kind> {
-    std::print("cmd start: 0x{:x}", $);
+	std::print("cmd start: 0x{:x}", $);
 	CommandFlags flags;
 	
 	if (flags.has_background) Color background;
@@ -75,10 +75,9 @@ struct Frame<auto commands_len> {
 
 struct File {
 	Header header;
-	u32 frames_start = $;
 	std::Array<u32, header.num_frames> frame_sizes;
 	u64 start = $;
-    std::print("geh: {}", start);
+	std::print("start: {}", start);
 	Frame<frame_sizes.data[std::core::array_index()]> frames[header.num_frames];
 };
 
