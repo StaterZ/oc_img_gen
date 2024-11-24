@@ -1,10 +1,16 @@
-#![feature(iter_array_chunks, array_chunks, anonymous_lifetime_in_impl_trait, const_for, const_range_bounds)]
+#![feature(
+	iter_array_chunks,
+	array_chunks,
+	anonymous_lifetime_in_impl_trait,
+	const_for, const_range_bounds,
+	adt_const_params
+)]
 #![allow(dead_code)]
 
 use std::{io::Write, path::{Path, PathBuf}};
 use braille::Braille;
 use clap::Parser;
-use cmd::szt_file::SztWriter;
+use cmd::szt;
 use color_print::cprintln;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
@@ -173,11 +179,10 @@ fn compute(format: Format, in_path: &Path, out_path: &Path) -> Result<(), String
 				println!("           |");
 			}
 
-			let char_buffer = map_bitmap(&img_out, |braille| braille.into());
 			stage("Postamble  | Cmd Gen", || {
-				let size = Size::new(char_buffer.width as u8, char_buffer.height as u8);
-				let mut writer = SztWriter::new(size, 0);
-				writer.push_frame(char_buffer);
+				let size = Size::new(img_out.width as u8, img_out.height as u8);
+				let mut writer = szt::Writer::new(size, 0);
+				writer.push_frame_braille(img_out);
 				writer.serialize().unwrap()
 			})
 			
@@ -209,7 +214,7 @@ fn compute_video(
 			.unwrap()
 			.progress_chars("█▉▊▋▌▍▎▏ "));
 
-	let mut writer = SztWriter::new(Size::new(0, 0), frame_rate);
+	let mut writer = szt::Writer::new(Size::new(0, 0), frame_rate);
 
 	for i in frame_iter {
 		let in_path = in_path.to_string_lossy().replace('*', &format!("{:04}", i));
@@ -225,17 +230,14 @@ fn compute_video(
 		let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
 		let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
 		let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-
-		let char_buffer = map_bitmap(&img_out, |braille| braille.into());
 		
+		let frame_size = Size::new(img_out.width as u8, img_out.height as u8);
 		if i == begin_frame {
-			writer.file.header.size.x = char_buffer.width as u8;
-			writer.file.header.size.y = char_buffer.height as u8;
+			writer.file.header.size = frame_size;
 		}
-		assert_eq!(char_buffer.width, writer.file.header.size.x as usize);
-		assert_eq!(char_buffer.height, writer.file.header.size.y as usize);
+		assert_eq!(frame_size, writer.file.header.size);
 
-		stage("Postamble  | Cmd Gen", || writer.push_frame(char_buffer));
+		stage("Postamble  | Cmd Gen", || writer.push_frame_braille(img_out));
 
 		progress.update(|s| s.set_pos((i - begin_frame) as u64));
 	}

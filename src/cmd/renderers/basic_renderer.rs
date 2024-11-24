@@ -17,7 +17,7 @@ pub trait BasicRenderer {
 	fn set_resolution(&mut self, _state: &RenderState, value: Size<usize>);
 	fn set_background(&mut self, state: &RenderState, value: PackedColor);
 	fn set_foreground(&mut self, state: &RenderState, value: PackedColor);
-	fn set(&mut self, state: &RenderState, pos: &Point, value: &str);
+	fn set(&mut self, state: &RenderState, pos: &Point<usize>, value: &str);
 }
 
 impl<T: BasicRenderer> CachedRenderer<T> {
@@ -74,7 +74,7 @@ impl<T: BasicRenderer> Renderer for CachedRenderer<T> {
 		self.render_state.foreground = Some(value);
 	}
 	
-	fn set(&mut self, pos: &Point, value: &str) {
+	fn set(&mut self, pos: &Point<usize>, value: &str) {
 		self.renderer.set(&self.render_state, pos, value);
 	}
 }

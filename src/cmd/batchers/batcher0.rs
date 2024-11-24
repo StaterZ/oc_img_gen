@@ -1,15 +1,15 @@
 use crate::{cmd::term_char::TermChar, math::Point, oc_color::PackedColor};
 
-use super::super::{Frame, Renderer, TermPixel};
+use super::super::{TermFrame, Renderer, TermPixel};
 
 struct Batch {
-	pub pos: Point,
+	pub pos: Point<usize>,
 	pub bg: PackedColor,
 	pub fg: PackedColor,
 	pub chars: String,
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &Frame, _prev_frame: Option<&Frame>) {
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, _prev_frame: Option<&TermFrame>) {
 	let mut emit = |batch: Batch| {
 		renderer.set_background(batch.bg);
 		renderer.set_foreground(batch.fg);

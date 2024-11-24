@@ -1,7 +1,6 @@
 local os = require("os")
 local shell = require("shell")
 local event = require("event")
-local unicode = require("unicode")
 local comp = require("component")
 
 local args, ops = shell.parse(...)
@@ -57,7 +56,7 @@ local function draw(gpu, file, pos_x, pos_y)
 		local magic = file:read(4)
 		assertEq(magic, "sztb", "bad magic")
 		local version = read_u16(file)
-		assertEq(version, 2, "bad version")
+		assertEq(version, 1, "bad version")
 	end
 
 	local back
@@ -73,68 +72,47 @@ local function draw(gpu, file, pos_x, pos_y)
 	end
 
 	local frame_rate = read_u16(file)
-	local num_frames = read_u32(file)
-
-	print("reading seek table...", num_frames)
-	local seek_table = {}
-	seek_table[0] = 0 --sneaky pls no crash fix
-	for i = 1, num_frames do
-		seek_table[i] = seek_table[i - 1] + read_u32(file)
-		print(i, seek_table[i])
-	end
-	local frames_begin_pos = file:seek()
-	print("done at", frames_begin_pos)
-
+	local num_frames = read_u64(file)
+	local next_frame = 0
 	local begin_time = os.clock()
-	local frame_index = 0
-	while frame_index < num_frames do
+	for frame_index = 0, num_frames - 1 do
 		local frame_begin_time = os.clock()
+		local commands_len = read_u64(file)
 
-		if ops.seek then
-			local current_time = (os.clock() - begin_time)
-			frame_index = math.ceil(current_time * frame_rate)
-			if frame_index >= num_frames then break end
-			
-			file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
+		if ops.seek and frame_index < next_frame then
+			file:seek("cur", commands_len)
+			goto continue
 		end
 
-		local commands_len = seek_table[frame_index + 1] - seek_table[frame_index]
-		local command_kind = read_u8(file)
-		local i = 1 -- 1 since we include the command_kind u8
+		local i = 0
 		while i < commands_len do
-			local len = read_u8(file)
+			local cmd = read_u8(file)
 			i = i + 1
 
-			if len >= 0x80 then
-				len = len - 0x80
-
+			if cmd == 0x80 then
 				gpu.setBackground(inflate(read_u8(file)))
 				i = i + 1
-			end
-			if len >= 0x40 then
-				len = len - 0x40
-
+			elseif cmd == 0x81 then
 				gpu.setForeground(inflate(read_u8(file)))
 				i = i + 1
-			end
+			--elseif cmd == 0x82 then --we don't support resolution to increase speed
+			--	local x = read_u8(file)
+			--	local y = read_u8(file)
+			--	gpu.setResolution(x, y)
+			--	i = i + 2
+			else
+				local x = read_u8(file)
+				local y = read_u8(file)
+				local value = file:read(cmd)
 
-			local x = read_u8(file)
-			local y = read_u8(file)
-			
-			len = len + 1
-			local value
-			-- if command_kind == 1 then
-				value = ""
-				for j = 1, len do
-					value = value .. unicode.char(0x2800 + read_u8(file))
-				end
-			-- else
-			-- 	value = file:read(len)
-			-- else
-			gpu.set(x + pos_x, y + pos_y, value)
-			i = i + 2 + len
+				gpu.set(x + pos_x, y + pos_y, value)
+				i = i + 2 + cmd
+			end
 		end
 
+		local current_time = (os.clock() - begin_time)
+		next_frame = math.ceil(current_time * frame_rate)
+		
 		if ops.fps then
 			gpu.setBackground(0xff0000)
 			gpu.setForeground(0xffffff)
@@ -164,9 +142,7 @@ local function draw(gpu, file, pos_x, pos_y)
 				goto done
 			end
 		end
-
 		::continue::
-		frame_index = frame_index + 1
 	end
 	::done::
 
@@ -188,5 +164,4 @@ file:close()
 
 comp.gpu.setBackground(0xff0000)
 comp.gpu.setForeground(0xffffff)
-require("term").setCursor(1, 1)
 print("Done!")

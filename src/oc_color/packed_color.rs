@@ -1,9 +1,11 @@
 use std::fmt::Display;
 
+use deku::prelude::*;
+
 use super::formatters::hybrid_formatter::StaticColor;
 use super::palette::{Palette, PaletteColor, PaletteOr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DekuWrite)]
 pub struct PackedColor(u8);
 
 impl PackedColor {

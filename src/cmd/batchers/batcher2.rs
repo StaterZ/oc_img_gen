@@ -4,12 +4,12 @@ use itertools::Itertools;
 
 use crate::{cmd::term_char::TermChar, math::Point, oc_color::PackedColor};
 
-use super::super::{Frame, Renderer, TermPixel};
+use super::super::{TermFrame, Renderer, TermPixel};
 
 #[derive(Clone)]
 struct Batch {
 	pub kind: BatchKind,
-	pub pos: Point,
+	pub pos: Point<usize>,
 	pub bg: PackedColor,
 	pub fg: PackedColor,
 	pub chars: String,
@@ -237,7 +237,7 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &Frame, prev_frame: Option<&Frame>) {
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>) {
 	let batches = generate_batches(frame, prev_frame);
 	
 	let mut accelerator = Accelerator::new();
@@ -261,7 +261,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &Frame, prev_frame: Option<&Frame>) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
@@ -393,7 +393,7 @@ fn generate_batches(frame: &Frame, prev_frame: Option<&Frame>) -> Vec<Batch> {
 
 
 
-fn generate_batches_naive(frame: &Frame, prev_frame: Option<&Frame>) -> Vec<Batch> {
+fn generate_batches_naive(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {

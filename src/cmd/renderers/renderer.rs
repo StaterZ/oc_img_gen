@@ -10,5 +10,5 @@ pub trait Renderer {
 	fn get_foreground(&self) -> PackedColor;
 	fn set_foreground(&mut self, value: PackedColor);
 
-	fn set(&mut self, pos: &Point, value: &str);
+	fn set(&mut self, pos: &Point<usize>, value: &str);
 }

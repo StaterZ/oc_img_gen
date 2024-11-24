@@ -8,7 +8,7 @@ use std::{
 
 use crate::{oc_color::PackedColor, math::Point};
 
-use super::super::{Frame, Renderer};
+use super::super::{TermFrame, Renderer};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum BucketKind {
@@ -121,7 +121,7 @@ impl ColorTables {
 	}
 }
 
-fn generate_color_tables(frame: &Frame, prev_frame: Option<&Frame>) -> ColorTables {
+fn generate_color_tables(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> ColorTables {
 	let mut bg_to_fgs = ColorTable::new();
 	let mut fg_to_bgs = ColorTable::new();
 
@@ -199,7 +199,7 @@ fn get_buckets<'a>(color_tables: &'a mut ColorTables, render_state: &mut RenderS
 	}
 }
 
-fn draw_bucket(renderer: &mut impl Renderer, bucket: &mut Bucket, frame: &Frame, should_flip: bool) {
+fn draw_bucket(renderer: &mut impl Renderer, bucket: &mut Bucket, frame: &TermFrame, should_flip: bool) {
 	for pixel_index in bucket.pixel_indices.iter() {
 		let pixel_index = pixel_index.get();
 		if pixel_index == usize::MAX { continue; }
@@ -238,7 +238,7 @@ fn draw_bucket(renderer: &mut impl Renderer, bucket: &mut Bucket, frame: &Frame,
 	}
 }
 
-fn draw_buckets(renderer: &mut impl Renderer, buckets: &ColorBuckets, frame: &Frame) -> (bool, bool) {
+fn draw_buckets(renderer: &mut impl Renderer, buckets: &ColorBuckets, frame: &TermFrame) -> (bool, bool) {
 	draw_bucket(renderer, buckets.basic.borrow_mut().deref_mut(), frame, false);
 	draw_bucket(renderer, buckets.flippable.borrow_mut().deref_mut(), frame, false);
 	draw_bucket(renderer, buckets.flipped.borrow_mut().deref_mut(), frame, true);
@@ -306,7 +306,7 @@ fn remove_bucket_listings(color_tables: &mut ColorTables, render_state: &RenderS
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &Frame, prev_frame: Option<&Frame>) {
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>) {
 	let mut color_tables = generate_color_tables(&frame, prev_frame);
 
 	let mut render_state = RenderState::new(renderer);

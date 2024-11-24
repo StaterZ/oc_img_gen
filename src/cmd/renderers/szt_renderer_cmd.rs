@@ -6,8 +6,7 @@ use crate::{cmd::szt, math::{Point, Size}, oc_color::PackedColor};
 use super::basic_renderer::{BasicRenderer, RenderState};
 
 pub struct SztRenderer<const KIND: szt::CommandKind> {
-	blob: Vec<u8>,
-	//commands: Vec<szt::Command>,
+	commands: Vec<szt::Command>,
 	bg_needs_emit: bool,
 	fg_needs_emit: bool,
 }
@@ -15,8 +14,7 @@ pub struct SztRenderer<const KIND: szt::CommandKind> {
 impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
 	pub fn new() -> Self {
 		Self {
-			blob: Vec::new(),
-			//commands: Vec::new(),
+			commands: Vec::new(),
 			bg_needs_emit: false,
 			fg_needs_emit: false,
 		}
@@ -25,8 +23,7 @@ impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
 	pub fn build(self) -> szt::Frame {
 		szt::Frame {
 			command_kind: KIND,
-			commands: self.blob,
-			//commands: self.commands,
+			commands: self.commands,
 		}
 	}
 }
@@ -57,53 +54,26 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		}
 
 		const MAX_BYTES: usize = 1 << (8 - 2);
+		
 		let mut encode_chunk = |chunk: &[u8]| {
 			debug_assert_gt!(chunk.len(), 0);
 			debug_assert_le!(chunk.len(), MAX_BYTES);
-			{
-				let bg_flag = (self.bg_needs_emit as u8) << 7;
-				let fg_flag = (self.fg_needs_emit as u8) << 6;
-				let len = (chunk.len() - 1) as u8;
-				self.blob.push(bg_flag | fg_flag | len);
-			}
 
-			if self.bg_needs_emit {
-				if let Some(bg) = state.background {
-					self.blob.push(bg.into());
-				}
-				self.bg_needs_emit = false;
-			}
-			if self.fg_needs_emit {
-				if let Some(fg) = state.foreground {
-					self.blob.push(fg.into());
-				}
-				self.fg_needs_emit = false;
-			}
+			self.commands.push(szt::Command {
+				flags: szt::CommandFlags {
+					len: (chunk.len() - 1) as u8,
+					has_background: self.bg_needs_emit,
+					has_foreground: self.fg_needs_emit,
+				},
+				background: state.background,
+				foreground: state.foreground,
+				pos: pos.map(|x| x as u8),
+				braille: chunk.to_owned(),
+			});
 
-			self.blob.push(pos.x as u8);
-			self.blob.push(pos.y as u8);
-			self.blob.extend_from_slice(chunk);
+			self.bg_needs_emit = false;
+			self.fg_needs_emit = false;
 		};
-
-		// let mut encode_chunk = |chunk: &[u8]| {
-		// 	debug_assert_gt!(chunk.len(), 0);
-		// 	debug_assert_le!(chunk.len(), MAX_BYTES);
-
-		// 	self.commands.push(szt::Command {
-		// 		flags: szt::CommandFlags {
-		// 			len: (chunk.len() - 1) as u8,
-		// 			has_background: self.bg_needs_emit,
-		// 			has_foreground: self.fg_needs_emit,
-		// 		},
-		// 		background: state.background,
-		// 		foreground: state.foreground,
-		// 		pos: pos.map(|x| x as u8),
-		// 		braille: chunk.to_owned(),
-		// 	});
-
-		// 	self.bg_needs_emit = false;
-		// 	self.fg_needs_emit = false;
-		// };
 
 		match KIND {
 			szt::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes())),

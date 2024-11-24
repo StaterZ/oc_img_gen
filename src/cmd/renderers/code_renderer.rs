@@ -37,7 +37,7 @@ impl<'a, T: Formatter> BasicRenderer for CodeRenderer<'a, T> {
 		self.code += &format!("{}.setForeground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
 	}
 
-	fn set(&mut self, _state: &RenderState, pos: &Point, value: &str) {
+	fn set(&mut self, _state: &RenderState, pos: &Point<usize>, value: &str) {
 		// if self.dbg.contains(pos) {
 		// 	panic!("ouf!");
 		// }

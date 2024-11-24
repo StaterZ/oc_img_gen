@@ -1,80 +1,85 @@
-#include "std/sys.pat"
+import std.core;
+import std.sys;
+import std.array;
 
-struct Slice<TLen, TData> {
-	TLen len;
-	TData data[len];
-};
-
-struct ByteSlice<TLen, TData> {
-	TLen len;
-	u64 s = $;
-	TData data[while($ - s < len)];
-};
+#pragma endian big
 
 struct Point {
 	u8 x;
 	u8 y;
+} [[format("point_fmt")]];
+fn point_fmt(Point value) {
+	return std::format("({},{})", value.x, value.y);
 };
 
 struct Size {
 	u8 x;
 	u8 y;
+} [[format("size_fmt")]];
+fn size_fmt(Size value) {
+	return std::format("({},{})", value.x, value.y);
 };
 
 struct Color {
 	u8 color;
 };
 
-enum CommandKind : u8 {
-	Set = 0x00 ... 0x7f,
-	SetBackground = 0x80,
-	SetForeground = 0x81,
-	SetResolution = 0x82,
+enum CommandKind: u8 {
+	Text = 0,
+	Braille = 1,
 };
 
-struct SetCommand<auto len> {
+bitfield CommandFlags {
+	bool has_background : 1;
+	bool has_foreground : 1;
+	unsigned len : 6 [[transform("len_trs")]];
+};
+fn len_trs(u8 len) {
+	return len + 1;
+};
+
+
+struct Command<auto kind> {
+    std::print("cmd start: 0x{:x}", $);
+	CommandFlags flags;
+	
+	if (flags.has_background) Color background;
+	if (flags.has_foreground) Color foreground;
+	
 	Point pos;
-	char chars[len];
-};
-struct SetBackgroundCommand {
-	Color color;
-};
-struct SetForegroundCommand {
-	Color color;
-};
-struct SetResolutionCommand {
-	Size size;
-};
-
-struct Command {
-	CommandKind kind;
+	
 	match (kind) {
-		(CommandKind::SetBackground): SetBackgroundCommand;
-		(CommandKind::SetForeground): SetForegroundCommand;
-		(CommandKind::SetResolution): SetResolutionCommand;
-		(_): if (kind >= 0x00 && kind <= 0x7f) {
-			SetCommand<u8(kind)>;
-		}
+		(CommandKind::Text): std::Array<char, flags.len> text;
+		(CommandKind::Braille): std::Array<u8, flags.len> braille;
 	}
 };
 
-struct SztHeader {
+struct Header {
 	char magic[4];
-	be u16 version;
+	u16 version;
 	Size size;
-	be u16 frame_rate;
+	u16 frame_rate;
+	u32 num_frames;
+	
+	std::assert(magic == "sztb", "bad magic");
+	std::assert(version == 2, "bad version");
 };
 
-struct SztFrame {
-	ByteSlice<be u64, Command> commands;
-	//Slice<be u64, u8> commands_blob;
+struct Frame<auto commands_len> {
+	CommandKind command_kind;
+	match (command_kind) {
+		(CommandKind::Text): std::ByteSizedArray<Command<CommandKind::Text>, commands_len - sizeof(command_kind)> commands;
+		(CommandKind::Braille): std::ByteSizedArray<Command<CommandKind::Braille>, commands_len - sizeof(command_kind)> commands;
+	}
 };
 
-struct SztFile {
-	SztHeader header;
-	Slice<be u64, SztFrame> frames;
+struct File {
+	Header header;
+	u32 frames_start = $;
+	std::Array<u32, header.num_frames> frame_sizes;
+	u64 start = $;
+    std::print("geh: {}", start);
+	Frame<frame_sizes.data[std::core::array_index()]> frames[header.num_frames];
 };
 
-SztFile file @ 0x00;
-
-std::assert(file.header.magic == "sztb", "bad magic");
+File file @ 0x00;
