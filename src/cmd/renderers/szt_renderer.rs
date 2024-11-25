@@ -7,7 +7,6 @@ use super::basic_renderer::{BasicRenderer, RenderState};
 
 pub struct SztRenderer<const KIND: szt::CommandKind> {
 	blob: Vec<u8>,
-	//commands: Vec<szt::Command>,
 	bg_needs_emit: bool,
 	fg_needs_emit: bool,
 }
@@ -16,7 +15,6 @@ impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
 	pub fn new() -> Self {
 		Self {
 			blob: Vec::new(),
-			//commands: Vec::new(),
 			bg_needs_emit: false,
 			fg_needs_emit: false,
 		}
@@ -26,7 +24,6 @@ impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
 		szt::Frame {
 			command_kind: KIND,
 			commands: self.blob,
-			//commands: self.commands,
 		}
 	}
 }
@@ -57,7 +54,8 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		}
 
 		const MAX_BYTES: usize = 1 << (8 - 2);
-		let mut encode_chunk = |chunk: &[u8]| {
+		let mut pos = *pos;
+		let mut encode_chunk = |chunk: &[u8], chunk_uni_len: usize| {
 			debug_assert_gt!(chunk.len(), 0);
 			debug_assert_le!(chunk.len(), MAX_BYTES);
 			{
@@ -82,38 +80,20 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 
 			self.blob.push(pos.x as u8);
 			self.blob.push(pos.y as u8);
+			pos.x += chunk_uni_len;
 			self.blob.extend_from_slice(chunk);
 		};
 
-		// let mut encode_chunk = |chunk: &[u8]| {
-		// 	debug_assert_gt!(chunk.len(), 0);
-		// 	debug_assert_le!(chunk.len(), MAX_BYTES);
-
-		// 	self.commands.push(szt::Command {
-		// 		flags: szt::CommandFlags {
-		// 			len: (chunk.len() - 1) as u8,
-		// 			has_background: self.bg_needs_emit,
-		// 			has_foreground: self.fg_needs_emit,
-		// 		},
-		// 		background: state.background,
-		// 		foreground: state.foreground,
-		// 		pos: pos.map(|x| x as u8),
-		// 		braille: chunk.to_owned(),
-		// 	});
-
-		// 	self.bg_needs_emit = false;
-		// 	self.fg_needs_emit = false;
-		// };
-
 		match KIND {
-			szt::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes())),
+			szt::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes(), chunk.len())),
 			szt::CommandKind::Braille => {
 				let mut iter = value.chars().map(to_braille).array_chunks::<MAX_BYTES>();
 				while let Some(chunk) = iter.next() {
-					encode_chunk(&chunk);
+					encode_chunk(&chunk, 64);
 				}
 				if let Some(rem) = iter.into_remainder() {
-					encode_chunk(rem.as_slice());
+					let rem = rem.as_slice();
+					encode_chunk(rem, rem.len());
 				}
 			},
 		}

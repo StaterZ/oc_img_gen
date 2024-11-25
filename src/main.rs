@@ -46,6 +46,8 @@ struct Args {
 	begin_frame: Option<usize>,
 	#[arg(long = "f_end")]
 	end_frame: Option<usize>,
+	#[arg(long = "f_step")]
+	frame_step: Option<usize>,
 	#[arg(long = "f_rate")]
 	frame_rate: Option<u16>,
 }
@@ -115,8 +117,7 @@ fn run() -> Result<(), String> {
 		Mode::Video => compute_video(
 			&in_path,
 			&out_path,
-			args.begin_frame.unwrap_or(0),
-			args.end_frame.unwrap() + 1,
+			(args.begin_frame.unwrap_or(0)..args.end_frame.unwrap() + 1).step_by(args.frame_step.unwrap_or(1)),
 			args.frame_rate.unwrap(),
 		),
 	}
@@ -203,12 +204,9 @@ fn compute(format: Format, in_path: &Path, out_path: &Path) -> Result<(), String
 fn compute_video(
 	in_path: &Path,
 	out_path: &Path,
-	begin_frame: usize,
-	end_frame: usize,
+	frame_iter: impl ExactSizeIterator<Item = usize>,
 	frame_rate: u16,
 ) -> Result<(), String> {
-	let frame_iter = begin_frame..end_frame;
-
 	let progress = ProgressBar::new(frame_iter.len() as u64)
 		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
 			.unwrap()
@@ -216,7 +214,7 @@ fn compute_video(
 
 	let mut writer = szt::Writer::new(Size::new(0, 0), frame_rate);
 
-	for i in frame_iter {
+	for (i_e, i) in frame_iter.enumerate() {
 		let in_path = in_path.to_string_lossy().replace('*', &format!("{:04}", i));
 		let blob_in = std::fs::read(&in_path)
 			.map_err(|err| format!("Failed to read input file. INNER: {}", err))?;
@@ -232,14 +230,14 @@ fn compute_video(
 		let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
 		
 		let frame_size = Size::new(img_out.width as u8, img_out.height as u8);
-		if i == begin_frame {
+		if i_e == 0 {
 			writer.file.header.size = frame_size;
 		}
 		assert_eq!(frame_size, writer.file.header.size);
 
 		stage("Postamble  | Cmd Gen", || writer.push_frame_braille(img_out));
 
-		progress.update(|s| s.set_pos((i - begin_frame) as u64));
+		progress.update(|s| s.set_pos(i_e as u64));
 	}
 
 	progress.finish();
