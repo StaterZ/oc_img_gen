@@ -20,9 +20,7 @@
 				}
 			},
 			"args": [
-				"--debug",
-				"--mode=image",
-				"--format=szt"
+				"--debug"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -51,9 +49,7 @@
 			"request": "launch",
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
-				"--debug",
-				"--mode=image",
-				"--format=szt"
+				"--debug"
 			],
 			"cwd": "${workspaceFolder}",
 		}

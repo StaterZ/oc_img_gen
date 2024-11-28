@@ -14,10 +14,12 @@ itertools = "0.13.0"
 lazy_static = "1.5.0"
 lodepng = "3.10.7"
 more-asserts = "0.3.1"
+ndarray = "0.16.1"
 num-traits = "0.2.19"
 phf = { version = "0.11.2", features= ["macros"] }
 stopwatch = "0.0.7"
 szu = { version = "0.2.2", path = "../szu" }
+video-rs = { version = "0.10.2", features = ["ndarray"] }
 
 # https://stackoverflow.com/questions/60751806/how-to-compile-some-dependencies-with-release
 [profile.dev.package."*"]

@@ -17,10 +17,10 @@ pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, _prev_frame: Option
 	};
 
 	let mut batch = None::<Batch>;
-	for y in 0..frame.height {
-		for x in 0..frame.width {
-			let i = y * frame.width + x;
-			let char = &frame.buffer[i];
+	for y in 0..frame.size().y {
+		for x in 0..frame.size().x {
+			let i = y * frame.size().x + x;
+			let char = &frame.buffer()[i];
 
 			if let Some(batch) = batch.as_mut() {
 				if let Some(smart_char) = find_smart_char(&batch, &char) {

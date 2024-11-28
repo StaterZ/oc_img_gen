@@ -1,10 +1,9 @@
 use std::borrow::Borrow;
 
-use lodepng::Bitmap;
 use num_traits::Zero;
 use szu::{math::int_div_round, iter::{MultiZipArrayExt, MultiZipExt}};
 
-use crate::oc_color::{RGB, RGB8};
+use crate::{image::Image, math::Size, oc_color::{RGB, RGB8}};
 
 pub const WIDTH: usize = 2;
 pub const HEIGHT: usize = 4;
@@ -109,30 +108,29 @@ impl Braille<RGB8> {
 	}
 }
 
-pub fn as_braille(input: &Bitmap<RGB8>) -> Bitmap<Braille<RGB8>> {
-	let braille_pixel_clusters = input.buffer
-		.chunks_exact(input.width) //make grid
+pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
+	let braille_pixel_clusters = input.buffer()
+		.chunks_exact(input.size().x) //make grid
 		.array_chunks::<{ HEIGHT }>() //group rows by 4
 		.map(|char_row| char_row
 			.map(|row| row
 				.array_chunks::<{ WIDTH }>()) //split rows in chunks of 2
 			.multi_zip_array()); //convert the 4 chunked rows into a cluster row
 	
-	let output = braille_pixel_clusters
+	let buffer = braille_pixel_clusters
 		.flat_map(|rows| rows
 			.map(|cluster| Braille::from_pixels(&cluster)))
 		.collect();
 
-	Bitmap {
-		buffer: output,
-		width: input.width / WIDTH,
-		height: input.height / HEIGHT,
-	}
+	Image::new(
+		*input.size() / Size::new(WIDTH, HEIGHT),
+		buffer,
+	)
 }
 
-pub fn raster<T: Copy>(input: &Bitmap<Braille<T>>) -> Bitmap<T> {
-	let output = input.buffer
-		.chunks_exact(input.width)
+pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
+	let buffer = input.buffer()
+		.chunks_exact(input.size().x)
 		.flat_map(|row| row
 			.into_iter()
 			.map(|char| char
@@ -144,9 +142,8 @@ pub fn raster<T: Copy>(input: &Bitmap<Braille<T>>) -> Bitmap<T> {
 		.copied()
 		.collect();
 
-	Bitmap {
-		buffer: output,
-		width: input.width * WIDTH,
-		height: input.height * HEIGHT,
-	}
+	Image::new(
+		*input.size() * Size::new(WIDTH, HEIGHT),
+		buffer,
+	)
 }

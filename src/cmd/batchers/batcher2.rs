@@ -279,14 +279,14 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 		}
 	}
 
-	for y in 0..frame.height {
+	for y in 0..frame.size().y {
 		let mut work_batch = None::<WorkBatch>;
-		for x in 0..frame.width {
-			let i = y * frame.width + x;
-			let char = &frame.buffer[i];
+		for x in 0..frame.size().x {
+			let i = y * frame.size().x + x;
+			let char = &frame.buffer()[i];
 
 			let is_same_as_prev_frame = if let Some(prev_frame) = prev_frame {
-				let char_prev = &prev_frame.buffer[i];
+				let char_prev = &prev_frame.buffer()[i];
 				char == char_prev
 			} else {
 				false
@@ -411,13 +411,13 @@ fn generate_batches_naive(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> 
 		}
 	}
 
-	for y in 0..frame.height {
+	for y in 0..frame.size().y {
 		let mut batch = None::<Batch>;
-		for x in 0..frame.width {
-			let i = y * frame.width + x;
-			let char = &frame.buffer[i];
+		for x in 0..frame.size().x {
+			let i = y * frame.size().x + x;
+			let char = &frame.buffer()[i];
 			if let Some(prev_frame) = prev_frame {
-				let char_prev = &prev_frame.buffer[i];
+				let char_prev = &prev_frame.buffer()[i];
 				if char == char_prev { continue; }
 			}
 

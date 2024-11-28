@@ -133,9 +133,9 @@ fn generate_color_tables(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> C
 			.or_insert_with(ColorBuckets::new)
 	}
 
-	for (i, pixel) in frame.buffer.iter().enumerate() {
+	for (i, pixel) in frame.buffer().iter().enumerate() {
 		if let Some(prev_frame) = prev_frame { //TODO: move out of this later? just take in a batch vector instead of frames
-			let prev_pixel = &prev_frame.buffer[i];
+			let prev_pixel = &prev_frame.buffer()[i];
 			if pixel == prev_pixel {
 				continue;
 			}
@@ -205,19 +205,19 @@ fn draw_bucket(renderer: &mut impl Renderer, bucket: &mut Bucket, frame: &TermFr
 		if pixel_index == usize::MAX { continue; }
 		
 		let pos = Point {
-			x: pixel_index % frame.width,
-			y: pixel_index / frame.width,
+			x: pixel_index % frame.size().y,
+			y: pixel_index / frame.size().x,
 		};
-		let mut pixel = frame.buffer[pixel_index].clone();
+		let mut pixel = frame.buffer()[pixel_index].clone();
 		if should_flip {
 			pixel = pixel.flip().unwrap();
 		}
 
-		let pixel_iter_end = pixel_index - pos.x + frame.width;
+		let pixel_iter_end = pixel_index - pos.x + frame.size().x;
 		let mut syms = pixel.sym.into_inner().to_string();
 		let mut pixel_iter = pixel_index + 1;
 		while pixel_iter < pixel_iter_end && bucket.index_lookup.contains_key(&pixel_iter) {
-			let mut sym = frame.buffer[pixel_iter].sym;
+			let mut sym = frame.buffer()[pixel_iter].sym;
 			if should_flip {
 				sym = sym.flip().unwrap();
 			}

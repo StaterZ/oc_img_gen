@@ -8,24 +8,25 @@
 #![allow(dead_code)]
 
 use std::{io::Write, path::{Path, PathBuf}};
-use braille::Braille;
 use clap::Parser;
-use cmd::szt;
+use cmd::szt::{self, SizedString, StreamDesc};
 use color_print::cprintln;
+use image::Image;
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
-use lodepng::{decode24, encode24, Bitmap};
 use math::Size;
 use stopwatch::Stopwatch;
 
-use oc_color::{formatters::*, PackedColor};
-use oc_color::{RGB8, PaletteOr};
+use oc_color::formatters::*;
+use oc_color::PaletteOr;
 use szu::flush_print;
 
 mod oc_color;
 mod braille;
 mod cmd;
 mod math;
+mod image;
+
+const LOG: bool = false;
 
 #[derive(Parser, Debug)]
 #[clap(author = "StaterZ")]
@@ -37,45 +38,16 @@ struct Args {
 	in_path: Option<PathBuf>,
 	#[arg(short = 'o', long = "out_path")]
 	out_path: Option<PathBuf>,
-	#[arg(short = 'm', long = "mode")]
-	mode: Mode,
-	#[arg(short = 'f', long = "format")]
-	format: Format,
+
+	#[arg(long = "max_size")]
+	max_size: Option<usize>,
 
 	#[arg(long = "f_begin")]
 	begin_frame: Option<usize>,
 	#[arg(long = "f_end")]
-	end_frame: Option<usize>,
-	#[arg(long = "f_step")]
-	frame_step: Option<usize>,
+	last_frame: Option<usize>,
 	#[arg(long = "f_rate")]
 	frame_rate: Option<u16>,
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum Mode {
-	Image,
-	Video,
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum Format {
-	Png,
-	Chr,
-	Lua,
-	Szt,
-}
-
-const LOG: bool = false;
-
-fn test(a: RGB8) {
-	let formatter = HybridFormatter::new();
-
-	println!("real {}", a);
-	let b = formatter.deflate(PaletteOr::NonPalette(a));
-	println!("deflate {}", b);
-	let c = formatter.inflate(b);
-	println!("inflate {}", c);
 }
 
 fn main() {
@@ -88,8 +60,10 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+	video_rs::init().unwrap();
+
 	let args = Args::parse();
-	
+
 	let in_path = if args.is_debug {
 		Path::new("data/test.png")
 	} else if let Some(in_path) = &args.in_path {
@@ -103,144 +77,87 @@ fn run() -> Result<(), String> {
 		if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
 			path.set_file_name(format!("out_{}", name));
 		}
-		path.set_extension(match args.format {
-			Format::Png => "png",
-			Format::Szt => "szt",
-			Format::Lua => "lua",
-			Format::Chr => "txt",
-		});
+		path.set_extension("szt");
 		path
 	});
 
-	match args.mode {
-		Mode::Image => compute(args.format, &in_path, &out_path),
-		Mode::Video => compute_video(
-			&in_path,
-			&out_path,
-			(args.begin_frame.unwrap_or(0)..args.end_frame.unwrap() + 1).step_by(args.frame_step.unwrap_or(1)),
-			args.frame_rate.unwrap(),
-		),
-	}
+	compute(
+		&in_path,
+		&out_path,
+		args.begin_frame,
+		args.last_frame,
+		args.frame_rate,
+	)
 }
 
-fn compute(format: Format, in_path: &Path, out_path: &Path) -> Result<(), String> {
-	let blob_in = stage("Preamble   | Reading...  ", || std::fs::read(in_path)
-		.map_err(|err| format!("Failed to read input file. INNER: {}", err)))?;
-
-	let img_in_raw = stage("Preamble   | Decoding... ", || decode24(blob_in)
-		.map_err(|err| format!("Failed to decode input image. INNER: {}", err)))?;
-	
-	let img_in = stage("Preamble   | Importing...", || import_image(&img_in_raw));
-	
-	if LOG {
-		println!("           |");
-	}
-	let formatter = HybridFormatter::new();
-	let proc_a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
-	let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
-	let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
-	
-	let blob_out = match format {
-		Format::Png => {
-			let img_out = stage("Processing | Raster ", || braille::raster(&proc_c));
-			if LOG {
-				println!("           |");
-			}
-
-			let img_out_raw = stage("Postamble  | Exporting...", || export_image(&img_out));
-			
-			stage("Postamble  | Encoding... ", || encode24(&img_out_raw.buffer, img_out_raw.width, img_out_raw.height)
-				.map_err(|err| format!("Failed to encode output image. INNER: {}", err)))?
-		},
-		Format::Chr => {
-			proc_c.buffer
-				.chunks_exact(proc_c.width)
-				.map(|row| row
-					.into_iter()
-					.map(|c| c.char())
-					.collect::<String>())
-				.join("\n")
-				.bytes()
-				.collect()
-		},
-		Format::Lua => {
-			let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-			if LOG {
-				println!("           |");
-			}
-
-			let char_buffer = map_bitmap(&img_out, |braille| braille.into());
-			stage("Postamble  | Cmd Gen", || cmd::code_gen(&char_buffer, None, &formatter)
-				.bytes()
-				.collect())
-		},
-		Format::Szt => {
-			let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-			if LOG {
-				println!("           |");
-			}
-
-			stage("Postamble  | Cmd Gen", || {
-				let size = Size::new(img_out.width as u8, img_out.height as u8);
-				let mut writer = szt::Writer::new(size, 0);
-				writer.push_frame_braille(img_out);
-				writer.serialize().unwrap()
-			})
-			
-			// stage("Postamble  | Encoding... ", || img_out.buffer
-			// 	.iter()
-			// 	.flat_map(|c| [c.bg.into(), c.fg.into(), c.char_index()])
-			// 	.collect_vec())
-		},
-	};
-
-	stage("Postamble  | Writing...  ", || std::fs::write(&out_path, blob_out)
-		.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
-
-	println!("All Done! saved to: {}", out_path.display());
-	Ok(())
-}
-
-fn compute_video(
+fn compute(
 	in_path: &Path,
 	out_path: &Path,
-	frame_iter: impl ExactSizeIterator<Item = usize>,
-	frame_rate: u16,
+	begin_frame: Option<usize>,
+	last_frame: Option<usize>,
+	out_frame_rate: Option<u16>,
 ) -> Result<(), String> {
-	let progress = ProgressBar::new(frame_iter.len() as u64)
+	let mut decoder = video_rs::Decoder::new(&video_rs::Location::File(in_path.to_path_buf()))
+		.expect("failed to create decoder");
+	
+	let in_frame_rate = (1.0 / decoder.frame_rate()).round() as u16;
+	let out_frame_rate = out_frame_rate.unwrap_or(in_frame_rate);
+	
+	let num_frames = std::cmp::max(decoder.frames().unwrap() as usize, 1);
+	let num_frames_to_process = last_frame.unwrap_or_else(|| (num_frames - 1) - begin_frame.unwrap_or(0)) + 1;
+	let progress = ProgressBar::new(num_frames_to_process as u64)
 		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
 			.unwrap()
 			.progress_chars("█▉▊▋▌▍▎▏ "));
+	
+	let mut writer = szt::FileWriter::new(out_frame_rate);
+	
+	let mut stream = szt::StreamWriter::new(StreamDesc {
+		name: SizedString::new("main").unwrap(),
+		size: {
+			let raw_size = decoder.size_out();
+			Size::new(raw_size.0 as u8, raw_size.1 as u8)
+		},
+	});
+	
+	if let Some(begin_frame) = begin_frame {
+		decoder.seek_to_frame(begin_frame as i64).unwrap();
+	}
 
-	let mut writer = szt::Writer::new(Size::new(0, 0), frame_rate);
-
-	for (i_e, i) in frame_iter.enumerate() {
-		let in_path = in_path.to_string_lossy().replace('*', &format!("{:04}", i));
-		let blob_in = std::fs::read(&in_path)
-			.map_err(|err| format!("Failed to read input file. INNER: {}", err))?;
-
-		let img_in = decode24(blob_in)
-			.map_err(|err| format!("Failed to decode input image. INNER: {}", err))?;
-		let img_in = import_image(&img_in);
-		
-		let formatter = HybridFormatter::new();
-		let proc_a = stage("Processing | Deflate", || deflate_image(&formatter, &img_in));
-		let proc_b =stage("Processing | Inflate", || inflate_image(&formatter, &proc_a));
-		let proc_c = stage("Processing | Braille", || braille::as_braille(&proc_b));
-		let img_out = stage("Processing | B_Deflate ", || deflate_braille(&formatter, &proc_c));
-		
-		let frame_size = Size::new(img_out.width as u8, img_out.height as u8);
-		if i_e == 0 {
-			writer.file.header.size = frame_size;
+	let mut time = 0;
+	for (i, frame) in decoder.decode_iter().enumerate() {
+		if let Some(last_frame) = last_frame {
+			if i + begin_frame.unwrap_or(0) > last_frame { break; }
 		}
-		assert_eq!(frame_size, writer.file.header.size);
+		
+		let frame = match frame {
+			Ok(frame) => frame.1,
+			Err(_) => break,
+		};
 
-		stage("Postamble  | Cmd Gen", || writer.push_frame_braille(img_out));
+		time += out_frame_rate;
+		if time >= in_frame_rate {
+			let img = Image::from(frame);
+			
+			let formatter = HybridFormatter::new();
+			let img = stage("Processing | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
+			let img = stage("Processing | Inflate", || img.map(|p| formatter.inflate(*p)));
+			let img = stage("Processing | Braille", || braille::as_braille(&img));
+			let img = stage("Processing | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
+			loop {
+				stage("Postamble  | Cmd Gen", || stream.push_frame_braille(&img));
 
-		progress.update(|s| s.set_pos(i_e as u64));
+				time -= in_frame_rate;
+				if !(time >= in_frame_rate && in_frame_rate != 0) { break; } //do-while cond
+			}
+		}
+		
+		progress.inc(1);
 	}
 
 	progress.finish();
+
+	writer.push_stream(stream);
 
 	stage("Postamble  | Writing...  ", || std::fs::write(&out_path, writer.serialize().unwrap())
 		.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
@@ -260,39 +177,4 @@ fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 		println!(" time: {}ms", timer.elapsed().as_millis());
 		output
 	}
-}
-
-fn map_bitmap<T, B>(value: &Bitmap<T>, f: impl FnMut(&T) -> B) -> Bitmap<B> {
-	let buffer = value.buffer
-		.iter()
-		.map(f)
-		.collect();
-
-	Bitmap {
-		buffer,
-		width: value.width,
-		height: value.height,
-	}
-}
-
-fn inflate_image(formatter: &impl Formatter, value: &Bitmap<PackedColor>) -> Bitmap<RGB8> {
-	map_bitmap(&value, |pixel| formatter.inflate(*pixel))
-}
-
-fn deflate_image(formatter: &impl Formatter, value: &Bitmap<RGB8>) -> Bitmap<PackedColor> {
-	map_bitmap(&value, |pixel| formatter.deflate(PaletteOr::NonPalette(*pixel)))
-}
-
-fn deflate_braille(formatter: &impl Formatter, value: &Bitmap<Braille<RGB8>>) -> Bitmap<Braille<PackedColor>> {
-	map_bitmap(&value, |braille| braille
-		.map(|color| formatter
-			.deflate(PaletteOr::NonPalette(*color))))
-}
-
-fn import_image(value: &Bitmap<lodepng::RGB<u8>>) -> Bitmap<RGB8> {
-	map_bitmap(&value, |pixel| RGB8 { r: pixel.r, g: pixel.g, b: pixel.b })
-}
-
-fn export_image(value: &Bitmap<RGB8>) -> Bitmap<lodepng::RGB<u8>> {
-	map_bitmap(&value, |pixel| lodepng::RGB { r: pixel.r, g: pixel.g, b: pixel.b })
 }

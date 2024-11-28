@@ -9,7 +9,7 @@ pub struct Point<T: DekuWriter> {
 }
 
 impl<T: DekuWriter + Copy> Point<T> {
-	pub fn new(x: T, y: T) -> Self {
+	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
 	
