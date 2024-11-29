@@ -53,37 +53,128 @@ local function inflate(v)
 	end
 end
 
-local function draw(gpu, file, pos_x, pos_y)
+local frame_header_size = 1 -- 1 from the command_kind
+local function draw_stream_frame(gpu, file, stream, frame_index)
+	local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
+
+	local command_kind = read_u8(file)
+
+	local get_value
+	if command_kind == 1 then --check 1 first since it's likely more common
+		get_value = function(len)
+			value = ""
+			for i = 1, len do
+				value = value .. unicode.char(0x2800 + read_u8(file))
+			end
+			return value
+		end
+	elseif command_kind == 0 then
+		get_value = function(len)
+			return file:read(len)
+		end
+	else
+		error("bad frame command_kind")
+	end
+
+	if ops.batch_check then
+		get_value = function(len)
+			file:read(len) --more efficient than seek
+			gpu.setBackground(math.random(0xffffff))
+			return (" "):rep(len)
+		end
+	end
+
+	local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
+	local i = 0
+	while i < commands_len do
+		local len = read_u8(file)
+		if len >= 0x80 then
+			len = len - 0x80
+
+			gpu.setBackground(inflate(read_u8(file)))
+			i = i + 1
+		end
+		if len >= 0x40 then
+			len = len - 0x40
+
+			gpu.setForeground(inflate(read_u8(file)))
+			i = i + 1
+		end
+
+		len = len + 1
+		local x = read_u8(file)
+		local y = read_u8(file)
+		gpu.set(x + pos_x, y + pos_y, get_value(len))
+		i = i + 3 + len
+	end
+end
+
+local function draw(gpu, file, surfaces)
 	do
 		local magic = file:read(4)
 		assertEq(magic, "sztb", "bad magic")
+		print("magic: OK")
 		local version = read_u16(file)
-		assertEq(version, 2, "bad version")
-	end
-
-	local back
-	do
-		local w = read_u8(file)
-		local h = read_u8(file)
-		gpu.setResolution(w, h)
-
-		if not ops.noback then
-			back = gpu.allocateBuffer(w, h)
-			gpu.setActiveBuffer(back)
-		end
+		assertEq(version, 3, "bad version")
+		print("version: OK")
 	end
 
 	local frame_rate = read_u16(file)
 	local num_frames = read_u32(file)
+	local num_streams = read_u8(file)
 
-	print("reading seek table...", num_frames)
-	local seek_table = {}
-	seek_table[0] = 0 --sneaky pls no crash fix
-	for i = 1, num_frames do
-		seek_table[i] = seek_table[i - 1] + read_u32(file)
+	print(("reading %i stream descriptors..."):format(num_streams))
+	local streams = {}
+	for stream_index = 1, num_streams do
+		local size_x = read_u8(file)
+		local size_y = read_u8(file)
+		local name = file:read(read_u8(file))
+
+		local surface = surfaces[name] or error(("missing surface for stream '%s'"):format(name))
+		surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
+		surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
+
+		local stream = {
+			size_x = size_x,
+			size_y = size_y,
+			name = name,
+			surface = surface,
+			frame_sizes = {},
+		}
+		if not ops.noback then
+			stream.back = gpu.allocateBuffer(stream.size_x, stream.size_y)
+		end
+		
+		if stream.surface.is_fullscreen then
+			gpu.bind(stream.surface.screen_addr)
+			gpu.setResolution(stream.size_x, stream.size_y)
+		end
+
+		print(("  %i: %s (%ix%i)"):format(
+			stream_index - 1,
+			stream.name,
+			stream.size_x,
+			stream.size_y
+		))
+
+		table.insert(streams, stream)
 	end
+
+	print(("reading seek table... (%iframes x %istreams)"):format(num_frames, num_streams))
+	local seek_table = {}
+	for stream_index, stream in ipairs(streams) do
+		for i = 1, num_frames do
+			local frame_size = read_u32(file)
+			stream.frame_sizes[i] = frame_size
+			seek_table[i] = (seek_table[i] or 0) + frame_size
+		end
+	end
+	for i = 2, #seek_table do
+		seek_table[i] = seek_table[i] + seek_table[i - 1]
+	end
+
 	local frames_begin_pos = file:seek()
-	print("done at", frames_begin_pos)
+	print(("header done at byte %i"):format(frames_begin_pos))
 
 	local begin_time = os.clock()
 	local frame_index = 0
@@ -98,44 +189,17 @@ local function draw(gpu, file, pos_x, pos_y)
 			file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
 		end
 
-		local commands_len = seek_table[frame_index + 1] - seek_table[frame_index]
-		local command_kind = read_u8(file)
-		local i = 1 -- 1 since we include the command_kind u8
-		while i < commands_len do
-			local len = read_u8(file)
-			i = i + 1
-
-			if len >= 0x80 then
-				len = len - 0x80
-
-				gpu.setBackground(inflate(read_u8(file)))
-				i = i + 1
-			end
-			if len >= 0x40 then
-				len = len - 0x40
-
-				gpu.setForeground(inflate(read_u8(file)))
-				i = i + 1
+		for _, stream in ipairs(streams) do
+			if not ops.noback then
+				gpu.setActiveBuffer(stream.back)
+			elseif gpu.getScreen() ~= stream.surface.screen_addr then
+				gpu.bind(stream.surface.screen_addr, false)
 			end
 
-			local x = read_u8(file)
-			local y = read_u8(file)
-			
-			len = len + 1
-			local value
-			-- if command_kind == 1 then
-				value = ""
-				for j = 1, len do
-					value = value .. unicode.char(0x2800 + read_u8(file))
-				end
-			-- else
-			-- 	value = file:read(len)
-			-- else
-			gpu.set(x + pos_x, y + pos_y, value)
-			i = i + 2 + len
+			draw_stream_frame(gpu, file, stream, frame_index)
 		end
 
-		if not ops.fast then
+		if not ops.fast and frame_rate ~= 0 then
 			repeat
 				local current_time = (os.clock() - begin_time)
 				local next_frame_index = math.ceil(current_time * frame_rate)
@@ -149,21 +213,30 @@ local function draw(gpu, file, pos_x, pos_y)
 			local elapsed = now - frame_begin_time
 			gpu.set(1, 1, ("%04i %04.1flag %03.ffps %05.fms %05ib"):format(
 				frame_index,
-				frame_index / frame_rate - (now - begin_time),
+				frame_rate == 0 and 0 or frame_index / frame_rate - (now - begin_time),
 				1 / elapsed,
 				elapsed * 1000,
-				commands_len
+				seek_table[frame_index + 1] - (seek_table[frame_index] or 0)
 			))
 		end
 
-		if back ~= nil then
-			gpu.bitblt()
+		if not ops.noback then
+			for _, stream in ipairs(streams) do
+				local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
+				if commands_len > 0 and not ops.diff then
+					if gpu.getScreen() ~= stream.surface.screen_addr then
+						gpu.bind(stream.surface.screen_addr, false)
+					end
+					gpu.setActiveBuffer(stream.back)
+					gpu.bitblt()
+				end
 
-			if ops.diff then
-				gpu.setBackground(0x000000)
-				gpu.setForeground(0xff0000)
-				local w, h = gpu.getResolution()
-				gpu.fill(1, 1, w, h, "*")
+				if ops.diff then
+					gpu.setBackground(0x000000)
+					gpu.setForeground(0xff0000)
+					local w, h = gpu.getResolution()
+					gpu.fill(1, 1, w, h, "*")
+				end
 			end
 		end
 
@@ -181,8 +254,10 @@ local function draw(gpu, file, pos_x, pos_y)
 	end
 	::done::
 
-	if back ~= nil then
-		gpu.freeBuffer(back)
+	if not ops.noback then
+		for _, stream in ipairs(streams) do
+			gpu.freeBuffer(stream.back)
+		end
 		gpu.setActiveBuffer(0)
 	end
 end
@@ -194,14 +269,29 @@ if not file then
 	error("Failed to open file: " .. reason)
 end
 
-local ok, reason = pcall(draw, comp.gpu, file, 1, 1)
+local surfaces = {
+	main = {
+		screen_addr = comp.screen.address,
+		is_fullscreen = true,
+	}
+}
+local ok, reason = xpcall(function() draw(comp.gpu, file, surfaces) end, function(err)
+	return ("%s | %s"):format(err, debug.traceback())
+end)
 file:close()
 
+if not ops.noback then
+	comp.gpu.setActiveBuffer(0)
+	comp.gpu.freeAllBuffers()
+end
 comp.gpu.setBackground(0xff0000)
 comp.gpu.setForeground(0xffffff)
 require("term").setCursor(1, 1)
 
 if not ok then
+	if not ops.noback then
+		comp.gpu.freeAllBuffers()
+	end
 	print("ERR:")
 	print(reason)
 	return

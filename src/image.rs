@@ -37,36 +37,53 @@ impl<T> Image<T> {
 	}
 }
 
-impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
-	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
-		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
+impl From<ffmpeg_next::frame::Video> for Image<RGB8> {
+	fn from(value: ffmpeg_next::frame::Video) -> Self {
+		let width = value.width() as usize;
+		let height = value.height() as usize;
+		
 		Self {
-			size: Size::new(value.width, value.height),
-			buffer: value.buffer
-				.into_iter()
-				.map(|p| RGB8 { r: p.r, g: p.g, b: p.b })
+			size: Size::new(width, height),
+			buffer: value.data(0)
+				.chunks_exact(value.stride(0))
+				.flat_map(|row| row[..width * 3]
+					.array_chunks::<3>()
+					.map(|p| RGB8 { r: p[0], g: p[1], b: p[2] }))
 				.collect(),
 		}
 	}
 }
 
-impl From<video_rs::Frame> for Image<RGB8> {
-	fn from(value: video_rs::Frame) -> Self {
-		let buffer = value.view()
-			.iter()
-			.copied()
-			.collect::<Vec<u8>>()
-			.chunks_exact(3)
-			.map(|chunk| RGB8 {
-				r: chunk[0],
-				g: chunk[1],
-				b: chunk[2],
-			})
-			.collect();
+// impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
+// 	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
+// 		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
+// 		Self {
+// 			size: Size::new(value.width, value.height),
+// 			buffer: value.buffer
+// 				.into_iter()
+// 				.map(|p| RGB8 { r: p.r, g: p.g, b: p.b })
+// 				.collect(),
+// 		}
+// 	}
+// }
+
+// impl From<video_rs::Frame> for Image<RGB8> {
+// 	fn from(value: video_rs::Frame) -> Self {
+// 		let buffer = value.view()
+// 			.iter()
+// 			.copied()
+// 			.collect::<Vec<u8>>()
+// 			.chunks_exact(3)
+// 			.map(|chunk| RGB8 {
+// 				r: chunk[0],
+// 				g: chunk[1],
+// 				b: chunk[2],
+// 			})
+// 			.collect();
 		
-		Self {
-			size: Size::new(value.dim().0, value.dim().1),
-			buffer,
-		}
-	}
-}
+// 		Self {
+// 			size: Size::new(value.dim().0, value.dim().1),
+// 			buffer,
+// 		}
+// 	}
+// }

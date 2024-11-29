@@ -12,6 +12,19 @@ impl<T> Size<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
+
+	pub fn cast<U: From<T>>(self) -> Size::<U> {
+		Size::<U> {
+			x: self.x.into(),
+			y: self.y.into(),
+		}
+	}
+	pub fn try_cast<U: TryFrom<T>>(self) -> Result<Size::<U>, U::Error> {
+		Ok(Size::<U> {
+			x: self.x.try_into()?,
+			y: self.y.try_into()?,
+		})
+	}
 }
 
 impl<T: Display> Display for Size<T> {

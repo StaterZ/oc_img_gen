@@ -6,7 +6,7 @@ use crate::{cmd::term_char::TermChar, math::Point, oc_color::PackedColor};
 
 use super::super::{TermFrame, Renderer, TermPixel};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Batch {
 	pub kind: BatchKind,
 	pub pos: Point<usize>,
@@ -74,8 +74,8 @@ impl BatchKind {
 }
 
 struct CondColors {
-	bg: bool,
-	fg: bool,
+	using_bg: bool,
+	using_fg: bool,
 }
 
 struct CondMatches {
@@ -249,14 +249,14 @@ pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<
 
 struct WorkBatch {
 	running: Batch,
-	last_vaild: Batch,
+	last_with_change: Batch,
 }
 
 impl WorkBatch {
 	fn new(batch: Batch) -> Self {
 		Self {
 			running: batch.clone(),
-			last_vaild: batch,
+			last_with_change: batch,
 		}
 	}
 }
@@ -313,19 +313,19 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 				// FG | PF_ | PF_ | *FI | P_I |
 
 				let cond_vars = CondVars {
-					char: CondColors { bg: char_batch_kind != BatchKind::FgOnly, fg: char_batch_kind != BatchKind::BgOnly },
-					batch: CondColors { bg: batch.kind != BatchKind::FgOnly, fg: batch.kind != BatchKind::BgOnly },
+					char: CondColors { using_bg: char_batch_kind != BatchKind::FgOnly, using_fg: char_batch_kind != BatchKind::BgOnly },
+					batch: CondColors { using_bg: batch.kind != BatchKind::FgOnly, using_fg: batch.kind != BatchKind::BgOnly },
 					matches: CondMatches {
 						perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
 						flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
-						insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //is both are sing colors, that leaves one color for each, so we can insert
+						insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //if both are single colors, that leaves one color for each, so we can insert
 					},
 				};
 
-				let bg_bg = (cond_vars.char.bg && cond_vars.batch.bg) && char.bg == batch.bg;
-				let bg_fg = (cond_vars.char.bg && cond_vars.batch.fg) && char.bg == batch.fg;
-				let fg_bg = (cond_vars.char.fg && cond_vars.batch.bg) && char.fg == batch.bg;
-				let fg_fg = (cond_vars.char.fg && cond_vars.batch.fg) && char.fg == batch.fg;
+				let bg_bg = (!cond_vars.char.using_bg || !cond_vars.batch.using_bg) || char.bg == batch.bg;
+				let bg_fg = (!cond_vars.char.using_bg || !cond_vars.batch.using_fg) || char.bg == batch.fg;
+				let fg_bg = (!cond_vars.char.using_fg || !cond_vars.batch.using_bg) || char.fg == batch.bg;
+				let fg_fg = (!cond_vars.char.using_fg || !cond_vars.batch.using_fg) || char.fg == batch.fg;
 
 				let perfect = cond_vars.matches.perfect && bg_bg && fg_fg;
 				let flipped = cond_vars.matches.flipped && bg_fg && fg_bg;
@@ -335,7 +335,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 				if can_append {
 					batch.kind = if char_batch_kind == BatchKind::Unique || batch.kind == BatchKind::Unique {
 						BatchKind::Unique
-					} else if cond_vars.matches.insert && !insert {
+					} else if cond_vars.matches.insert && (perfect || flipped) {
 						batch.kind
 					} else {
 						BatchKind::Flippable
@@ -362,14 +362,14 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 					batch.chars.push(sym.into());
 
 					if !is_same_as_prev_frame {
-						work_batch.last_vaild = work_batch.running.clone();
+						work_batch.last_with_change = work_batch.running.clone();
 					}
 					continue;
 				}
 			}
 			
-			if let Some(work_batch_some) = work_batch.take() {
-				output.push(work_batch_some.last_vaild);
+			if let Some(work_batch) = work_batch.take() {
+				output.push(work_batch.last_with_change);
 			}
 			if !is_same_as_prev_frame {
 				work_batch = Some(WorkBatch::new(Batch {
@@ -382,7 +382,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 			}
 		}
 		if let Some(work_batch) = work_batch {
-			output.push(work_batch.last_vaild);
+			output.push(work_batch.last_with_change);
 		}
 	}
 
@@ -439,8 +439,8 @@ fn generate_batches_naive(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> 
 				// FG | PF_ | PF_ | *FI | P_I |
 
 				let cond_vars = CondVars {
-					char: CondColors { bg: char_batch_kind != BatchKind::FgOnly, fg: char_batch_kind != BatchKind::BgOnly },
-					batch: CondColors { bg: batch.kind != BatchKind::FgOnly, fg: batch.kind != BatchKind::BgOnly },
+					char: CondColors { using_bg: char_batch_kind != BatchKind::FgOnly, using_fg: char_batch_kind != BatchKind::BgOnly },
+					batch: CondColors { using_bg: batch.kind != BatchKind::FgOnly, using_fg: batch.kind != BatchKind::BgOnly },
 					matches: CondMatches {
 						perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
 						flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
@@ -448,10 +448,10 @@ fn generate_batches_naive(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> 
 					},
 				};
 
-				let bg_bg = (cond_vars.char.bg && cond_vars.batch.bg) && char.bg == batch.bg;
-				let bg_fg = (cond_vars.char.bg && cond_vars.batch.fg) && char.bg == batch.fg;
-				let fg_bg = (cond_vars.char.fg && cond_vars.batch.bg) && char.fg == batch.bg;
-				let fg_fg = (cond_vars.char.fg && cond_vars.batch.fg) && char.fg == batch.fg;
+				let bg_bg = (cond_vars.char.using_bg && cond_vars.batch.using_bg) && char.bg == batch.bg;
+				let bg_fg = (cond_vars.char.using_bg && cond_vars.batch.using_fg) && char.bg == batch.fg;
+				let fg_bg = (cond_vars.char.using_fg && cond_vars.batch.using_bg) && char.fg == batch.bg;
+				let fg_fg = (cond_vars.char.using_fg && cond_vars.batch.using_fg) && char.fg == batch.fg;
 
 				let perfect = cond_vars.matches.perfect && bg_bg && fg_fg;
 				let flipped = cond_vars.matches.flipped && bg_fg && fg_bg;

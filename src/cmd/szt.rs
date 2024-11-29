@@ -165,6 +165,7 @@ impl FileWriter {
 	pub fn push_stream(&mut self, stream: StreamWriter) {
 		if self.file.frames.is_empty() {
 			self.file.frames.resize_with(stream.frame_sizes.len(), || Vec::new());
+			self.file.header.num_frames = self.file.frames.len() as u32;
 		} else {
 			debug_assert_eq!(self.file.frames.len(), stream.frames.len());
 		}
