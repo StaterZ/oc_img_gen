@@ -1,4 +1,7 @@
-use crate::{math::Size, oc_color::RGB8};
+use itertools::Itertools;
+use more_asserts::*;
+
+use crate::{math::{Rect, Size}, oc_color::RGB8};
 
 #[derive(Clone)]
 pub struct Image<T> {
@@ -8,6 +11,7 @@ pub struct Image<T> {
 
 impl<T> Image<T> {
 	pub fn new(size: Size<usize>, buffer: Vec<T>) -> Self {
+ 		debug_assert_eq!(size.x * size.y, buffer.len());
 		Self {
 			size,
 			buffer,
@@ -32,6 +36,44 @@ impl<T> Image<T> {
 
 		Image {
 			size: self.size,
+			buffer,
+		}
+	}
+}
+
+impl<T: Copy> Image<T> {
+	pub fn crop(&self, rect: Rect<usize>) -> Self {
+		debug_assert_le!(rect.pos.x + rect.size.x, self.size.x);
+		debug_assert_le!(rect.pos.y + rect.size.y, self.size.y);
+
+		let buffer = self.buffer
+			.chunks_exact(self.size.x)
+			.skip(rect.pos.y)
+			.take(rect.size.y)
+			.flat_map(|row| &row[rect.pos.x..rect.pos.x+rect.size.x])
+			.copied()
+			.collect_vec();
+
+		debug_assert_eq!(buffer.len(), rect.size.area());
+
+		Self {
+			size: rect.size,
+			buffer,
+		}
+	}
+
+	pub fn resize(&self, size: Size<usize>, fill: T) -> Self {
+		let mut buffer = vec![fill; size.area()];
+		for y in 0..self.size.y.min(size.y) {
+			for x in 0..self.size.x.min(size.x) {
+				let old_index = y * self.size.x + x;
+				let new_index = y * size.x + x;
+				buffer[new_index] = self.buffer[old_index];
+			}
+		}
+
+		Self {
+			size,
 			buffer,
 		}
 	}

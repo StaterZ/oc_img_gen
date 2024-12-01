@@ -93,7 +93,9 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 				}
 				if let Some(rem) = iter.into_remainder() {
 					let rem = rem.as_slice();
-					encode_chunk(rem, rem.len());
+					if !rem.is_empty() {
+						encode_chunk(rem, rem.len());
+					}
 				}
 			},
 		}

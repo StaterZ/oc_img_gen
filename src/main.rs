@@ -13,11 +13,12 @@ use clap::Parser;
 use cmd::szt::{self, SizedString, StreamDesc};
 use color_print::cprintln;
 use image::Image;
-use indicatif::{ProgressBar, ProgressStyle};
-use math::Size;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use itertools::Itertools;
+use math::{Point, Rect, Size};
 use stopwatch::Stopwatch;
 
-use oc_color::formatters::*;
+use oc_color::{formatters::*, RGB8};
 use oc_color::PaletteOr;
 use szu::flush_print;
 
@@ -49,6 +50,11 @@ struct Args {
 	last_frame: Option<usize>,
 	#[arg(long = "f_rate")]
 	frame_rate: Option<u16>,
+}
+
+struct MatrixCell {
+	pos: Point<usize>,
+	stream_writer: szt::StreamWriter,
 }
 
 fn main() {
@@ -115,38 +121,64 @@ fn compute(
 	let out_frame_rate = out_frame_rate.unwrap_or(in_frame_rate);
 	
 	//setup progress bar
+	let multi_progress = MultiProgress::new();
+
 	let num_frames = std::cmp::max(input_stream.frames() as usize, 1);
 	let num_frames_to_process = last_frame.unwrap_or(num_frames - 1) + 1 - begin_frame.unwrap_or(0);
-	let progress = ProgressBar::new(num_frames_to_process as u64)
-		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
+	let frames_progress = multi_progress.add(ProgressBar::new(num_frames_to_process as u64)
+		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len} {eta}")
 			.unwrap()
-			.progress_chars("█▉▊▋▌▍▎▏ "));
-	
-	let size = Size::<usize>::new(240, 240);
+			.progress_chars("█▉▊▋▌▍▎▏ ")));
+	if !LOG {
+		frames_progress.tick();
+	}
 
 	//setup down-scaler
+	let matrix_size = Size::<usize>::new(2, 2);
+	let matrix_gap_size = Size::<usize>::new(16, 16);
+	let stream_size= Size::<usize>::new(120, 60);
+	let fill_color = RGB8::new(0x000000);
+
+	let stream_input_size = stream_size * braille::SIZE;
+	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
+	let content_size = Size::<usize>::new(decoder.width() as usize, decoder.height() as usize);
+	let fit_size = container_size.contain(content_size);
+
 	let mut scaler = ffmpeg_next::software::scaling::Context::get(
 		decoder.format(),
-		decoder.width(),
-		decoder.height(),
+		content_size.x as u32,
+		content_size.y as u32,
 		ffmpeg_next::util::format::Pixel::RGB24,
-		size.x as u32,
-		size.y as u32,
+		fit_size.x as u32,
+		fit_size.y as u32,
 		ffmpeg_next::software::scaling::Flags::BILINEAR,
 	).unwrap();
 
-	//setup SZT writer
-	let mut writer = szt::FileWriter::new(out_frame_rate);
-	
-	let mut stream = szt::StreamWriter::new(StreamDesc {
-		name: SizedString::new("main").unwrap(),
-		size: (size / Size::new(braille::WIDTH, braille::HEIGHT)).try_cast().unwrap(),
-	});
+	//setup SZT stream writers
+	let mut cell_streams = if false {
+		vec![MatrixCell {
+			pos: Point::new(0, 0), //TODO: this is dumb
+			stream_writer: szt::StreamWriter::new(StreamDesc {
+				name: SizedString::new("main").unwrap(),
+				size: (fit_size / braille::SIZE).try_cast().unwrap(),
+			}),
+		}]
+	} else {
+		(0..matrix_size.y)
+			.flat_map(move |y| (0..matrix_size.x)
+				.map(move |x| MatrixCell {
+					pos: Point::new(x, y),
+					stream_writer: szt::StreamWriter::new(StreamDesc {
+						name: SizedString::new(&format!("{},{}", x, y)).unwrap(),
+						size: stream_size.try_cast().expect("stream size too large"),
+					}),
+				}))
+			.collect()
+	};
 	
 	//loop frames
 	let mut frame_index = 0;
 	let mut time = 0;
-
 	let mut receive_and_process_frames = |decoder: &mut ffmpeg_next::decoder::Video| {
 		let mut decoded_frame = ffmpeg_next::frame::Video::empty();
 		while decoder.receive_frame(&mut decoded_frame).is_ok() {
@@ -164,40 +196,61 @@ fn compute(
 			}
 			
 			time += out_frame_rate;
-			if time >= in_frame_rate {	
-				let mut rgb_frame = ffmpeg_next::frame::Video::empty();
-				scaler.run(&decoded_frame, &mut rgb_frame).unwrap();
+			if time >= in_frame_rate {
+				let emit_count = if in_frame_rate == 0 { 1 } else { 
+					let emit_count = time / in_frame_rate;
+					time %= in_frame_rate;
+					emit_count
+				};
 				
-				let img = Image::from(rgb_frame);
+				let frame = stage("Frame  | Preamble  | Scale", || {
+					let mut frame = ffmpeg_next::frame::Video::empty();
+					scaler.run(&decoded_frame, &mut frame).unwrap();
+					frame
+				});
 				
-				//Debug
-				// if frame_index == 0 {
-				// 	std::fs::write("data/geh.png", lodepng::encode24(
-				// 		&img
-				// 			.buffer()
-				// 			.iter()
-				// 			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
-				// 			.collect_vec(),
-				// 		img.size().x,
-				// 		img.size().y,
-				// 	).unwrap()).unwrap();
-				// }
+				let img = stage("Frame  | Preamble  | Into Image", || Image::from(frame));
+				let img = stage("Frame  | Preamble  | Resize", || img.resize(container_size, fill_color));
 				
-				let formatter = HybridFormatter::new();
-				let img = stage("Processing | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
-				let img = stage("Processing | Inflate", || img.map(|p| formatter.inflate(*p)));
-				let img = stage("Processing | Braille", || braille::as_braille(&img));
-				let img = stage("Processing | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
-				loop {
-					stage("Postamble  | Cmd Gen", || stream.push_frame_braille(&img));
-
-					time -= in_frame_rate;
-					if !(time >= in_frame_rate && in_frame_rate != 0) { break; } //do-while cond
+				let frame_progress = multi_progress.add(ProgressBar::new(cell_streams.len() as u64)
+					.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
+						.unwrap()
+						.progress_chars("█▉▊▋▌▍▎▏ ")));
+				if !LOG {
+					frame_progress.tick();
 				}
-			}
+				
+				for cell in cell_streams.iter_mut() {
+					if LOG {
+						println!();
+					}
 
+					let img = stage("Stream | Preamble  | Crop", || img.crop(Rect {
+						pos: cell.pos * (stream_input_size + matrix_gap_size),
+						size: stream_input_size,
+					}));
+
+					write_image(&format!("geh/{}.png", cell.pos), &img);
+
+					let formatter = HybridFormatter::new();
+					let img = stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
+					let img = stage("Stream | Process   | Inflate", || img.map(|p| formatter.inflate(*p)));
+					let img = stage("Stream | Process   | Braille", || braille::as_braille(&img));
+					let img = stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
+					for _ in 0..emit_count {
+						stage("Stream | Postamble | Cmd Gen", || cell.stream_writer.push_frame_braille(&img));
+					}
+
+					if !LOG {
+						frame_progress.inc(1);
+					}
+				}
+				frame_progress.finish_and_clear();
+			}
 			frame_index += 1;
-			progress.inc(1);
+			if !LOG {
+				frames_progress.inc(1);
+			}
 		}
 
 		return true;
@@ -213,10 +266,16 @@ fn compute(
 	decoder.send_eof().unwrap();
 	receive_and_process_frames(&mut decoder);
 
-	progress.finish();
+	frames_progress.finish();
+	
+	let mut writer = szt::FileWriter::new(out_frame_rate);
+	for cell in cell_streams {
+		writer.push_stream(cell.stream_writer);
+	}
 
-	writer.push_stream(stream);
-
+	if LOG {
+		println!();
+	}
 	stage("Postamble  | Writing...  ", || std::fs::write(&out_path, writer.serialize().unwrap())
 		.map_err(|err| format!("Failed to write output file. INNER: {}", err)))?;
 
@@ -235,4 +294,16 @@ fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 		println!(" time: {}ms", timer.elapsed().as_millis());
 		output
 	}
+}
+
+fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {
+	std::fs::write(path, lodepng::encode24(
+		&img
+			.buffer()
+			.iter()
+			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
+			.collect_vec(),
+		img.size().x,
+		img.size().y,
+	).unwrap()).unwrap();
 }

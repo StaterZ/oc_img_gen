@@ -24,8 +24,8 @@ szu = { version = "0.2.2", path = "../szu" }
 [profile.dev.package."*"]
 opt-level = 3
 
-# [profile.dev]
-# opt-level = 3
+[profile.dev]
+opt-level = 3
 
 # [profile.release]
 # debug = true

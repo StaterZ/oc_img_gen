@@ -7,6 +7,7 @@ use crate::{image::Image, math::Size, oc_color::{RGB, RGB8}};
 
 pub const WIDTH: usize = 2;
 pub const HEIGHT: usize = 4;
+pub const SIZE: Size<usize> = Size::new(WIDTH, HEIGHT);
 pub const BITS: usize = WIDTH * HEIGHT;
 
 pub struct Braille<T> {
@@ -123,7 +124,7 @@ pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
 		.collect();
 
 	Image::new(
-		*input.size() / Size::new(WIDTH, HEIGHT),
+		*input.size() / SIZE,
 		buffer,
 	)
 }
@@ -143,7 +144,7 @@ pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
 		.collect();
 
 	Image::new(
-		*input.size() * Size::new(WIDTH, HEIGHT),
+		*input.size() * SIZE,
 		buffer,
 	)
 }

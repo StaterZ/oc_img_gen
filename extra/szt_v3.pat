@@ -4,6 +4,7 @@ import std.array;
 import std.string;
 
 #pragma endian big
+#pragma pattern_limit 1000000
 
 struct Point {
 	u8 x;
@@ -71,7 +72,7 @@ struct Header {
 	std::assert(version == 3, "bad version");
 };
 
-struct Frame<auto commands_len> {
+struct StreamFrame<auto commands_len> {
 	CommandKind command_kind;
 	match (command_kind) {
 		(CommandKind::Text): std::ByteSizedArray<Command<CommandKind::Text>, commands_len - sizeof(command_kind)> commands;
@@ -79,13 +80,21 @@ struct Frame<auto commands_len> {
 	}
 };
 
+struct Array2D<T, auto N_INNER, auto N_OUTER> {
+	std::Array<std::Array<T, N_INNER> , N_OUTER> data;
+};
+
+struct Frame<auto frame_sizes> {
+	StreamFrame<frame_sizes.data[std::core::array_index()]> data[parent.header.num_streams];
+};
+
 struct File {
 	Header header;
-	std::Array<StreamDesc, header.num_streams> stream_descs;
-	std::Array<std::Array<u32, header.num_frames>, header.num_streams> frame_sizes;
+	StreamDesc stream_descs[header.num_streams];
+	Array2D<u32, header.num_streams, header.num_frames> frame_sizes;
 	u64 start = $;
 	std::print("start: {}", start);
-	std::Array<std::Array<Frame<frame_sizes.data[std::core::array_index()]>, header.num_streams>, header.num_frames> frames;
+	Frame<frame_sizes.data.data[std::core::array_index()]> frames[header.num_frames];
 };
 
 File file @ 0x00;

@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use more_asserts::debug_assert_lt;
+use more_asserts::*;
 
 use super::RGB8;
 

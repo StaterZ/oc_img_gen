@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::mem::MaybeUninit;
 
 use lazy_static::lazy_static;
-use more_asserts::debug_assert_lt;
+use more_asserts::*;
 use szu::math::int_div_round;
 
 use super::super::{RGB8, PackedColor};
