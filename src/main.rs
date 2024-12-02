@@ -134,7 +134,7 @@ fn compute(
 	}
 
 	//setup down-scaler
-	let matrix_size = Size::<usize>::new(2, 2);
+	let matrix_size = Size::<usize>::new(4, 4);
 	let matrix_gap_size = Size::<usize>::new(16, 16);
 	let stream_size= Size::<usize>::new(120, 60);
 	let fill_color = RGB8::new(0x000000);
@@ -230,7 +230,7 @@ fn compute(
 						size: stream_input_size,
 					}));
 
-					write_image(&format!("geh/{}.png", cell.pos), &img);
+					//write_image(&format!("geh/{}.png", cell.pos), &img);
 
 					let formatter = HybridFormatter::new();
 					let img = stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));

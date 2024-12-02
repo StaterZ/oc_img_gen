@@ -124,11 +124,11 @@ local function read_header(file)
 		local size_y = read_u8(file)
 		local name = file:read(read_u8(file))
 
-		streams[name] = {
+		table.insert(streams, {
 			name = name,
 			size_x = size_x,
 			size_y = size_y,
-		}
+		})
 	end
 
 	return {
@@ -154,31 +154,27 @@ local function draw(gpu, file, surfaces)
 
 	print(("reading %i stream descriptors:"):format(num_streams))
 
-	do
-		local i = 0
-		for name, stream in pairs(header.streams) do
-			print(("%4i: '%s' %ix%i"):format(
-				i,
-				name,
-				stream.size_x,
-				stream.size_y
-			))
-			i = i + 1
-		end
+	for i, stream in ipairs(header.streams) do
+		print(("%4i: '%s' %ix%i"):format(
+			i,
+			stream.name,
+			stream.size_x,
+			stream.size_y
+		))
 	end
 
 	local main_screen = gpu.getScreen()
 	local max_size_x, max_size_y = 0, 0
 	local streams = {}
-	for name, stream_desc in pairs(header.streams) do
-		local surface = surfaces[name] or error(("missing surface for stream '%s'"):format(name))
+	for i, stream_desc in ipairs(header.streams) do
+		local surface = surfaces[stream_desc.name] or error(("missing surface for stream '%s'"):format(stream_desc.name))
 		surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
 		surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
 
 		local stream = {
 			size_x = stream_desc.size_x,
 			size_y = stream_desc.size_y,
-			name = name,
+			name = stream_desc.name,
 			surface = surface,
 			frame_sizes = {},
 		}
