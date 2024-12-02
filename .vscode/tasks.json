@@ -7,7 +7,9 @@
 			"args": [
 				"run",
 				"--",
-				"--debug",
+				"-i=data/test.png",
+				"--mode=single",
+				"--stream_size=120x60",
 			],
 			"problemMatcher": [
 				"$rustc"

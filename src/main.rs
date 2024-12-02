@@ -16,6 +16,7 @@ use image::Image;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use math::{Point, Rect, Size};
+use num_traits::ConstZero;
 use stopwatch::Stopwatch;
 
 use oc_color::{formatters::*, RGB8};
@@ -30,31 +31,87 @@ mod image;
 
 const LOG: bool = false;
 
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+enum StreamMode {
+	Single,
+	Matrix,
+	Custom,
+}
+
 #[derive(Parser, Debug)]
 #[clap(author = "StaterZ")]
 struct Args {
-	#[arg(short = 'd', long = "debug", action = clap::ArgAction::SetTrue)]
-	is_debug: bool,
+	#[arg(
+		short = 'i',
+		long = "in_path",
+		help = "Path to image or video to encode",
+	)]
+	in_path: PathBuf,
 
-	#[arg(short = 'i', long = "in_path")]
-	in_path: Option<PathBuf>,
-	#[arg(short = 'o', long = "out_path")]
+	#[arg(
+		short = 'o',
+		long = "out_path",
+		help = "Path to where to the output SZT file, saves at in_path with .szt extension if omitted",
+	)]
 	out_path: Option<PathBuf>,
 
-	#[arg(long = "max_size")]
-	max_size: Option<usize>,
 
-	#[arg(long = "f_begin")]
+	#[arg(
+		long = "frame_begin",
+		help = "What frame to start from, starts at input start if omitted",
+	)]
 	begin_frame: Option<usize>,
-	#[arg(long = "f_end")]
-	last_frame: Option<usize>,
-	#[arg(long = "f_rate")]
-	frame_rate: Option<u16>,
-}
 
-struct MatrixCell {
-	pos: Point<usize>,
-	stream_writer: szt::StreamWriter,
+	#[arg(
+		long = "frame_end",
+		help = "What frame to stop from (inclusive), stops at input end if omitted",
+	)]
+	last_frame: Option<usize>,
+
+	#[arg(
+		long = "frame_rate",
+		help = "The output framerate, copies input framerate if omitted",
+	)]
+	frame_rate: Option<u16>,
+	
+
+	#[arg(
+		value_enum,
+		long = "mode",
+		help = "How to arrange and produce the streams",
+	)]
+	mode: StreamMode,
+
+
+	#[arg(
+		long = "stream_size",
+		requires_if("Single", "mode"),
+		requires_if("Matrix", "mode"),
+		help = "The size of the streams",
+	)]
+	stream_size: Option<Size<usize>>,
+	
+	#[arg(
+		long = "matrix_size",
+		requires_if("Matrix", "mode"),
+		help = "How many grid cells (streams) to create",
+	)]
+	matrix_size: Option<Size<usize>>,
+
+	#[arg(
+		long = "matrix_gap_size",
+		requires_if("Matrix", "mode"),
+		help = "pixels to skip between matrix cells, sets to 0 to omitted",
+	)]
+	matrix_gap_size: Option<Size<usize>>,
+	
+	#[arg(
+		long = "streams_config",
+		requires_if("Custom", "mode"),
+		help = "path to json streams config file",
+	)]
+	streams_config: Option<PathBuf>,
 }
 
 fn main() {
@@ -66,35 +123,161 @@ fn main() {
 	}
 }
 
+fn validate_args(args: &Args) {
+	let mut is_bad = false;
+
+	match args.mode {
+		StreamMode::Single => {
+			if args.stream_size.is_none() {
+				eprintln!("--stream_size is required when --mode is 'Single' or 'Matrix'");
+				is_bad = true;
+			}
+			if args.matrix_size.is_some() {
+				eprintln!("--matrix_size is only valid when --mode is 'Matrix'");
+				is_bad = true;
+			}
+			if args.streams_config.is_some() {
+				eprintln!("--streams_config is only valid when --mode is 'Custom'");
+				is_bad = true;
+			}
+		}
+		StreamMode::Matrix => {
+			if args.stream_size.is_none() {
+				eprintln!("--stream_size is required when --mode is 'Single' or 'Matrix'");
+				is_bad = true;
+			}
+			if args.matrix_size.is_none() {
+				eprintln!("--matrix_size is required when --mode is 'Matrix'");
+				is_bad = true;
+			}
+			if args.streams_config.is_some() {
+				eprintln!("--streams_config is only valid when --mode is 'Custom'");
+				is_bad = true;
+			}
+		}
+		StreamMode::Custom => {
+			if args.stream_size.is_some() {
+				eprintln!("--stream_size is only valid when --mode is 'Single' or 'Matrix'");
+				is_bad = true;
+			}
+			if args.matrix_size.is_some() {
+				eprintln!("--matrix_size is only valid when --mode is 'Matrix'");
+				is_bad = true;
+			}
+			if args.streams_config.is_none() {
+				eprintln!("--streams_config is required when --mode is 'Custom'");
+				is_bad = true;
+			}
+		}
+	}
+
+	if is_bad {
+		std::process::exit(1);
+	}
+}
+
 fn run() -> Result<(), String> {
 	ffmpeg_next::init().unwrap();
 
 	let args = Args::parse();
-
-	let in_path = if args.is_debug {
-		Path::new("data/test.png")
-	} else if let Some(in_path) = &args.in_path {
-		in_path.as_path()
-	} else {
-		return Err("No input path".to_string());
-	};
+	validate_args(&args);
 
 	let out_path = args.out_path.unwrap_or({
-		let mut path= in_path.to_owned();
-		if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-			path.set_file_name(format!("out_{}", name));
-		}
+		let mut path= args.in_path.to_owned();
 		path.set_extension("szt");
 		path
 	});
 
+	let streams_config = match args.mode {
+		StreamMode::Single => create_main_stream(
+			args.stream_size
+				.expect("missing argument 'stream_size'")
+				.try_cast()
+				.expect("stream size too large")
+		),
+		StreamMode::Matrix => create_matrix_streams(
+			args.stream_size
+				.expect("missing argument 'stream_size'")
+				.try_cast()
+				.expect("stream size too large"),
+			args.matrix_size.unwrap(),
+			args.matrix_gap_size.unwrap_or(Size::ZERO)
+		)?,
+		StreamMode::Custom => create_streams_custom(
+			&args.streams_config.expect("missing argument 'streams_config'"))?,
+	};
+
 	compute(
-		&in_path,
+		&args.in_path,
 		&out_path,
 		args.begin_frame,
 		args.last_frame,
 		args.frame_rate,
+		streams_config,
+		RGB8::new(0x000000),
 	)
+}
+
+struct StreamDescData {
+	desc: StreamDesc,
+	source: Option<Rect<usize>>,
+}
+
+struct StreamWriterData {
+	writer: szt::StreamWriter,
+	source: Option<Rect<usize>>,
+}
+
+struct StreamsConfig {
+	stream_descs_data: Vec<StreamDescData>,
+	container_size: Size<usize>,
+}
+
+fn create_main_stream(stream_size: Size<u8>) -> StreamsConfig {
+	let stream_descs_data = vec![StreamDescData {
+		desc: StreamDesc {
+			name: SizedString::new("main").expect("stream name too long"),
+			size: stream_size,
+		},
+		source: None,
+	}];
+
+	StreamsConfig {
+		stream_descs_data,
+		container_size: stream_size.cast() * braille::SIZE,
+	}
+}
+
+fn create_matrix_streams(
+	stream_size: Size<u8>,
+	matrix_size: Size<usize>,
+	matrix_gap_size: Size<usize>,
+) -> Result<StreamsConfig, String> {
+	let stream_input_size = stream_size.cast() * braille::SIZE;
+	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
+
+	let stream_descs_data = (0..matrix_size.y)
+		.flat_map(move |y| (0..matrix_size.x)
+			.map(move |x| StreamDescData {
+				desc: StreamDesc {
+					name: SizedString::new(&format!("{},{}", x, y)).expect("stream name too long"),
+					size: stream_size,
+				},
+				source: Some(Rect {
+					pos: Point::new(x, y) * (stream_input_size + matrix_gap_size),
+					size: stream_input_size,
+				})
+			}))
+		.collect();
+
+	Ok(StreamsConfig {
+		stream_descs_data,
+		container_size,
+	})
+}
+
+fn create_streams_custom(_config_path: &Path) -> Result<StreamsConfig, String> {
+	Err("TODO: Not implemented".to_string())
 }
 
 fn compute(
@@ -103,6 +286,8 @@ fn compute(
 	begin_frame: Option<usize>,
 	last_frame: Option<usize>,
 	out_frame_rate: Option<u16>,
+	streams_config: StreamsConfig,
+	fill_color: RGB8,
 ) -> Result<(), String> {
 	//ffmpeg madness
 	let mut input_format_context = ffmpeg_next::format::input(in_path)
@@ -134,15 +319,8 @@ fn compute(
 	}
 
 	//setup down-scaler
-	let matrix_size = Size::<usize>::new(4, 4);
-	let matrix_gap_size = Size::<usize>::new(16, 16);
-	let stream_size= Size::<usize>::new(120, 60);
-	let fill_color = RGB8::new(0x000000);
-
-	let stream_input_size = stream_size * braille::SIZE;
-	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 	let content_size = Size::<usize>::new(decoder.width() as usize, decoder.height() as usize);
-	let fit_size = container_size.contain(content_size);
+	let fit_size = streams_config.container_size.contain(content_size);
 
 	let mut scaler = ffmpeg_next::software::scaling::Context::get(
 		decoder.format(),
@@ -155,26 +333,13 @@ fn compute(
 	).unwrap();
 
 	//setup SZT stream writers
-	let mut cell_streams = if false {
-		vec![MatrixCell {
-			pos: Point::new(0, 0), //TODO: this is dumb
-			stream_writer: szt::StreamWriter::new(StreamDesc {
-				name: SizedString::new("main").unwrap(),
-				size: (fit_size / braille::SIZE).try_cast().unwrap(),
-			}),
-		}]
-	} else {
-		(0..matrix_size.y)
-			.flat_map(move |y| (0..matrix_size.x)
-				.map(move |x| MatrixCell {
-					pos: Point::new(x, y),
-					stream_writer: szt::StreamWriter::new(StreamDesc {
-						name: SizedString::new(&format!("{},{}", x, y)).unwrap(),
-						size: stream_size.try_cast().expect("stream size too large"),
-					}),
-				}))
-			.collect()
-	};
+	let mut streams = streams_config.stream_descs_data
+		.into_iter()
+		.map(|stream| StreamWriterData {
+			writer: szt::StreamWriter::new(stream.desc),
+			source: stream.source,
+		})
+		.collect_vec();
 	
 	//loop frames
 	let mut frame_index = 0;
@@ -210,9 +375,9 @@ fn compute(
 				});
 				
 				let img = stage("Frame  | Preamble  | Into Image", || Image::from(frame));
-				let img = stage("Frame  | Preamble  | Resize", || img.resize(container_size, fill_color));
+				let img = stage("Frame  | Preamble  | Resize", || img.resize(streams_config.container_size, fill_color));
 				
-				let frame_progress = multi_progress.add(ProgressBar::new(cell_streams.len() as u64)
+				let frame_progress = multi_progress.add(ProgressBar::new(streams.len() as u64)
 					.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len}")
 						.unwrap()
 						.progress_chars("█▉▊▋▌▍▎▏ ")));
@@ -220,17 +385,15 @@ fn compute(
 					frame_progress.tick();
 				}
 				
-				for cell in cell_streams.iter_mut() {
+				for stream in streams.iter_mut() {
 					if LOG {
 						println!();
 					}
 
-					let img = stage("Stream | Preamble  | Crop", || img.crop(Rect {
-						pos: cell.pos * (stream_input_size + matrix_gap_size),
-						size: stream_input_size,
-					}));
-
-					//write_image(&format!("geh/{}.png", cell.pos), &img);
+					let img = match &stream.source {
+						Some(source) => stage("Stream | Preamble  | Crop", || img.crop(source)),
+						None => img.clone(),
+					};
 
 					let formatter = HybridFormatter::new();
 					let img = stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
@@ -238,7 +401,7 @@ fn compute(
 					let img = stage("Stream | Process   | Braille", || braille::as_braille(&img));
 					let img = stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
 					for _ in 0..emit_count {
-						stage("Stream | Postamble | Cmd Gen", || cell.stream_writer.push_frame_braille(&img));
+						stage("Stream | Postamble | Cmd Gen", || stream.writer.push_frame_braille(&img));
 					}
 
 					if !LOG {
@@ -269,8 +432,8 @@ fn compute(
 	frames_progress.finish();
 	
 	let mut writer = szt::FileWriter::new(out_frame_rate);
-	for cell in cell_streams {
-		writer.push_stream(cell.stream_writer);
+	for stream in streams {
+		writer.push_stream(stream.writer);
 	}
 
 	if LOG {
@@ -296,6 +459,7 @@ fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 	}
 }
 
+#[cfg(feature = "debug-mode")]
 fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {
 	std::fs::write(path, lodepng::encode24(
 		&img

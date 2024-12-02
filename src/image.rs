@@ -42,7 +42,7 @@ impl<T> Image<T> {
 }
 
 impl<T: Copy> Image<T> {
-	pub fn crop(&self, rect: Rect<usize>) -> Self {
+	pub fn crop(&self, rect: &Rect<usize>) -> Self {
 		debug_assert_le!(rect.pos.x + rect.size.x, self.size.x);
 		debug_assert_le!(rect.pos.y + rect.size.y, self.size.y);
 
@@ -96,36 +96,16 @@ impl From<ffmpeg_next::frame::Video> for Image<RGB8> {
 	}
 }
 
-// impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
-// 	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
-// 		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
-// 		Self {
-// 			size: Size::new(value.width, value.height),
-// 			buffer: value.buffer
-// 				.into_iter()
-// 				.map(|p| RGB8 { r: p.r, g: p.g, b: p.b })
-// 				.collect(),
-// 		}
-// 	}
-// }
-
-// impl From<video_rs::Frame> for Image<RGB8> {
-// 	fn from(value: video_rs::Frame) -> Self {
-// 		let buffer = value.view()
-// 			.iter()
-// 			.copied()
-// 			.collect::<Vec<u8>>()
-// 			.chunks_exact(3)
-// 			.map(|chunk| RGB8 {
-// 				r: chunk[0],
-// 				g: chunk[1],
-// 				b: chunk[2],
-// 			})
-// 			.collect();
-		
-// 		Self {
-// 			size: Size::new(value.dim().0, value.dim().1),
-// 			buffer,
-// 		}
-// 	}
-// }
+#[cfg(feature = "debug-mode")]
+impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
+	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
+		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
+		Self {
+			size: Size::new(value.width, value.height),
+			buffer: value.buffer
+				.into_iter()
+				.map(|p| RGB8 { r: p.r, g: p.g, b: p.b })
+				.collect(),
+		}
+	}
+}

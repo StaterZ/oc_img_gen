@@ -141,7 +141,7 @@ local function read_header(file)
 	}
 end
 
-local function draw(gpu, file, surfaces)
+local function render(gpu, file, surfaces)
 	local header = read_header(file)
 	assertEq(header.magic, "sztb", "bad magic")
 	print("magic: OK")
@@ -207,7 +207,7 @@ local function draw(gpu, file, surfaces)
 	end
 
 	local frames_begin_pos = file:seek()
-	print(("header done at byte %i"):format(frames_begin_pos))
+	print(("headers done at byte %i"):format(frames_begin_pos))
 
 	local back
 	if not ops.noback then
@@ -216,76 +216,90 @@ local function draw(gpu, file, surfaces)
 
 		gpu.setActiveBuffer(back)
 	end
-	local begin_time = os.clock()
-	local frame_index = 0
-	while frame_index < num_frames do
-		local frame_begin_time = os.clock()
 
-		if ops.seek then
-			local current_time = (os.clock() - begin_time)
-			frame_index = math.ceil(current_time * frame_rate)
-			if frame_index >= num_frames then break end
-			
-			file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
-		end
+	local function draw()
+		local begin_time = os.clock()
+		local frame_index = 0
+		while frame_index < num_frames do
+			local frame_begin_time = os.clock()
 
-		for _, stream in ipairs(streams) do
-			local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
-			if commands_len <= 0 then
-				draw_stream_frame(gpu, file, stream, frame_index) --ensures we skip the header
-				goto continue
-			end
-			
-			if gpu.getScreen() ~= stream.surface.screen_addr then
-				gpu.bind(stream.surface.screen_addr, false)
-			end
-
-			draw_stream_frame(gpu, file, stream, frame_index)
-
-			if ops.fps then
-				gpu.setBackground(0xff0000)
-				gpu.setForeground(0xffffff)
-				local now = os.clock()
-				local elapsed = now - frame_begin_time
-				gpu.set(1, 1, ("%04i %04.1flag %03.ffps %05.fms %05ib"):format(
-					frame_index,
-					frame_rate == 0 and 0 or frame_index / frame_rate - (now - begin_time),
-					1 / elapsed,
-					elapsed * 1000,
-					seek_table[frame_index + 1] - (seek_table[frame_index] or 0)
-				))
-			end
-			if not ops.noback then
-				gpu.bitblt()
-			end
-			if ops.diff then
-				gpu.setBackground(0x000000)
-				gpu.setForeground(0xff0000)
-				gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
-			end
-
-			::continue::
-		end
-
-		if not ops.fast and frame_rate ~= 0 then
-			repeat
+			if ops.seek then
 				local current_time = (os.clock() - begin_time)
-				local next_frame_index = math.ceil(current_time * frame_rate)
-			until next_frame_index > frame_index
-		end
-
-		while true do
-			local e = event.pull(0)
-			if e == nil then
-				break
-			elseif e == "interupted" then
-				goto done
+				frame_index = math.ceil(current_time * frame_rate)
+				if frame_index >= num_frames then break end
+				
+				file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
 			end
-		end
 
-		frame_index = frame_index + 1
+			for _, stream in ipairs(streams) do
+				local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
+				if commands_len <= 0 then
+					draw_stream_frame(gpu, file, stream, frame_index) --ensures we skip the header
+					goto continue
+				end
+				
+				if gpu.getScreen() ~= stream.surface.screen_addr then
+					gpu.bind(stream.surface.screen_addr, false)
+					if not ops.noback then
+						gpu.bitblt(back, nil, nil, nil, nil, 0)
+					end
+				end
+
+				draw_stream_frame(gpu, file, stream, frame_index)
+
+				if ops.fps then
+					gpu.setBackground(0xff0000)
+					gpu.setForeground(0xffffff)
+					local now = os.clock()
+					local elapsed = now - frame_begin_time
+					gpu.set(1, 1, ("%04i %04.1flag %03.ffps %05.fms %05ib"):format(
+						frame_index,
+						frame_rate == 0 and 0 or frame_index / frame_rate - (now - begin_time),
+						1 / elapsed,
+						elapsed * 1000,
+						seek_table[frame_index + 1] - (seek_table[frame_index] or 0)
+					))
+				end
+				if not ops.noback then
+					gpu.bitblt()
+				end
+				if ops.diff then
+					gpu.setBackground(0x000000)
+					gpu.setForeground(0xff0000)
+					gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+				end
+
+				::continue::
+			end
+
+			if not ops.fast and frame_rate ~= 0 then
+				repeat
+					local current_time = (os.clock() - begin_time)
+					local next_frame_index = math.ceil(current_time * frame_rate)
+				until next_frame_index > frame_index
+			end
+
+			while true do
+				local e = event.pull(0)
+				if e == nil then
+					break
+				elseif e == "interupted" then
+					return false
+				end
+			end
+
+			frame_index = frame_index + 1
+		end
+		return true
 	end
-	::done::
+
+	if ops.loop then
+		while draw() do
+			file:seek("set", frames_begin_pos)
+		end
+	else
+		draw()
+	end
 
 	if not ops.noback then
 		gpu.freeBuffer(back)
@@ -324,7 +338,7 @@ if not file then
 	error("Failed to open file: " .. reason)
 end
 
-local ok, reason = xpcall(function() draw(gpu, file, surfaces) end, function(err)
+local ok, reason = xpcall(function() render(gpu, file, surfaces) end, function(err)
 	return ("%s | %s"):format(err, debug.traceback())
 end)
 file:close()

@@ -1,7 +1,7 @@
-use std::{fmt::Display, ops::{Add, Div, Mul, Sub}};
+use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 
 use deku::{no_std_io, prelude::*};
-use num_traits::PrimInt;
+use num_traits::{ConstZero, PrimInt, Zero};
 
 use super::{Frac, Point, Rect};
 
@@ -71,6 +71,38 @@ impl<T: PrimInt + DekuWriter> DekuWriter for Size<T> {
 		self.y.to_writer(writer, ctx)?;
 		Ok(())
 	}
+}
+
+impl<T: PrimInt + FromStr> FromStr for Size<T>
+where
+	<T as FromStr>::Err: std::fmt::Debug,
+{
+	type Err = String;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let parts: Vec<&str> = s.split('x').collect();
+		if parts.len() != 2 {
+			return Err("Size must be in WIDTHxHEIGHT format".into());
+		}
+		
+		let x = parts[0].parse::<T>().map_err(|e| format!("{:?}", e))?;
+		let y = parts[1].parse::<T>().map_err(|e| format!("{:?}", e))?;
+		Ok(Size { x, y })
+	}
+}
+
+impl<T: PrimInt + Zero> Zero for Size<T> {
+	fn zero() -> Self {
+		Self::new(T::zero(), T::zero())
+	}
+	
+	fn is_zero(&self) -> bool {
+		*self == Self::zero()
+	}
+}
+
+impl<T: PrimInt + ConstZero> ConstZero for Size<T> {
+	const ZERO: Self = Self::new(T::ZERO, T::ZERO);
 }
 
 impl<T: PrimInt> Add for Size<T> {

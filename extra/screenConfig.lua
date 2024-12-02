@@ -15,7 +15,20 @@ local function ask(question)
 	return response
 end
 
-local function grab_resolutions()
+local function set_screen_message(addr, msg)
+	local width, height = unicode.wlen(msg) + 2, 3
+	if addr ~= gpu.getScreen() then
+		local bg, fg = gpu.getBackground(), gpu.getForeground()
+		gpu.bind(addr, false)
+		gpu.setBackground(bg)
+		gpu.setForeground(fg)
+	end
+	gpu.setResolution(width, height)
+	gpu.fill(1, 1, width, height, " ")
+	gpu.set(2, 2, msg)
+end
+
+local function grab_resolutions(msg)
 	local result = {}
 	for addr, _kind in component.list("screen") do
 		gpu.bind(addr, false)
@@ -24,6 +37,12 @@ local function grab_resolutions()
 			x = width,
 			y = height,
 		}
+
+		if msg then
+			gpu.setBackground(0x0000ff)
+			gpu.setForeground(0xffffff)
+			set_screen_message(addr, msg)
+		end
 	end
 	return result
 end
@@ -39,29 +58,10 @@ local function restore_resolutions(resolutions)
 	return result
 end
 
-local function set_screen_message(addr, msg)
-	local width, height = unicode.wlen(msg) + 2, 3
-	local bg, fg = gpu.getBackground(), gpu.getForeground()
-	gpu.bind(addr, false)
-	gpu.setBackground(bg)
-	gpu.setForeground(fg)
-	gpu.setResolution(width, height)
-	gpu.fill(1, 1, width, height, " ")
-	gpu.set(2, 2, msg)
-end
-
-local function get_screen(msg_option, msg_select, blacklist)
+local function get_screen(msg, blacklist)
 	local sizes = {}
-	for addr, _kind in component.list("screen") do
-		if blacklist[addr] then goto continue end
-
-		gpu.setBackground(0x0000ff)
-		gpu.setForeground(0xffffff)
-		set_screen_message(addr, msg_option)
-		::continue::
-	end
-
-	pc.beep(750, 0.1)
+	
+	pc.beep(1750, 0.05)
 	local addr
 	while true do
 		local e = {event.pull()}
@@ -74,7 +74,7 @@ local function get_screen(msg_option, msg_select, blacklist)
 	
 	gpu.setBackground(0x00ff00)
 	gpu.setForeground(0xffffff)
-	set_screen_message(addr, msg_select)
+	set_screen_message(addr, msg)
 	
 	return addr
 end
@@ -90,14 +90,13 @@ local matrix_size = {
 
 print("starting screen selector...")
 local main_screen = gpu.getScreen()
-local resolutions = grab_resolutions()
+local resolutions = grab_resolutions("Touch screen to select")
 local blacklist = {}
 local surfaces = {}
 for y = 1, matrix_size.y do
 	for x = 1, matrix_size.x do
 		local name = ("%i,%i"):format(x - 1, y - 1)
 		local screen_addr = get_screen(
-			("Touch screen '%s'"):format(name),
 			("Surface '%s'"):format(name),
 			blacklist
 		)

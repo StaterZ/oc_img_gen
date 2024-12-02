@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::{Mul, Div}};
+use std::{fmt::Display, ops::{Div, Mul}, str::FromStr};
 
 use deku::{no_std_io, prelude::*};
 use num_traits::PrimInt;
@@ -35,6 +35,24 @@ impl<T: PrimInt + DekuWriter> DekuWriter for Point<T> {
 		self.x.to_writer(writer, ctx)?;
 		self.y.to_writer(writer, ctx)?;
 		Ok(())
+	}
+}
+
+impl<T: PrimInt + FromStr> FromStr for Point<T>
+where
+	<T as FromStr>::Err: std::fmt::Debug,
+{
+	type Err = String;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let parts: Vec<&str> = s.split(',').collect();
+		if parts.len() != 2 {
+			return Err("Point must be in X,Y format".into());
+		}
+		
+		let x = parts[0].parse::<T>().map_err(|e| format!("{:?}", e))?;
+		let y = parts[1].parse::<T>().map_err(|e| format!("{:?}", e))?;
+		Ok(Point { x, y })
 	}
 }
 
