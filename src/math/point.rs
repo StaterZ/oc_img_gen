@@ -17,7 +17,7 @@ impl<T: PrimInt> Point<T> {
 	}
 	
 	pub fn map<U: PrimInt>(&self, f: impl Fn(T) -> U) -> Point<U> {
-		Point::<U> {
+		Point {
 			x: f(self.x),
 			y: f(self.y),
 		}

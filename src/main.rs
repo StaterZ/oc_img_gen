@@ -8,7 +8,7 @@
 )]
 #![allow(dead_code)]
 
-use std::{io::Write, path::{Path, PathBuf}};
+use std::{io::Write, path::{Path, PathBuf}, time::Duration};
 use clap::Parser;
 use cmd::szt::{self, SizedString, StreamDesc};
 use color_print::cprintln;
@@ -44,33 +44,35 @@ enum StreamMode {
 struct Args {
 	#[arg(
 		short = 'i',
-		long = "in_path",
+		long = "in-path",
 		help = "Path to image or video to encode",
 	)]
 	in_path: PathBuf,
 
 	#[arg(
 		short = 'o',
-		long = "out_path",
+		long = "out-path",
 		help = "Path to where to the output SZT file, saves at in_path with .szt extension if omitted",
 	)]
 	out_path: Option<PathBuf>,
 
 
 	#[arg(
-		long = "frame_begin",
+		long = "begin",
 		help = "What frame to start from, starts at input start if omitted",
+		value_parser = humantime::parse_duration,
 	)]
-	begin_frame: Option<usize>,
+	begin: Option<Duration>,
 
 	#[arg(
-		long = "frame_end",
+		long = "end",
 		help = "What frame to stop from (inclusive), stops at input end if omitted",
+		value_parser = humantime::parse_duration,
 	)]
-	last_frame: Option<usize>,
+	end: Option<Duration>,
 
 	#[arg(
-		long = "frame_rate",
+		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
 	)]
 	frame_rate: Option<u16>,
@@ -85,7 +87,7 @@ struct Args {
 
 
 	#[arg(
-		long = "stream_size",
+		long = "stream-size",
 		requires_if("Single", "mode"),
 		requires_if("Matrix", "mode"),
 		help = "The size of the streams",
@@ -93,21 +95,21 @@ struct Args {
 	stream_size: Option<Size<usize>>,
 	
 	#[arg(
-		long = "matrix_size",
+		long = "matrix-size",
 		requires_if("Matrix", "mode"),
 		help = "How many grid cells (streams) to create",
 	)]
 	matrix_size: Option<Size<usize>>,
 
 	#[arg(
-		long = "matrix_gap_size",
+		long = "matrix-gap-size",
 		requires_if("Matrix", "mode"),
 		help = "pixels to skip between matrix cells, sets to 0 to omitted",
 	)]
 	matrix_gap_size: Option<Size<usize>>,
 	
 	#[arg(
-		long = "streams_config",
+		long = "streams-config",
 		requires_if("Custom", "mode"),
 		help = "path to json streams config file",
 	)]
@@ -129,43 +131,43 @@ fn validate_args(args: &Args) {
 	match args.mode {
 		StreamMode::Single => {
 			if args.stream_size.is_none() {
-				eprintln!("--stream_size is required when --mode is 'Single' or 'Matrix'");
+				eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
 				is_bad = true;
 			}
 			if args.matrix_size.is_some() {
-				eprintln!("--matrix_size is only valid when --mode is 'Matrix'");
+				eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
 				is_bad = true;
 			}
 			if args.streams_config.is_some() {
-				eprintln!("--streams_config is only valid when --mode is 'Custom'");
+				eprintln!("--streams-config is only valid when --mode is 'Custom'");
 				is_bad = true;
 			}
 		}
 		StreamMode::Matrix => {
 			if args.stream_size.is_none() {
-				eprintln!("--stream_size is required when --mode is 'Single' or 'Matrix'");
+				eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
 				is_bad = true;
 			}
 			if args.matrix_size.is_none() {
-				eprintln!("--matrix_size is required when --mode is 'Matrix'");
+				eprintln!("--matrix-size is required when --mode is 'Matrix'");
 				is_bad = true;
 			}
 			if args.streams_config.is_some() {
-				eprintln!("--streams_config is only valid when --mode is 'Custom'");
+				eprintln!("--streams-config is only valid when --mode is 'Custom'");
 				is_bad = true;
 			}
 		}
 		StreamMode::Custom => {
 			if args.stream_size.is_some() {
-				eprintln!("--stream_size is only valid when --mode is 'Single' or 'Matrix'");
+				eprintln!("--stream-size is only valid when --mode is 'Single' or 'Matrix'");
 				is_bad = true;
 			}
 			if args.matrix_size.is_some() {
-				eprintln!("--matrix_size is only valid when --mode is 'Matrix'");
+				eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
 				is_bad = true;
 			}
 			if args.streams_config.is_none() {
-				eprintln!("--streams_config is required when --mode is 'Custom'");
+				eprintln!("--streams-config is required when --mode is 'Custom'");
 				is_bad = true;
 			}
 		}
@@ -177,7 +179,7 @@ fn validate_args(args: &Args) {
 }
 
 fn run() -> Result<(), String> {
-	ffmpeg_next::init().unwrap();
+	ffmpeg_next::init().map_err(|err| format!("Failed to init FFMPEG. INNER: {}", err))?;
 
 	let args = Args::parse();
 	validate_args(&args);
@@ -210,8 +212,8 @@ fn run() -> Result<(), String> {
 	compute(
 		&args.in_path,
 		&out_path,
-		args.begin_frame,
-		args.last_frame,
+		args.begin,
+		args.end,
 		args.frame_rate,
 		streams_config,
 		RGB8::new(0x000000),
@@ -283,8 +285,8 @@ fn create_streams_custom(_config_path: &Path) -> Result<StreamsConfig, String> {
 fn compute(
 	in_path: &Path,
 	out_path: &Path,
-	begin_frame: Option<usize>,
-	last_frame: Option<usize>,
+	begin_time: Option<Duration>,
+	end_time: Option<Duration>,
 	out_frame_rate: Option<u16>,
 	streams_config: StreamsConfig,
 	fill_color: RGB8,
@@ -305,6 +307,9 @@ fn compute(
 	let in_frame_rate = decoder.frame_rate().map_or(0, |rate| szu::int_div_round!(rate.numerator(), rate.denominator()) as u16);
 	let out_frame_rate = out_frame_rate.unwrap_or(in_frame_rate);
 	
+	let begin_frame = begin_time.map(|begin_time| (begin_time.as_millis() * in_frame_rate as u128 / 1000) as usize);
+	let last_frame = end_time.map(|end_time| (end_time.as_millis() * in_frame_rate as u128 / 1000) as usize);
+
 	//setup progress bar
 	let multi_progress = MultiProgress::new();
 
@@ -336,7 +341,13 @@ fn compute(
 	let mut streams = streams_config.stream_descs_data
 		.into_iter()
 		.map(|stream| StreamWriterData {
-			writer: szt::StreamWriter::new(stream.desc),
+			writer: szt::StreamWriter::new(match &stream.source {
+				Some(_) => stream.desc,
+				None => StreamDesc {
+					size: (fit_size / braille::SIZE).try_cast().unwrap(),
+					name: stream.desc.name,
+				}
+			}),
 			source: stream.source,
 		})
 		.collect_vec();

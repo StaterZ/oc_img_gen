@@ -6,7 +6,14 @@ local component = require("component")
 local term = require("term")
 local serialization = require("serialization")
 
+local szt = {
+	magic = "sztb",
+	version = 3,
+}
+
 local args, ops = shell.parse(...)
+ops.no_back = ops["no-back"]
+ops.batch_check = ops["batch-check"]
 
 local function assertEq(found, expected, msg)
 	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, format))
@@ -55,7 +62,7 @@ local function inflate(v)
 	end
 end
 
-local frame_header_size = 1 -- 1 from the command_kind
+local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
 local function draw_stream_frame(gpu, file, stream, frame_index)
 	local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
 
@@ -87,9 +94,12 @@ local function draw_stream_frame(gpu, file, stream, frame_index)
 	end
 
 	local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
+	local command_count = 0
 	local i = 0
+
+	local len, x, y
 	while i < commands_len do
-		local len = read_u8(file)
+		len = read_u8(file)
 		if len >= 0x80 then
 			len = len - 0x80
 
@@ -104,11 +114,13 @@ local function draw_stream_frame(gpu, file, stream, frame_index)
 		end
 
 		len = len + 1
-		local x = read_u8(file)
-		local y = read_u8(file)
+		x = read_u8(file)
+		y = read_u8(file)
 		gpu.set(x + pos_x, y + pos_y, get_value(len))
 		i = i + 3 + len
+		command_count = command_count + 1
 	end
+	return command_count
 end
 
 local function read_header(file)
@@ -141,19 +153,14 @@ local function read_header(file)
 	}
 end
 
-local function render(gpu, file, surfaces)
+local function probe_header(file)
 	local header = read_header(file)
-	assertEq(header.magic, "sztb", "bad magic")
-	print("magic: OK")
-	assertEq(header.version, 3, "bad version")
-	print("version: OK")
-
-	local frame_rate = header.frame_rate
-	local num_frames = header.num_frames
-	local num_streams = header.num_streams
-
-	print(("reading %i stream descriptors:"):format(num_streams))
-
+	print(("magic: %s %s"):format(header.magic, header.magic == szt.magic and "OK" or "ERR"))
+	print(("version: %i %s"):format(header.version, header.version == szt.version and "OK" or "OLD"))
+	print(("frame rate: %i"):format(header.frame_rate))
+	print(("frame count: %i"):format(header.num_frames))
+	
+	print(("found %i stream descriptors:"):format(header.num_streams))
 	for i, stream in ipairs(header.streams) do
 		print(("%4i: '%s' %ix%i"):format(
 			i,
@@ -162,6 +169,39 @@ local function render(gpu, file, surfaces)
 			stream.size_y
 		))
 	end
+	
+	print(("seek tables: (%iframes x %istreams)"):format(header.num_frames, header.num_streams))
+	local size_min = math.huge
+	local size_sum = 0
+	local size_max = 0
+	for stream_i = 1, header.num_streams do
+		for frame_i = 1, header.num_frames do
+			local frame_size = read_u32(file)
+			size_min = math.min(size_min, frame_size)
+			size_sum = size_sum + frame_size
+			size_max = math.max(size_max, frame_size)
+		end
+	end
+	local size_avg = size_sum / (header.num_streams * header.num_frames)
+
+	print(("    min frame bytes: %i"):format(size_min))
+	print(("    avg frame bytes: %f"):format(size_avg))
+	print(("    max frame bytes: %i"):format(size_max))
+
+	local frames_begin_pos = file:seek()
+	print(("headers done at byte: %i"):format(frames_begin_pos))
+end
+
+local function render(gpu, file, surfaces)
+	local header = read_header(file)
+	assertEq(header.magic, szt.magic, "bad magic")
+	print("magic: OK")
+	assertEq(header.version, szt.version, "bad version")
+	print("version: OK")
+
+	local frame_rate = header.frame_rate
+	local num_frames = header.num_frames
+	local num_streams = header.num_streams
 
 	local main_screen = gpu.getScreen()
 	local max_size_x, max_size_y = 0, 0
@@ -207,10 +247,8 @@ local function render(gpu, file, surfaces)
 	end
 
 	local frames_begin_pos = file:seek()
-	print(("headers done at byte %i"):format(frames_begin_pos))
-
 	local back
-	if not ops.noback then
+	if not ops.no_back then
 		back = gpu.allocateBuffer(max_size_x, max_size_y)
 		if back == nil then error("can't allocate back-buffer") end
 
@@ -240,27 +278,28 @@ local function render(gpu, file, surfaces)
 				
 				if gpu.getScreen() ~= stream.surface.screen_addr then
 					gpu.bind(stream.surface.screen_addr, false)
-					if not ops.noback then
+					if not ops.no_back then
 						gpu.bitblt(back, nil, nil, nil, nil, 0)
 					end
 				end
 
-				draw_stream_frame(gpu, file, stream, frame_index)
+				local command_count = draw_stream_frame(gpu, file, stream, frame_index)
 
 				if ops.fps then
 					gpu.setBackground(0xff0000)
 					gpu.setForeground(0xffffff)
 					local now = os.clock()
 					local elapsed = now - frame_begin_time
-					gpu.set(1, 1, ("%04i %04.1flag %03.ffps %05.fms %05ib"):format(
+					gpu.set(1, 1, ("%04i %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
 						frame_index,
 						frame_rate == 0 and 0 or frame_index / frame_rate - (now - begin_time),
 						1 / elapsed,
 						elapsed * 1000,
-						seek_table[frame_index + 1] - (seek_table[frame_index] or 0)
+						seek_table[frame_index + 1] - (seek_table[frame_index] or 0),
+						command_count
 					))
 				end
-				if not ops.noback then
+				if not ops.no_back then
 					gpu.bitblt()
 				end
 				if ops.diff then
@@ -301,7 +340,7 @@ local function render(gpu, file, surfaces)
 		draw()
 	end
 
-	if not ops.noback then
+	if not ops.no_back then
 		gpu.freeBuffer(back)
 		gpu.setActiveBuffer(0)
 	end
@@ -310,13 +349,27 @@ local function render(gpu, file, surfaces)
 	end
 end
 
+if ops.h or ops.help then
+	print("-h --help", "show this help")
+	print("-p --probe", "show the header info")
+	print("   --fps", "show performance stats during playback")
+	print("   --loop", "loop video like a gif")
+	print("   --no-back", "disable double buffering and the dependency on GPU buffers")
+	print("   --cfg", "set the screen layout and other environment settings. generate a configs with 'screenConfig.lua'")
+	print("   --diff", "only draw what changed from the last frame")
+	print("   --seek", "skip frames to ensure real-time playback (buggy due to no I-frames in format)")
+	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
+	print("   --batch-check", "debug the batches")
+	return
+end
+
 --open file
 local gpu = component.gpu
 
 --get surfaces
 local surfaces
 if ops.cfg then
-	local file, reason = io.open(args[2], "r")
+	local file, reason = io.open(ops.cfg, "r")
 	if not file then
 		error("Failed opening config file for reading: " .. reason)
 	end
@@ -338,13 +391,22 @@ if not file then
 	error("Failed to open file: " .. reason)
 end
 
-local ok, reason = xpcall(function() render(gpu, file, surfaces) end, function(err)
+
+local ok, reason = xpcall(function()
+	if ops.p or ops.probe then
+		probe_header(file)
+		return
+	end
+	
+	render(gpu, file, surfaces)
+end, function(err)
 	return ("%s | %s"):format(err, debug.traceback())
 end)
 file:close()
+if ops.p or ops.probe then return end
 
 --do cleanup
-if not ops.noback then
+if not ops.no_back then
 	gpu.setActiveBuffer(0)
 end
 gpu.setBackground(0xff0000)
@@ -353,7 +415,7 @@ term.setCursor(1, 1)
 
 --handle error
 if not ok then
-	if not ops.noback then
+	if not ops.no_back then
 		gpu.freeAllBuffers()
 	end
 	print("ERR:")

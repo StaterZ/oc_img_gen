@@ -20,13 +20,13 @@ impl<T: PrimInt> Frac<T> {
 	}
 
 	pub fn cast<U: PrimInt + From<T>>(self) -> Frac::<U> {
-		Frac::<U> {
+		Frac {
 			numerator: self.numerator.into(),
 			denominator: self.denominator.into(),
 		}
 	}
 	pub fn try_cast<U: PrimInt + TryFrom<T>>(self) -> Result<Frac::<U>, U::Error> {
-		Ok(Frac::<U> {
+		Ok(Frac {
 			numerator: self.numerator.try_into()?,
 			denominator: self.denominator.try_into()?,
 		})

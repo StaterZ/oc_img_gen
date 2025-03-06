@@ -25,13 +25,13 @@ impl<T: PrimInt> Size<T> {
 	}
 
 	pub fn cast<U: PrimInt + From<T>>(self) -> Size::<U> {
-		Size::<U> {
+		Size {
 			x: self.x.into(),
 			y: self.y.into(),
 		}
 	}
 	pub fn try_cast<U: PrimInt + TryFrom<T>>(self) -> Result<Size::<U>, U::Error> {
-		Ok(Size::<U> {
+		Ok(Size {
 			x: self.x.try_into()?,
 			y: self.y.try_into()?,
 		})

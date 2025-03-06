@@ -19,8 +19,18 @@
 					"kind": "bin"
 				}
 			},
+			// "args": [
+			// 	"-i=data/test.png",
+			// 	"--begin=1m2s",
+			// 	"--stream_size=120x60"
+			// ],
 			"args": [
-				"--debug"
+				"--in-path=data/ltt.mp4",
+				"--mode=single",
+				"--begin=1m30s",
+				"--end=1m55s",
+				"--stream-size=120x60",
+				"--out-path=C:/Users/admin/AppData/Roaming/.minecraft/minecraft_installs/modded_1.12.2/saves/open computers/opencomputers/188ea28f-87a0-465f-b78e-cd6d548efb47/ltt.szt"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -40,7 +50,11 @@
 					"kind": "bin"
 				}
 			},
-			"args": [],
+			"args": [
+				"-i=data/test.png",
+				"--mode=single",
+				"--stream-size=120x60"
+			],
 			"cwd": "${workspaceFolder}"
 		},
 		{
@@ -49,7 +63,9 @@
 			"request": "launch",
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
-				"--debug"
+				"-in_path=data/test.png",
+				"--mode=single",
+				"--stream-size=120x60"
 			],
 			"cwd": "${workspaceFolder}",
 		}
