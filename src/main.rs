@@ -30,7 +30,7 @@ mod math;
 mod image;
 
 const LOG: bool = false;
-
+const EXT: &str = "szt";
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
 enum StreamMode {
@@ -44,14 +44,14 @@ enum StreamMode {
 struct Args {
 	#[arg(
 		short = 'i',
-		long = "in-path",
+		long = "in",
 		help = "Path to image or video to encode",
 	)]
 	in_path: PathBuf,
 
 	#[arg(
 		short = 'o',
-		long = "out-path",
+		long = "out",
 		help = "Path to where to the output SZT file, saves at in_path with .szt extension if omitted",
 	)]
 	out_path: Option<PathBuf>,
@@ -184,11 +184,22 @@ fn run() -> Result<(), String> {
 	let args = Args::parse();
 	validate_args(&args);
 
-	let out_path = args.out_path.unwrap_or({
-		let mut path= args.in_path.to_owned();
-		path.set_extension("szt");
-		path
-	});
+	let out_path = match args.out_path {
+		None => {
+			let mut path = args.in_path.clone();
+			path.set_extension(EXT);
+			path
+		},
+		Some(mut path) => {
+			if path.is_dir() {
+				path.push(args.in_path.file_name().ok_or("Missing input".to_string())?);
+				path.set_extension(EXT);
+			} else if path.extension() == None {
+				path.set_extension(EXT);
+			}
+			path
+		}
+	};
 
 	let streams_config = match args.mode {
 		StreamMode::Single => create_main_stream(

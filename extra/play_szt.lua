@@ -3,8 +3,98 @@ local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
 local component = require("component")
+local computer = require("computer")
 local term = require("term")
 local serialization = require("serialization")
+local fs = require("filesystem")
+
+local linear_stream = {}
+do
+	local mt = {
+		__index = linear_stream,
+		__metatable = "LinearStream"
+	}
+
+	function linear_stream.open(path, format)
+		assert(format == "rb")
+		local stream, reason = fs.open(path, format)
+		if not stream then return nil, reason end
+
+		return setmetatable({
+			stream = stream,
+			buffer = "",
+			bufferHead = 0,
+			bufferSize = math.max(512, math.min(8 * 1024, computer.freeMemory() / 8))
+		}, mt)
+	end
+
+	function linear_stream:close()
+		self.buffer = nil
+		self.stream:close()
+	end
+
+	function linear_stream:seek(whence, offset) --shamelessly stolen from OpenOS buffer code
+		whence = whence or "cur"
+		assert(whence == "set" or whence == "cur" or whence == "end",
+			"bad argument #1 (set, cur or end expected, got " .. whence .. ")")
+		offset = offset or 0
+		checkArg(2, offset, "number")
+		assert(math.floor(offset) == offset, "bad argument #2 (not an integer)")
+
+		if whence == "cur" then
+			offset = offset - (#self.buffer - self.bufferHead)
+		end
+		local result, reason = self.stream:seek(whence, offset)
+		if not result then return nil, reason end
+
+		self.buffer = ""
+		self.bufferHead = 0
+		return result
+	end
+
+	function linear_stream:read(n)
+		if n <= #self.buffer - self.bufferHead then
+			local data = self.buffer:sub(1 + self.bufferHead, self.bufferHead + n)
+			--print(#self.buffer, n, "base", self.bufferHead, ("'%s'"):format(data))
+			self.bufferHead = self.bufferHead + n
+			return data
+		end
+
+		local data = self.buffer:sub(1 + self.bufferHead)
+		--print(#self.buffer, n, "stitch begin", self.bufferHead, ("'%s'"):format(data))
+		--self.bufferHead = #self.buffer --no need to advance head, we'll overwrite it shortly anyways...
+
+		local needed = n - #data
+		while true do
+			local result, reason = self.stream:read(self.bufferSize)
+			if not result then
+				if reason then
+					return result, reason
+				else
+					error("read past EOF")
+				end
+			end
+			self.buffer = result
+
+			if needed >= #self.buffer then
+				data = data .. self.buffer
+				needed = n - #data
+				--print(#self.buffer, needed, "stitch spin", ("'%s'"):format(data))
+			else
+				data = data .. self.buffer:sub(1, needed)
+				self.bufferHead = needed
+				--print(#self.buffer, needed, "stitch end", self.bufferHead, ("'%s'"):format(data))
+				break
+			end
+		end
+
+		return data
+	end
+
+	function linear_stream:size()
+		return #self.buffer - self.bufferHead
+	end
+end
 
 local szt = {
 	magic = "sztb",
@@ -48,7 +138,7 @@ local function inflate(v)
 	else
 		local NUM_REDS, NUM_GREENS, NUM_BLUES = 6, 8, 5
 		local i = v - 16
-		
+
 		local i_r = math.floor(i / (NUM_GREENS * NUM_BLUES))
 		local i_g = math.floor(i / NUM_BLUES) % NUM_GREENS
 		local i_b = i % NUM_BLUES
@@ -159,7 +249,7 @@ local function probe_header(file)
 	print(("version: %i %s"):format(header.version, header.version == szt.version and "OK" or "OLD"))
 	print(("frame rate: %i"):format(header.frame_rate))
 	print(("frame count: %i"):format(header.num_frames))
-	
+
 	print(("found %i stream descriptors:"):format(header.num_streams))
 	for i, stream in ipairs(header.streams) do
 		print(("%4i: '%s' %ix%i"):format(
@@ -169,7 +259,7 @@ local function probe_header(file)
 			stream.size_y
 		))
 	end
-	
+
 	print(("seek tables: (%iframes x %istreams)"):format(header.num_frames, header.num_streams))
 	local size_min = math.huge
 	local size_sum = 0
@@ -218,10 +308,10 @@ local function render(gpu, file, surfaces)
 			surface = surface,
 			frame_sizes = {},
 		}
-		
+
 		max_size_x = math.max(max_size_x, stream.size_x)
 		max_size_y = math.max(max_size_y, stream.size_y)
-		
+
 		if stream.surface.is_fullscreen then
 			gpu.bind(stream.surface.screen_addr, false)
 			gpu.setResolution(stream.size_x, stream.size_y)
@@ -265,7 +355,7 @@ local function render(gpu, file, surfaces)
 				local current_time = (os.clock() - begin_time)
 				frame_index = math.ceil(current_time * frame_rate)
 				if frame_index >= num_frames then break end
-				
+
 				file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
 			end
 
@@ -275,7 +365,7 @@ local function render(gpu, file, surfaces)
 					draw_stream_frame(gpu, file, stream, frame_index) --ensures we skip the header
 					goto continue
 				end
-				
+
 				if gpu.getScreen() ~= stream.surface.screen_addr then
 					gpu.bind(stream.surface.screen_addr, false)
 					if not ops.no_back then
@@ -386,7 +476,7 @@ end
 
 --do playback
 local path = args[1]
-local file, reason = io.open(path, "rb")
+local file, reason = linear_stream.open(path, "rb")
 if not file then
 	error("Failed to open file: " .. reason)
 end
@@ -397,7 +487,7 @@ local ok, reason = xpcall(function()
 		probe_header(file)
 		return
 	end
-	
+
 	render(gpu, file, surfaces)
 end, function(err)
 	return ("%s | %s"):format(err, debug.traceback())
