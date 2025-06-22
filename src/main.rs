@@ -117,9 +117,6 @@ struct Args {
 }
 
 fn main() {
-	// test(RGB8::new(0x9949C0));
-	// return;
-
 	if let Err(err) = run() {
 		cprintln!("<red>[ERR]: {}</>", err);
 	}
@@ -182,6 +179,9 @@ fn validate_args(args: &Args) {
 mod test;
 
 fn run() -> Result<(), String> {
+	#[cfg(feature = "debug-mode")]
+	return test::run();
+
 	ffmpeg_next::init().map_err(|err| format!("Failed to init FFMPEG. INNER: {}", err))?;
 
 	let args = Args::parse();
@@ -427,6 +427,7 @@ fn compute(
 					let img = stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
 					for _ in 0..emit_count {
 						stage("Stream | Postamble | Cmd Gen", || stream.writer.push_frame_braille(&img));
+						//println!("{}", cmd::code_gen(&img.map(|braille| braille.into()), None, &formatter));
 					}
 
 					if !LOG {
