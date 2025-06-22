@@ -6,7 +6,7 @@ use super::formatters::hybrid_formatter::StaticColor;
 use super::palette::{Palette, PaletteColor, PaletteOr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DekuWrite)]
-pub struct PackedColor(u8);
+pub struct PackedColor(pub u8);
 
 impl PackedColor {
 	pub const BITS: u32 = u8::BITS;

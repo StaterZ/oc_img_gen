@@ -109,3 +109,16 @@ impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
 		}
 	}
 }
+#[cfg(feature = "debug-mode")]
+impl Into<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
+	fn into(self) -> lodepng::Bitmap<lodepng::RGB<u8>> {
+		lodepng::Bitmap {
+			buffer: self.buffer
+				.iter()
+				.map(|p| lodepng::RGB { r: p.r, g: p.g, b: p.b })
+				.collect(),
+			width: self.size.x,
+			height: self.size.y,
+		}
+	}
+}

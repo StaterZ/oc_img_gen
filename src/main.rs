@@ -178,6 +178,9 @@ fn validate_args(args: &Args) {
 	}
 }
 
+#[cfg(feature = "debug-mode")]
+mod test;
+
 fn run() -> Result<(), String> {
 	ffmpeg_next::init().map_err(|err| format!("Failed to init FFMPEG. INNER: {}", err))?;
 
