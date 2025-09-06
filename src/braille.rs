@@ -5,9 +5,9 @@ use szu::{math::int_div_round, iter::{MultiZipArrayExt, MultiZipExt}};
 
 use crate::{image::Image, math::Size, oc_color::{RGB, RGB8}};
 
-pub const WIDTH: usize = 2;
-pub const HEIGHT: usize = 4;
-pub const SIZE: Size<usize> = Size::new(WIDTH, HEIGHT);
+pub const SIZE: Size<usize> = Size::new(2, 4);
+pub const WIDTH: usize = SIZE.x;
+pub const HEIGHT: usize = SIZE.y;
 pub const BITS: usize = WIDTH * HEIGHT;
 
 pub struct Braille<T> {

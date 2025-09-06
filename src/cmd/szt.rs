@@ -12,6 +12,7 @@ use super::{batchers, renderers::{CachedRenderer, SztRenderer}, BrailleFrame, Te
 pub enum CommandKind {
 	#[deku(id = 0x00)] Text,
 	#[deku(id = 0x01)] Braille,
+	#[deku(id = 0x02)] Audio,
 }
 
 #[derive(DekuWrite)]
@@ -142,7 +143,7 @@ impl StreamWriter {
 	
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
 		let mut renderer = CachedRenderer::new(SztRenderer::<CMD_KIND>::new());
-		batchers::batcher2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
+		batchers::batcher_v2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		self.prev_frame = Some(frame);
 
 		let frame = renderer.into_inner().build();

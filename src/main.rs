@@ -58,6 +58,7 @@ struct Args {
 
 
 	#[arg(
+		short = 'b',
 		long = "begin",
 		help = "What frame to start from, starts at input start if omitted",
 		value_parser = humantime::parse_duration,
@@ -65,6 +66,7 @@ struct Args {
 	begin: Option<Duration>,
 
 	#[arg(
+		short = 'e',
 		long = "end",
 		help = "What frame to stop from (inclusive), stops at input end if omitted",
 		value_parser = humantime::parse_duration,
@@ -72,6 +74,7 @@ struct Args {
 	end: Option<Duration>,
 
 	#[arg(
+		short = 'f',
 		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
 	)]
@@ -80,6 +83,7 @@ struct Args {
 
 	#[arg(
 		value_enum,
+		short = 'm',
 		long = "mode",
 		help = "How to arrange and produce the streams",
 	)]
@@ -107,6 +111,13 @@ struct Args {
 		help = "pixels to skip between matrix cells, sets to 0 to omitted",
 	)]
 	matrix_gap_size: Option<Size<usize>>,
+	
+	#[arg(
+		long = "matrix-screen-size",
+		requires_if("Matrix", "mode"),
+		help = "screen size of matrix segments, this is used to derive the matrix gap size",
+	)]
+	matrix_screen_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "streams-config",
@@ -217,7 +228,14 @@ fn run() -> Result<(), String> {
 				.try_cast()
 				.expect("stream size too large"),
 			args.matrix_size.unwrap(),
-			args.matrix_gap_size.unwrap_or(Size::ZERO)
+			args.matrix_gap_size
+				.or_else(|| args.matrix_screen_size
+					.map(|matrix_screen_size| {
+						let gap = compute_gap_size(args.stream_size.unwrap(), matrix_screen_size);
+						println!("auto-gap: {}", gap);
+						gap
+					}))
+				.unwrap_or(Size::ZERO)
 		)?,
 		StreamMode::Custom => create_streams_custom(
 			&args.streams_config.expect("missing argument 'streams_config'"))?,
@@ -232,6 +250,15 @@ fn run() -> Result<(), String> {
 		streams_config,
 		RGB8::new(0x000000),
 	)
+}
+
+fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<usize> {
+	const FIXED_POINT: usize = 2;
+	const PIXEL_GAP: usize = 9; //it's '(2 + 0.25) * 2' but we use x2 fixed point to remove the floats
+	const SUB_PIXEL_SIZE: Size<usize> = braille::SIZE;
+	const MINECRAFT_PIXELS: usize = 16;
+	//https://www.desmos.com/calculator/balbctweiy
+	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
 }
 
 struct StreamDescData {

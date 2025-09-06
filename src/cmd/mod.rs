@@ -18,6 +18,6 @@ pub fn code_gen(frame: &TermFrame, prev_frame: Option<&TermFrame>, formatter: &i
 		format!(include_str!("bootstrap.lua"), frame.size().x, frame.size().y),
 		formatter
 	));
-	batchers::batcher2::draw(&mut renderer, &frame, prev_frame);
+	batchers::batcher_v2::draw(&mut renderer, &frame, prev_frame);
 	renderer.into_inner().build()
 }

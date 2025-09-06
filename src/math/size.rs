@@ -15,6 +15,12 @@ impl<T: PrimInt> Size<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
+	pub const fn one(v: T) -> Self {
+		Self {
+			x: v,
+			y: v,
+		}
+	}
 	
 	pub fn ratio(&self) -> Frac<T> {
 		Frac::new(self.x, self.y)

@@ -98,6 +98,7 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 					}
 				}
 			},
+			szt::CommandKind::Audio => todo!(),
 		}
 	}
 }

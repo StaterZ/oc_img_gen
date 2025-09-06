@@ -1,4 +1,5 @@
 local os = require("os")
+local io = require("io")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
@@ -7,6 +8,8 @@ local computer = require("computer")
 local term = require("term")
 local serialization = require("serialization")
 local fs = require("filesystem")
+
+local version = "1.1"
 
 local linear_stream = {}
 do
@@ -17,7 +20,7 @@ do
 
 	function linear_stream.open(path, format)
 		assert(format == "rb")
-		local stream, reason = fs.open(path, format)
+		local stream, reason = io.open(path, format)
 		if not stream then return nil, reason end
 
 		return setmetatable({
@@ -104,6 +107,7 @@ local szt = {
 local args, ops = shell.parse(...)
 ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
+ops.color_check = ops["color-check"]
 
 local function assertEq(found, expected, msg)
 	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, format))
@@ -183,6 +187,14 @@ local function draw_stream_frame(gpu, file, stream, frame_index)
 		end
 	end
 
+	if ops.color_check then
+		get_value = function(len, i)
+			file:read(len) --more efficient than seek
+			gpu.setBackground((i==0 and 0x010101 or i==1 and 0x000100 or 0x010000)*math.max(1, math.ceil(math.ceil(len*8/0x40)/8*0xff)))
+			return (" "):rep(len)
+		end
+	end
+
 	local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
 	local command_count = 0
 	local i = 0
@@ -190,6 +202,7 @@ local function draw_stream_frame(gpu, file, stream, frame_index)
 	local len, x, y
 	while i < commands_len do
 		len = read_u8(file)
+		local q = i
 		if len >= 0x80 then
 			len = len - 0x80
 
@@ -206,7 +219,7 @@ local function draw_stream_frame(gpu, file, stream, frame_index)
 		len = len + 1
 		x = read_u8(file)
 		y = read_u8(file)
-		gpu.set(x + pos_x, y + pos_y, get_value(len))
+		gpu.set(x + pos_x, y + pos_y, get_value(len, i-q))
 		i = i + 3 + len
 		command_count = command_count + 1
 	end
@@ -412,7 +425,7 @@ local function render(gpu, file, surfaces)
 				local e = event.pull(0)
 				if e == nil then
 					break
-				elseif e == "interupted" then
+				elseif e == "interrupted" then
 					return false
 				end
 			end
@@ -450,6 +463,11 @@ if ops.h or ops.help then
 	print("   --seek", "skip frames to ensure real-time playback (buggy due to no I-frames in format)")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
+	print("   --color-check", "debug the colors")
+	return
+end
+if ops.v or ops.version then
+	print(("SZT Stream Reader V%s"):format(version))
 	return
 end
 
