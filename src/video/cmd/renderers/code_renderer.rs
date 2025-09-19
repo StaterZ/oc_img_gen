@@ -1,5 +1,5 @@
-use crate::{math::{Point, Size}, oc_color::PackedColor, Formatter};
-
+use crate::math::{Point, Size};
+use super::super::super::oc_color::{PackedColor, formatters::Formatter};
 use super::basic_renderer::{BasicRenderer, RenderState};
 
 pub struct CodeRenderer<'a, T: Formatter> {

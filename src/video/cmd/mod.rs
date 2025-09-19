@@ -1,7 +1,8 @@
-use crate::{braille::Braille, image::Image, oc_color::{formatters::Formatter, PackedColor}};
+use super::{braille::Braille, image::Image, oc_color::{formatters::Formatter, PackedColor}};
 use renderers::{CachedRenderer, CodeRenderer, Renderer};
 
 pub use term_pixel::TermPixel;
+pub use term_char::TermChar;
 
 mod batchers;
 mod term_pixel;

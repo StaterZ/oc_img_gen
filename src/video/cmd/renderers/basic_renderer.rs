@@ -1,6 +1,8 @@
-use crate::{math::{Point, Size}, oc_color::PackedColor};
-
-use super::Renderer;
+use crate::math::{Point, Size};
+use super::{
+	Renderer,
+	super::super::oc_color::PackedColor,
+};
 
 pub struct RenderState {
 	pub resolution: Option<Size<usize>>,

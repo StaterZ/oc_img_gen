@@ -1,7 +1,8 @@
 use itertools::Itertools;
 use more_asserts::*;
 
-use crate::{math::{Rect, Size}, oc_color::RGB8};
+use crate::math::{Rect, Size};
+use super::oc_color::RGB8;
 
 #[derive(Clone)]
 pub struct Image<T> {

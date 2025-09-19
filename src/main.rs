@@ -10,27 +10,27 @@
 
 use std::{io::Write, path::{Path, PathBuf}, time::Duration};
 use clap::Parser;
-use cmd::szt::{self, SizedString, StreamDesc};
 use color_print::cprintln;
-use image::Image;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use math::{Point, Rect, Size};
 use num_traits::ConstZero;
 use stopwatch::Stopwatch;
-
-use oc_color::{formatters::*, RGB8};
-use oc_color::PaletteOr;
 use szu::flush_print;
 
-mod oc_color;
-mod braille;
-mod cmd;
+use math::{Point, Rect, Size};
+use video::{
+	cmd::szt::{self, SizedString, StreamDesc},
+	oc_color::{formatters::*, RGB8, PaletteOr},
+	image::Image,
+};
+
+mod video;
+mod audio;
 mod math;
-mod image;
 
 const LOG: bool = false;
 const EXT: &str = "szt";
+const FORMAT_VERSION: u16 = 3;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
 enum StreamMode {
@@ -255,7 +255,7 @@ fn run() -> Result<(), String> {
 fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<usize> {
 	const FIXED_POINT: usize = 2;
 	const PIXEL_GAP: usize = 9; //it's '(2 + 0.25) * 2' but we use x2 fixed point to remove the floats
-	const SUB_PIXEL_SIZE: Size<usize> = braille::SIZE;
+	const SUB_PIXEL_SIZE: Size<usize> = video::braille::SIZE;
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
 	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
@@ -287,7 +287,7 @@ fn create_main_stream(stream_size: Size<u8>) -> StreamsConfig {
 
 	StreamsConfig {
 		stream_descs_data,
-		container_size: stream_size.cast() * braille::SIZE,
+		container_size: stream_size.cast() * video::braille::SIZE,
 	}
 }
 
@@ -296,7 +296,7 @@ fn create_matrix_streams(
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
 ) -> Result<StreamsConfig, String> {
-	let stream_input_size = stream_size.cast() * braille::SIZE;
+	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 
 	let stream_descs_data = (0..matrix_size.y)
@@ -332,20 +332,29 @@ fn compute(
 	streams_config: StreamsConfig,
 	fill_color: RGB8,
 ) -> Result<(), String> {
+	fn get_decoder<'a>(
+		input_format_context: &'a ffmpeg_next::format::context::Input,
+		stream_type: ffmpeg_next::media::Type
+	) -> Option<(ffmpeg_next::Stream<'a>, ffmpeg_next::decoder::decoder::Decoder)> {
+		let stream = input_format_context
+			.streams()
+			.best(stream_type)?;
+		let codec_context = ffmpeg_next::codec::Context::from_parameters(stream.parameters())
+			.expect("failed to create codec context");
+		Some((stream, codec_context.decoder()))
+	}
+
 	//ffmpeg madness
 	let mut input_format_context = ffmpeg_next::format::input(in_path)
 		.expect("failed to create decoder");
-	let input_stream = input_format_context.streams().best(ffmpeg_next::media::Type::Video)
-		.expect("stream not found");
-	let video_stream_index = input_stream.index();
-
-	let input_codec_context = ffmpeg_next::codec::Context::from_parameters(input_stream.parameters())
-		.expect("failed to create codec context");
-	let mut decoder = input_codec_context.decoder().video()
-		.expect("failed to create video decoder");
+	let (video_stream, mut video_decoder) = get_decoder(&input_format_context, ffmpeg_next::media::Type::Video)
+		.map(|(stream, decoder)| (stream, decoder.video().expect("failed to create video decoder")))
+		.expect("we don't support audio only right now");
+	let audio = get_decoder(&input_format_context, ffmpeg_next::media::Type::Audio)
+		.map(|(stream, decoder)| (stream, decoder.audio().expect("failed to create audio decoder")));
 
 	//compute in/out frame rates
-	let in_frame_rate = decoder.frame_rate().map_or(0, |rate| szu::int_div_round!(rate.numerator(), rate.denominator()) as u16);
+	let in_frame_rate = video_decoder.frame_rate().map_or(0, |rate| szu::int_div_round!(rate.numerator(), rate.denominator()) as u16);
 	let out_frame_rate = out_frame_rate.unwrap_or(in_frame_rate);
 	
 	let begin_frame = begin_time.map(|begin_time| (begin_time.as_millis() * in_frame_rate as u128 / 1000) as usize);
@@ -354,7 +363,7 @@ fn compute(
 	//setup progress bar
 	let multi_progress = MultiProgress::new();
 
-	let num_frames = std::cmp::max(input_stream.frames() as usize, 1);
+	let num_frames = std::cmp::max(video_stream.frames() as usize, 1);
 	let num_frames_to_process = last_frame.unwrap_or(num_frames - 1) + 1 - begin_frame.unwrap_or(0);
 	let frames_progress = multi_progress.add(ProgressBar::new(num_frames_to_process as u64)
 		.with_style(ProgressStyle::with_template("[{bar}] {pos}/{len} {eta}")
@@ -365,11 +374,11 @@ fn compute(
 	}
 
 	//setup down-scaler
-	let content_size = Size::<usize>::new(decoder.width() as usize, decoder.height() as usize);
+	let content_size = Size::<usize>::new(video_decoder.width() as usize, video_decoder.height() as usize);
 	let fit_size = streams_config.container_size.contain(content_size);
 
 	let mut scaler = ffmpeg_next::software::scaling::Context::get(
-		decoder.format(),
+		video_decoder.format(),
 		content_size.x as u32,
 		content_size.y as u32,
 		ffmpeg_next::util::format::Pixel::RGB24,
@@ -385,7 +394,7 @@ fn compute(
 			writer: szt::StreamWriter::new(match &stream.source {
 				Some(_) => stream.desc,
 				None => StreamDesc {
-					size: (fit_size / braille::SIZE).try_cast().unwrap(),
+					size: (fit_size / video::braille::SIZE).try_cast().unwrap(),
 					name: stream.desc.name,
 				}
 			}),
@@ -447,10 +456,10 @@ fn compute(
 						None => img.clone(),
 					};
 
-					let formatter = HybridFormatter::new();
+					let formatter = video::oc_color::formatters::HybridFormatter::new();
 					let img = stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
 					let img = stage("Stream | Process   | Inflate", || img.map(|p| formatter.inflate(*p)));
-					let img = stage("Stream | Process   | Braille", || braille::as_braille(&img));
+					let img = stage("Stream | Process   | Braille", || video::braille::as_braille(&img));
 					let img = stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
 					for _ in 0..emit_count {
 						stage("Stream | Postamble | Cmd Gen", || stream.writer.push_frame_braille(&img));
@@ -472,15 +481,39 @@ fn compute(
 		return true;
 	};
 
-	for (_, packet) in input_format_context
-		.packets()
-		.filter(|(ffmpeg_stream, _)| ffmpeg_stream.index() == video_stream_index)
-	{
-		decoder.send_packet(&packet).unwrap();
-		if !receive_and_process_frames(&mut decoder) { break; }
+	let receive_and_process_audio_frames = |_decoder: &mut ffmpeg_next::decoder::Audio| {
+		false
+	};
+
+	let video_stream_index = video_stream.index();
+	let mut audio = audio.map(|(stream, decoder)| (stream.index(), decoder));
+	let stream_count = if audio.is_some() { 2 } else { 1 };
+	for (stream, packet) in input_format_context.packets() {
+		let mut done_streams = 0;
+		match stream.index() {
+			index if index == video_stream_index => {
+				video_decoder.send_packet(&packet).unwrap();
+				if !receive_and_process_frames(&mut video_decoder) {
+					done_streams += 1;
+				}
+			},
+			index if audio.as_ref().map_or(false, |(stream_index, _decoder)| index == *stream_index) => {
+				let (_audio_stream_index, audio_decoder) = audio.as_mut().unwrap();
+				audio_decoder.send_packet(&packet).unwrap();
+				if !receive_and_process_audio_frames(audio_decoder) {
+					done_streams += 1;
+				}
+			},
+			_ => { },
+		}
+		if done_streams == stream_count { break; }
 	}
-	decoder.send_eof().unwrap();
-	receive_and_process_frames(&mut decoder);
+	video_decoder.send_eof().unwrap();
+	receive_and_process_frames(&mut video_decoder);
+	if let Some((_audio_stream_index, audio_decoder)) = audio.as_mut() {
+		audio_decoder.send_eof().unwrap();
+		receive_and_process_audio_frames(audio_decoder);
+	}
 
 	frames_progress.finish();
 	
@@ -510,17 +543,4 @@ fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 		println!(" time: {}ms", timer.elapsed().as_millis());
 		output
 	}
-}
-
-#[cfg(feature = "debug-mode")]
-fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {
-	std::fs::write(path, lodepng::encode24(
-		&img
-			.buffer()
-			.iter()
-			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
-			.collect_vec(),
-		img.size().x,
-		img.size().y,
-	).unwrap()).unwrap();
 }

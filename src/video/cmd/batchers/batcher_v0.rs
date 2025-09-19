@@ -1,6 +1,5 @@
-use crate::{cmd::term_char::TermChar, math::Point, oc_color::PackedColor};
-
-use super::super::{TermFrame, Renderer, TermPixel};
+use crate::math::Point;
+use super::super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::PackedColor};
 
 struct Batch {
 	pub pos: Point<usize>,

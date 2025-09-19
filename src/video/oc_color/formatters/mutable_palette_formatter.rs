@@ -1,8 +1,5 @@
-
-use crate::oc_color::PackedColor;
-
 use super::{
-	super::{palette::{Palette, PaletteOr}, RGB8},
+	super::{palette::{Palette, PaletteOr}, RGB8, PackedColor},
 	Formatter
 };
 

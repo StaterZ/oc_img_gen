@@ -3,16 +3,17 @@ use std::marker::ConstParamTy;
 use deku::prelude::*;
 use itertools::Itertools;
 
-use crate::{math::{Point, Size}, oc_color::PackedColor};
+use crate::math::{Point, Size};
+use crate::FORMAT_VERSION;
+use super::super::oc_color::PackedColor;
 
 use super::{batchers, renderers::{CachedRenderer, SztRenderer}, BrailleFrame, TermFrame};
 
 #[derive(DekuWrite, ConstParamTy, PartialEq, Eq)]
-#[deku(endian = "big", id_type = "u8")]
+#[deku(endian = "little", id_type = "u8")]
 pub enum CommandKind {
 	#[deku(id = 0x00)] Text,
 	#[deku(id = 0x01)] Braille,
-	#[deku(id = 0x02)] Audio,
 }
 
 #[derive(DekuWrite)]
@@ -78,7 +79,7 @@ impl StreamDesc {
 }
 
 #[derive(DekuWrite)]
-#[deku(endian = "big", magic = b"sztb")]
+#[deku(endian = "little", magic = b"sztb")]
 pub struct Header {
 	pub version: u16,
 	pub frame_rate: u16,
@@ -94,7 +95,7 @@ pub struct File {
 	pub stream_descs: Vec<StreamDesc>,
 
 	#[deku(count = "header.num_frames")]
-	#[deku(endian = "big")] pub frame_sizes: Vec<Vec<u32>>,
+	#[deku(endian = "little")] pub frame_sizes: Vec<Vec<u32>>,
 
 	#[deku(count = "header.num_frames")]
 	pub frames: Vec<Vec<Frame>>,
@@ -104,7 +105,7 @@ impl File {
 	pub fn new(frame_rate: u16) -> Self {
 		Self {
 			header: Header {
-				version: 3,
+				version: FORMAT_VERSION,
 				frame_rate,
 				num_frames: 0,
 				num_streams: 0,

@@ -1,4 +1,5 @@
-use crate::{math::{Point, Size}, oc_color::PackedColor};
+use crate::math::{Point, Size};
+use super::super::super::oc_color::PackedColor;
 
 pub trait Renderer {
 	fn get_resolution(&self) -> Size<usize>;

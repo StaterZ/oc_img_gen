@@ -5,10 +5,8 @@ use std::{
 	rc::Rc,
 };
 
-
-use crate::{oc_color::PackedColor, math::Point};
-
-use super::super::{TermFrame, Renderer};
+use crate::math::Point;
+use super::super::{TermFrame, Renderer, super::oc_color::PackedColor};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum BucketKind {

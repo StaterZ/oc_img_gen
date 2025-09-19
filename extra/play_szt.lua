@@ -7,9 +7,8 @@ local component = require("component")
 local computer = require("computer")
 local term = require("term")
 local serialization = require("serialization")
-local fs = require("filesystem")
 
-local version = "1.1"
+local version = "1.2"
 
 local linear_stream = {}
 do
@@ -99,6 +98,40 @@ do
 	end
 end
 
+local function assertEq(found, expected, msg)
+	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, format))
+end
+
+local function read_u8(file)
+	return file:read(1):byte()
+end
+
+local function read_u16(file)
+	return
+		read_u8(file) * 0x100 +
+		read_u8(file)
+end
+
+local function read_u32(file)
+	return
+		read_u16(file) * 0x10000 +
+		read_u16(file)
+end
+
+local function read_u64(file)
+	return
+		read_u32(file) * 0x100000000 +
+		read_u32(file)
+end
+
+local function time_fmt(secs)
+	local result = ("%2.1fs"):format(secs % 60)
+	if secs >= 60 then
+		result = ("%im %s"):format(math.floor(secs / 60), result)
+	end
+	return result
+end
+
 local szt = {
 	magic = "sztb",
 	version = 3,
@@ -108,32 +141,6 @@ local args, ops = shell.parse(...)
 ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
 ops.color_check = ops["color-check"]
-
-local function assertEq(found, expected, msg)
-	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, format))
-end
-
-function read_u8(file)
-	return file:read(1):byte()
-end
-
-function read_u16(file)
-	return
-		read_u8(file) * 0x100 +
-		read_u8(file)
-end
-
-function read_u32(file)
-	return
-		read_u16(file) * 0x10000 +
-		read_u16(file)
-end
-
-function read_u64(file)
-	return
-		read_u32(file) * 0x100000000 +
-		read_u32(file)
-end
 
 local function inflate(v)
 	if v < 16 then
@@ -359,13 +366,13 @@ local function render(gpu, file, surfaces)
 	end
 
 	local function draw()
-		local begin_time = os.clock()
+		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
 		local frame_index = 0
 		while frame_index < num_frames do
-			local frame_begin_time = os.clock()
+			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
 
 			if ops.seek then
-				local current_time = (os.clock() - begin_time)
+				local current_time = (computer.uptime() - video_begin_time_up)
 				frame_index = math.ceil(current_time * frame_rate)
 				if frame_index >= num_frames then break end
 
@@ -391,13 +398,15 @@ local function render(gpu, file, surfaces)
 				if ops.fps then
 					gpu.setBackground(0xff0000)
 					gpu.setForeground(0xffffff)
-					local now = os.clock()
-					local elapsed = now - frame_begin_time
-					gpu.set(1, 1, ("%04i %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
+					local now, now_up = os.clock(), computer.uptime()
+					local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
+					local frame_time = frame_index / frame_rate
+					gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
 						frame_index,
-						frame_rate == 0 and 0 or frame_index / frame_rate - (now - begin_time),
-						1 / elapsed,
-						elapsed * 1000,
+						time_fmt(frame_time),
+						frame_rate == 0 and 0 or frame_time - video_elapsed_up,
+						1 / frame_elapsed,
+						frame_elapsed * 1000,
 						seek_table[frame_index + 1] - (seek_table[frame_index] or 0),
 						command_count
 					))
@@ -416,7 +425,7 @@ local function render(gpu, file, surfaces)
 
 			if not ops.fast and frame_rate ~= 0 then
 				repeat
-					local current_time = (os.clock() - begin_time)
+					local current_time = (computer.uptime() - video_begin_time_up)
 					local next_frame_index = math.ceil(current_time * frame_rate)
 				until next_frame_index > frame_index
 			end
@@ -454,6 +463,7 @@ end
 
 if ops.h or ops.help then
 	print("-h --help", "show this help")
+	print("-v --version", "show player version")
 	print("-p --probe", "show the header info")
 	print("   --fps", "show performance stats during playback")
 	print("   --loop", "loop video like a gif")

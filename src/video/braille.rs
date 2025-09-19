@@ -3,7 +3,8 @@ use std::borrow::Borrow;
 use num_traits::Zero;
 use szu::{math::int_div_round, iter::{MultiZipArrayExt, MultiZipExt}};
 
-use crate::{image::Image, math::Size, oc_color::{RGB, RGB8}};
+use crate::math::Size;
+use super::{image::Image, oc_color::{RGB, RGB8}};
 
 pub const SIZE: Size<usize> = Size::new(2, 4);
 pub const WIDTH: usize = SIZE.x;

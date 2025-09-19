@@ -1,7 +1,8 @@
 use more_asserts::*;
 use szu::iter::SplitByBytes;
 
-use crate::{cmd::szt, math::{Point, Size}, oc_color::PackedColor};
+use crate::math::{Point, Size};
+use super::super::{szt, super::oc_color::PackedColor};
 
 use super::basic_renderer::{BasicRenderer, RenderState};
 
@@ -98,7 +99,6 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 					}
 				}
 			},
-			szt::CommandKind::Audio => todo!(),
 		}
 	}
 }
