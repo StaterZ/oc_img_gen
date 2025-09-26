@@ -21,6 +21,7 @@ num-traits = "0.2.19"
 phf = { version = "0.13.1", features= ["macros"] }
 stopwatch = "0.0.7"
 szu = { version = "0.2.2", path = "../szu" }
+thiserror = "2.0.16"
 
 [features]
 default = []

@@ -8,7 +8,7 @@ mod batchers;
 mod term_pixel;
 mod renderers;
 mod term_char;
-pub mod szt;
+pub mod packet;
 
 type TermFrame = Image<TermPixel>;
 type BrailleFrame = Image<Braille<PackedColor>>;

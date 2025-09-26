@@ -2,17 +2,17 @@ use more_asserts::*;
 use szu::iter::SplitByBytes;
 
 use crate::math::{Point, Size};
-use super::super::{szt, super::oc_color::PackedColor};
+use super::super::{packet, super::oc_color::PackedColor};
 
 use super::basic_renderer::{BasicRenderer, RenderState};
 
-pub struct SztRenderer<const KIND: szt::CommandKind> {
+pub struct SztRenderer<const KIND: packet::CommandKind> {
 	blob: Vec<u8>,
 	bg_needs_emit: bool,
 	fg_needs_emit: bool,
 }
 
-impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
+impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 	pub fn new() -> Self {
 		Self {
 			blob: Vec::new(),
@@ -21,15 +21,15 @@ impl<const KIND: szt::CommandKind> SztRenderer<KIND> {
 		}
 	}
 	
-	pub fn build(self) -> szt::Frame {
-		szt::Frame {
+	pub fn build(self) -> packet::Frame {
+		packet::Frame {
 			command_kind: KIND,
 			commands: self.blob,
 		}
 	}
 }
 
-impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
+impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 	fn set_resolution(&mut self, _state: &RenderState, _value: Size<usize>) {
 		panic!("tried to set resoultion on SZT renderer");
 	}
@@ -86,8 +86,8 @@ impl<const KIND: szt::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		};
 
 		match KIND {
-			szt::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes(), chunk.len())),
-			szt::CommandKind::Braille => {
+			packet::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes(), chunk.len())),
+			packet::CommandKind::Braille => {
 				let mut iter = value.chars().map(to_braille).array_chunks::<MAX_BYTES>();
 				while let Some(chunk) = iter.next() {
 					encode_chunk(&chunk, 64);

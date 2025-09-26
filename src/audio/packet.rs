@@ -1,5 +1,7 @@
 use deku::prelude::*;
 
+use crate::encoder::media_container::DescriptorHeader;
+
 #[derive(DekuWrite)]
 #[deku(endian = "little")]
 pub struct VoiceState {
@@ -14,12 +16,12 @@ pub struct Sample<const N: usize> {
 }
 
 #[derive(DekuWrite)]
-pub struct Packet<const N: usize> {
-	samples: Vec<Sample<N>>,
+pub struct Packet {
+	samples: Vec<Sample<8>>,
 }
 
 #[derive(DekuWrite)]
-#[deku(endian = "little")]
-pub struct Header {
+pub struct Descriptor {
+	pub header: DescriptorHeader,
 	pub num_voices: u8,
 }
