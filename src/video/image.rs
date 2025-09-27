@@ -80,8 +80,8 @@ impl<T: Copy> Image<T> {
 	}
 }
 
-impl From<ffmpeg_next::frame::Video> for Image<RGB8> {
-	fn from(value: ffmpeg_next::frame::Video) -> Self {
+impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
+	fn from(value: &'a ffmpeg_next::frame::Video) -> Self {
 		let width = value.width() as usize;
 		let height = value.height() as usize;
 		

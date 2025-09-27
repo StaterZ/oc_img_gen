@@ -8,7 +8,7 @@ local computer = require("computer")
 local term = require("term")
 local serialization = require("serialization")
 
-local version = "2.0"
+local version = "1.2"
 
 local linear_stream = {}
 do
@@ -108,20 +108,20 @@ end
 
 local function read_u16(file)
 	return
-		read_u8(file) +
-		read_u8(file) * 0x100
+		read_u8(file) * 0x100 +
+		read_u8(file)
 end
 
 local function read_u32(file)
 	return
-		read_u16(file) +
-		read_u16(file) * 0x10000
+		read_u16(file) * 0x10000 +
+		read_u16(file)
 end
 
 local function read_u64(file)
 	return
-		read_u32(file) +
-		read_u32(file) * 0x100000000
+		read_u32(file) * 0x100000000 +
+		read_u32(file)
 end
 
 local function time_fmt(secs)
@@ -134,7 +134,7 @@ end
 
 local szt = {
 	magic = "sztb",
-	version = 4,
+	version = 3,
 }
 
 local args, ops = shell.parse(...)
@@ -142,41 +142,43 @@ ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
 ops.color_check = ops["color-check"]
 
-local lut = {
-	0x0f0f0f, 0x1e1e1e, 0x2d2d2d, 0x3c3c3c, 0x4b4b4b, 0x5a5a5a, 0x696969, 0x787878, 0x878787, 0x969696, 0xa5a5a5, 0xb4b4b4, 0xc3c3c3, 0xd2d2d2, 0xe1e1e1, 0xf0f0f0,
-	0x000000, 0x000040, 0x000080, 0x0000c0, 0x0000ff,  0x002400, 0x002440, 0x002480, 0x0024c0, 0x0024ff,  0x004900, 0x004940, 0x004980, 0x0049c0, 0x0049ff,  0x006d00, 0x006d40, 0x006d80, 0x006dc0, 0x006dff,  0x009200, 0x009240, 0x009280, 0x0092c0, 0x0092ff,  0x00b600, 0x00b640, 0x00b680, 0x00b6c0, 0x00b6ff,  0x00db00, 0x00db40, 0x00db80, 0x00dbc0, 0x00dbff,  0x00ff00, 0x00ff40, 0x00ff80, 0x00ffc0, 0x00ffff,
-	0x330000, 0x330040, 0x330080, 0x3300c0, 0x3300ff,  0x332400, 0x332440, 0x332480, 0x3324c0, 0x3324ff,  0x334900, 0x334940, 0x334980, 0x3349c0, 0x3349ff,  0x336d00, 0x336d40, 0x336d80, 0x336dc0, 0x336dff,  0x339200, 0x339240, 0x339280, 0x3392c0, 0x3392ff,  0x33b600, 0x33b640, 0x33b680, 0x33b6c0, 0x33b6ff,  0x33db00, 0x33db40, 0x33db80, 0x33dbc0, 0x33dbff,  0x33ff00, 0x33ff40, 0x33ff80, 0x33ffc0, 0x33ffff,
-	0x660000, 0x660040, 0x660080, 0x6600c0, 0x6600ff,  0x662400, 0x662440, 0x662480, 0x6624c0, 0x6624ff,  0x664900, 0x664940, 0x664980, 0x6649c0, 0x6649ff,  0x666d00, 0x666d40, 0x666d80, 0x666dc0, 0x666dff,  0x669200, 0x669240, 0x669280, 0x6692c0, 0x6692ff,  0x66b600, 0x66b640, 0x66b680, 0x66b6c0, 0x66b6ff,  0x66db00, 0x66db40, 0x66db80, 0x66dbc0, 0x66dbff,  0x66ff00, 0x66ff40, 0x66ff80, 0x66ffc0, 0x66ffff,
-	0x990000, 0x990040, 0x990080, 0x9900c0, 0x9900ff,  0x992400, 0x992440, 0x992480, 0x9924c0, 0x9924ff,  0x994900, 0x994940, 0x994980, 0x9949c0, 0x9949ff,  0x996d00, 0x996d40, 0x996d80, 0x996dc0, 0x996dff,  0x999200, 0x999240, 0x999280, 0x9992c0, 0x9992ff,  0x99b600, 0x99b640, 0x99b680, 0x99b6c0, 0x99b6ff,  0x99db00, 0x99db40, 0x99db80, 0x99dbc0, 0x99dbff,  0x99ff00, 0x99ff40, 0x99ff80, 0x99ffc0, 0x99ffff,
-	0xcc0000, 0xcc0040, 0xcc0080, 0xcc00c0, 0xcc00ff,  0xcc2400, 0xcc2440, 0xcc2480, 0xcc24c0, 0xcc24ff,  0xcc4900, 0xcc4940, 0xcc4980, 0xcc49c0, 0xcc49ff,  0xcc6d00, 0xcc6d40, 0xcc6d80, 0xcc6dc0, 0xcc6dff,  0xcc9200, 0xcc9240, 0xcc9280, 0xcc92c0, 0xcc92ff,  0xccb600, 0xccb640, 0xccb680, 0xccb6c0, 0xccb6ff,  0xccdb00, 0xccdb40, 0xccdb80, 0xccdbc0, 0xccdbff,  0xccff00, 0xccff40, 0xccff80, 0xccffc0, 0xccffff,
-	0xff0000, 0xff0040, 0xff0080, 0xff00c0, 0xff00ff,  0xff2400, 0xff2440, 0xff2480, 0xff24c0, 0xff24ff,  0xff4900, 0xff4940, 0xff4980, 0xff49c0, 0xff49ff,  0xff6d00, 0xff6d40, 0xff6d80, 0xff6dc0, 0xff6dff,  0xff9200, 0xff9240, 0xff9280, 0xff92c0, 0xff92ff,  0xffb600, 0xffb640, 0xffb680, 0xffb6c0, 0xffb6ff,  0xffdb00, 0xffdb40, 0xffdb80, 0xffdbc0, 0xffdbff,  0xffff00, 0xffff40, 0xffff80, 0xffffc0, 0xffffff,
-}
-
 local function inflate(v)
-	return lut[v + 1]
+	if v < 16 then
+		return v, true
+		--return ((v + 1) / 17 * 0xff) * 0x010101, false
+	else
+		local NUM_REDS, NUM_GREENS, NUM_BLUES = 6, 8, 5
+		local i = v - 16
+
+		local i_r = math.floor(i / (NUM_GREENS * NUM_BLUES))
+		local i_g = math.floor(i / NUM_BLUES) % NUM_GREENS
+		local i_b = i % NUM_BLUES
+
+		local r = math.min(math.floor((i_r * 0x100) / (NUM_REDS - 1)), 0xff)
+		local g = math.min(math.floor((i_g * 0x100) / (NUM_GREENS - 1)), 0xff)
+		local b = math.min(math.floor((i_b * 0x100) / (NUM_BLUES - 1)), 0xff)
+
+		return r * 0x10000 + g * 0x100 + b, false
+		--return r << 16 + g << 8 + b, false
+	end
 end
 
-local chars = {}
 local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
-local function draw_stream_frame(gpu, file, stream, commands_len)
+local function draw_stream_frame(gpu, file, stream, frame_index)
 	local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
 
 	local command_kind = read_u8(file)
 
 	local get_value
-	if command_kind == 0x01 then --check 0x01 first since it's likely more common
+	if command_kind == 1 then --check 1 first since it's likely more common
 		get_value = function(len)
+			value = ""
 			for i = 1, len do
-				chars[i] = unicode.char(0x2800 + read_u8(file))
+				value = value .. unicode.char(0x2800 + read_u8(file))
 			end
-			if #chars > len then
-				for i = len + 1, #chars do
-					chars[i] = nil
-				end
-			end
-			return table.concat(chars)
+			return value
 		end
-	elseif command_kind == 0x00 then
+	elseif command_kind == 0 then
 		get_value = function(len)
 			return file:read(len)
 		end
@@ -200,6 +202,7 @@ local function draw_stream_frame(gpu, file, stream, commands_len)
 		end
 	end
 
+	local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
 	local command_count = 0
 	local i = 0
 
@@ -233,28 +236,29 @@ end
 local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
+	local frame_rate = read_u16(file)
+	local num_frames = read_u32(file)
 	local num_streams = read_u8(file)
 
 	local streams = {}
 	for i = 1, num_streams do
-		local stream = {
-			kind = read_u8(file),
-			num_packets = read_u32(file),
-			name = file:read(read_u8(file)),
-		}
-		if stream.kind == 0x00 then
-			stream.frame_rate = read_u16(file)
-			stream.size_x = read_u8(file)
-			stream.size_y = read_u8(file)
-		elseif stream.kind == 0x01 then
-			stream.num_voices = read_u8(file)
-		end
-		table.insert(streams, stream)
+		local size_x = read_u8(file)
+		local size_y = read_u8(file)
+		local name = file:read(read_u8(file))
+
+		table.insert(streams, {
+			name = name,
+			size_x = size_x,
+			size_y = size_y,
+		})
 	end
 
 	return {
 		magic = magic,
 		version = version,
+		frame_rate = frame_rate,
+		num_frames = num_frames,
+		num_streams = num_streams,
 		streams = streams,
 	}
 end
@@ -262,28 +266,37 @@ end
 local function probe_header(file)
 	local header = read_header(file)
 	print(("magic: %s %s"):format(header.magic, header.magic == szt.magic and "OK" or "ERR"))
-	print(("version: %i %s"):format(header.version,
-		header.version == szt.version and "OK" or
-		header.version > szt.version and "NEW" or
-		"OLD"
-	))
+	print(("version: %i %s"):format(header.version, header.version == szt.version and "OK" or "OLD"))
+	print(("frame rate: %i"):format(header.frame_rate))
+	print(("frame count: %i"):format(header.num_frames))
 
-	print(("found %i streams:"):format(#header.streams))
+	print(("found %i stream descriptors:"):format(header.num_streams))
 	for i, stream in ipairs(header.streams) do
-		local kind_text =
-			stream.kind == 0x00 and "video" or
-			stream.kind == 0x01 and "audio" or
-			"unknown"
+		print(("%4i: '%s' %ix%i"):format(
+			i,
+			stream.name,
+			stream.size_x,
+			stream.size_y
+		))
+	end
 
-		print(("  %i: %s | '%s'"):format(i, kind_text, stream.name))
-		print(("    num_packets: %i"):format(stream.num_packets))
-		if stream.kind == 0x00 then
-			print(("    frame_rate: %i"):format(stream.frame_rate))
-			print(("    size: %ix%i"):format(stream.size_x, stream.size_y))
-		elseif stream.kind == 0x01 then
-			print(("    num_voices: %i"):format(stream.num_voices))
+	print(("seek tables: (%iframes x %istreams)"):format(header.num_frames, header.num_streams))
+	local size_min = math.huge
+	local size_sum = 0
+	local size_max = 0
+	for stream_i = 1, header.num_streams do
+		for frame_i = 1, header.num_frames do
+			local frame_size = read_u32(file)
+			size_min = math.min(size_min, frame_size)
+			size_sum = size_sum + frame_size
+			size_max = math.max(size_max, frame_size)
 		end
 	end
+	local size_avg = size_sum / (header.num_streams * header.num_frames)
+
+	print(("    min frame bytes: %i"):format(size_min))
+	print(("    avg frame bytes: %f"):format(size_avg))
+	print(("    max frame bytes: %i"):format(size_max))
 
 	local frames_begin_pos = file:seek()
 	print(("headers done at byte: %i"):format(frames_begin_pos))
@@ -296,41 +309,51 @@ local function render(gpu, file, surfaces)
 	assertEq(header.version, szt.version, "bad version")
 	print("version: OK")
 
+	local frame_rate = header.frame_rate
+	local num_frames = header.num_frames
 	local num_streams = header.num_streams
 
 	local main_screen = gpu.getScreen()
 	local max_size_x, max_size_y = 0, 0
 	local streams = {}
 	for i, stream_desc in ipairs(header.streams) do
+		local surface = surfaces[stream_desc.name] or error(("missing surface for stream '%s'"):format(stream_desc.name))
+		surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
+		surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
+
 		local stream = {
-			kind = stream_desc.kind,
-			num_packets = stream_desc.num_packets,
+			size_x = stream_desc.size_x,
+			size_y = stream_desc.size_y,
 			name = stream_desc.name,
+			surface = surface,
+			frame_sizes = {},
 		}
-		if stream_desc.kind == 0x00 then
-			local surface = surfaces[stream_desc.name] or error(("missing surface for stream '%s'"):format(stream_desc.name))
-			surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
-			surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
 
-			stream.surface = surface
-			stream.frame_rate = stream_desc.frame_rate
-			stream.size_x = stream_desc.size_x
-			stream.size_y = stream_desc.size_y
+		max_size_x = math.max(max_size_x, stream.size_x)
+		max_size_y = math.max(max_size_y, stream.size_y)
 
-			max_size_x = math.max(max_size_x, stream.size_x)
-			max_size_y = math.max(max_size_y, stream.size_y)
-
-			if stream.surface.is_fullscreen then
-				gpu.bind(stream.surface.screen_addr, false)
-				gpu.setResolution(stream.size_x, stream.size_y)
-			end
-		elseif stream_desc.kind == 0x01 then
-			stream.num_voices = stream_desc.num_voices
+		if stream.surface.is_fullscreen then
+			gpu.bind(stream.surface.screen_addr, false)
+			gpu.setResolution(stream.size_x, stream.size_y)
 		end
+
 		table.insert(streams, stream)
 	end
 	if gpu.getScreen() ~= main_screen then
 		gpu.bind(main_screen, false)
+	end
+
+	print(("reading seek tables... (%iframes x %istreams)"):format(num_frames, num_streams))
+	local seek_table = {}
+	for stream_index, stream in ipairs(streams) do
+		for i = 1, num_frames do
+			local frame_size = read_u32(file)
+			stream.frame_sizes[i] = frame_size
+			seek_table[i] = (seek_table[i] or 0) + frame_size
+		end
+	end
+	for i = 2, #seek_table do
+		seek_table[i] = seek_table[i] + seek_table[i - 1]
 	end
 
 	local frames_begin_pos = file:seek()
@@ -344,69 +367,66 @@ local function render(gpu, file, surfaces)
 
 	local function draw()
 		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
-		local end_frame_index = streams[1].num_packets --TODO
 		local frame_index = 0
-		while frame_index < end_frame_index do
+		while frame_index < num_frames do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
 
-			-- if ops.seek then
-			-- 	local current_time = (computer.uptime() - video_begin_time_up)
-			-- 	frame_index = math.ceil(current_time * stream.frame_rate)
-			-- 	if frame_index >= last_packet_index then break end
+			if ops.seek then
+				local current_time = (computer.uptime() - video_begin_time_up)
+				frame_index = math.ceil(current_time * frame_rate)
+				if frame_index >= num_frames then break end
 
-			-- 	file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
-			-- end
-
-			local stream_id = read_u8(file)
-			local stream = streams[stream_id + 1]
-			if stream.kind == 0x00 then
-				local commands_len = read_u16(file)
-				if commands_len > 0 then
-					if gpu.getScreen() ~= stream.surface.screen_addr then
-						gpu.bind(stream.surface.screen_addr, false)
-						if not ops.no_back then
-							gpu.bitblt(back, nil, nil, nil, nil, 0)
-						end
-					end
-				end
-
-				local command_count = draw_stream_frame(gpu, file, stream, commands_len)
-
-				if commands_len > 0 then
-					if ops.fps then
-						gpu.setBackground(0xff0000)
-						gpu.setForeground(0xffffff)
-						local now, now_up = os.clock(), computer.uptime()
-						local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-						local frame_time = frame_index / stream.frame_rate
-						local packet_len = commands_len + 4
-						gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
-							frame_index,
-							time_fmt(frame_time),
-							stream.frame_rate == 0 and 0 or frame_time - video_elapsed_up,
-							1 / frame_elapsed,
-							frame_elapsed * 1000,
-							packet_len,
-							command_count
-						))
-					end
-					if not ops.no_back then
-						gpu.bitblt()
-					end
-					if ops.diff then
-						gpu.setBackground(0x000000)
-						gpu.setForeground(0xff0000)
-						gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
-					end
-				end
-			elseif stream.kind == 0x01 then
-				computer.beep(100, 0.05)
+				file:seek("set", frames_begin_pos + seek_table[frame_index + 1])
 			end
 
-			if not ops.fast and stream.frame_rate ~= 0 then
+			for _, stream in ipairs(streams) do
+				local commands_len = stream.frame_sizes[frame_index + 1] - frame_header_size
+				if commands_len <= 0 then
+					draw_stream_frame(gpu, file, stream, frame_index) --ensures we skip the header
+					goto continue
+				end
+
+				if gpu.getScreen() ~= stream.surface.screen_addr then
+					gpu.bind(stream.surface.screen_addr, false)
+					if not ops.no_back then
+						gpu.bitblt(back, nil, nil, nil, nil, 0)
+					end
+				end
+
+				local command_count = draw_stream_frame(gpu, file, stream, frame_index)
+
+				if ops.fps then
+					gpu.setBackground(0xff0000)
+					gpu.setForeground(0xffffff)
+					local now, now_up = os.clock(), computer.uptime()
+					local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
+					local frame_time = frame_index / frame_rate
+					gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
+						frame_index,
+						time_fmt(frame_time),
+						frame_rate == 0 and 0 or frame_time - video_elapsed_up,
+						1 / frame_elapsed,
+						frame_elapsed * 1000,
+						seek_table[frame_index + 1] - (seek_table[frame_index] or 0),
+						command_count
+					))
+				end
+				if not ops.no_back then
+					gpu.bitblt()
+				end
+				if ops.diff then
+					gpu.setBackground(0x000000)
+					gpu.setForeground(0xff0000)
+					gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+				end
+
+				::continue::
+			end
+
+			if not ops.fast and frame_rate ~= 0 then
 				repeat
 					local current_time = (computer.uptime() - video_begin_time_up)
-					local next_frame_index = math.ceil(current_time * stream.frame_rate)
+					local next_frame_index = math.ceil(current_time * frame_rate)
 				until next_frame_index > frame_index
 			end
 
@@ -461,12 +481,8 @@ if ops.v or ops.version then
 	return
 end
 
+--open file
 local gpu = component.gpu
--- local dummy = function() return 0 end
--- local gpu = {
--- 	__index = function() return dummy end
--- }
--- setmetatable(gpu, gpu)
 
 --get surfaces
 local surfaces
@@ -493,24 +509,17 @@ if not file then
 	error("Failed to open file: " .. reason)
 end
 
-local function run()
+
+local ok, reason = xpcall(function()
 	if ops.p or ops.probe then
 		probe_header(file)
 		return
 	end
 
 	render(gpu, file, surfaces)
-end
-
-local res_x, res_y = gpu.getResolution()
-local function errHandler(err)
-	gpu.setBackground(0xff0000)
-	gpu.setForeground(0xffffff)
-	return debug.traceback(err)
-end
-
-local result, reason = xpcall(run, errHandler)
-
+end, function(err)
+	return ("%s | %s"):format(err, debug.traceback())
+end)
 file:close()
 if ops.p or ops.probe then return end
 
@@ -518,10 +527,12 @@ if ops.p or ops.probe then return end
 if not ops.no_back then
 	gpu.setActiveBuffer(0)
 end
-gpu.setResolution(res_x, res_y)
+gpu.setBackground(0xff0000)
+gpu.setForeground(0xffffff)
+term.setCursor(1, 1)
 
 --handle error
-if not result then
+if not ok then
 	if not ops.no_back then
 		gpu.freeAllBuffers()
 	end

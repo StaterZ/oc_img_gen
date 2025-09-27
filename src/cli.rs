@@ -40,8 +40,8 @@ pub fn parse_args() -> EncoderArgs {
 	EncoderArgs {
 		in_path: args.in_path,
 		out_path,
-		begin_time: args.begin_time,
-		end_time: args.end_time,
+		begin: args.begin,
+		end: args.end,
 		streams_config,
 		fill_color: RGB8::new(0x000000),
 	}
@@ -211,7 +211,7 @@ pub struct Args {
 		help = "What frame to start from, starts at input start if omitted",
 		value_parser = humantime::parse_duration,
 	)]
-	pub begin_time: Option<Duration>,
+	pub begin: Option<Duration>,
 
 	#[arg(
 		short = 'e',
@@ -219,7 +219,7 @@ pub struct Args {
 		help = "What frame to stop from (inclusive), stops at input end if omitted",
 		value_parser = humantime::parse_duration,
 	)]
-	pub end_time: Option<Duration>,
+	pub end: Option<Duration>,
 
 	#[arg(
 		short = 'f',

@@ -57,6 +57,15 @@ impl<T: PrimInt> From<T> for Frac<T> {
 	}
 }
 
+impl From<ffmpeg_next::Rational> for Frac<i32> {
+	fn from(value: ffmpeg_next::Rational) -> Self {
+		Self {
+			numerator: value.numerator(),
+			denominator: value.denominator(),
+		}
+	}
+}
+
 impl<T: PrimInt> PartialOrd for Frac<T> {
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
 		(self.numerator * other.denominator).partial_cmp(&(other.numerator * self.denominator))
@@ -96,6 +105,17 @@ impl<T: PrimInt> Mul for Frac<T> {
 	}
 }
 
+impl<T: PrimInt> Mul<T> for Frac<T> {
+	type Output = Self;
+
+	fn mul(self, rhs: T) -> Self::Output {
+		Self {
+			numerator: self.numerator * rhs,
+			denominator: self.denominator,
+		}
+	}
+}
+
 impl<T: PrimInt> Div for Frac<T> {
 	type Output = Self;
 
@@ -103,6 +123,17 @@ impl<T: PrimInt> Div for Frac<T> {
 		Self {
 			numerator: self.numerator * rhs.denominator,
 			denominator: self.denominator * rhs.numerator,
+		}
+	}
+}
+
+impl<T: PrimInt> Div<T> for Frac<T> {
+	type Output = Self;
+
+	fn div(self, rhs: T) -> Self::Output {
+		Self {
+			numerator: self.numerator,
+			denominator: self.denominator * rhs,
 		}
 	}
 }

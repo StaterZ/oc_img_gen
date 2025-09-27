@@ -7,9 +7,10 @@
 			"args": [
 				"run",
 				"--",
-				"-i=data/test.png",
+				"-i=data/miss_rgb.mp4",
 				"--mode=single",
 				"--stream-size=120x60",
+				"--end=1m"
 			],
 			"problemMatcher": [
 				"$rustc"

@@ -3,7 +3,7 @@ use std::marker::ConstParamTy;
 use deku::prelude::*;
 
 use crate::math::{Point, Size};
-use crate::encoder::media_container::{DescriptorHeader, MediaFile, Packet, PacketData, SeekTable, StreamDescriptor};
+use crate::encoder::media_container::{DescriptorHeader, MediaFile, Packet, PacketData, StreamDescriptor};
 use super::super::oc_color::PackedColor;
 
 use super::{batchers, renderers::{CachedRenderer, SztRenderer}, BrailleFrame, TermFrame};
@@ -34,16 +34,12 @@ pub struct Command {
 }
 
 #[derive(DekuWrite)]
+#[deku(ctx = "desc: &Descriptor")]
 pub struct Frame {
+	#[deku(endian = "little", update = "self.commands.len()")] pub commands_len: u16,
 	pub command_kind: CommandKind,
-	pub commands: Vec<u8>,
+	#[deku(count = "commands_len")] pub commands: Vec<u8>,
 	//pub commands: Vec<Command>,
-}
-
-impl Frame {
-	pub fn size(&self) -> usize {
-		self.to_bytes().unwrap().len()
-	}
 }
 
 #[derive(DekuWrite)]
@@ -55,7 +51,6 @@ pub struct Descriptor {
 
 pub struct VideoEncoder {
 	desc: Descriptor,
-	frame_sizes: Vec<u32>,
 	frames: Vec<Frame>,
 	prev_frame: Option<TermFrame>,
 }
@@ -64,7 +59,6 @@ impl VideoEncoder {
 	pub fn new(desc: Descriptor) -> Self {
 		Self {
 			desc,
-			frame_sizes: Vec::new(),
 			frames: Vec::new(),
 			prev_frame: None,
 		}
@@ -87,9 +81,10 @@ impl VideoEncoder {
 		batchers::batcher_v2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		self.prev_frame = Some(frame);
 
-		let frame = renderer.into_inner().build();
-		self.frame_sizes.push(frame.size() as u32);
+		let mut frame = renderer.into_inner().build();
+		frame.update();
 		self.frames.push(frame);
+		self.desc.header.num_packets += 1;
 	}
 
 	pub fn attach(self, file: &mut MediaFile) {
@@ -102,13 +97,6 @@ impl VideoEncoder {
 				stream_id,
 				data: PacketData::Video(frame),
 			});
-
-			todo!("insert at right times");
 		}
-		
-		file.seek_tables.push(SeekTable {
-			start_offsets: Vec::new(),
-		});
-		todo!("update seek tables");
 	}
 }

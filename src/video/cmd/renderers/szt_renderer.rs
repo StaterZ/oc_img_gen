@@ -24,6 +24,7 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 	pub fn build(self) -> packet::Frame {
 		packet::Frame {
 			command_kind: KIND,
+			commands_len: 0,
 			commands: self.blob,
 		}
 	}
