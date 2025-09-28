@@ -82,7 +82,7 @@ impl VideoEncoder {
 		self.prev_frame = Some(frame);
 
 		let mut frame = renderer.into_inner().build();
-		frame.update();
+		frame.update().unwrap();
 		self.frames.push(frame);
 		self.desc.header.num_packets += 1;
 	}

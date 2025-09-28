@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 
 use itertools::Itertools;
 use realfft::RealFftPlanner;
+use lapjv::lapjv;
+use ndarray::Array2;
 
 use crate::audio::packet::{Sample, VoiceState};
 
@@ -27,6 +29,7 @@ impl Default for Config {
 	}
 }
 
+#[derive(Clone, Copy)]
 pub struct VoiceStateFlt {
 	volume: f32,
 	frequency: f32,
@@ -111,6 +114,8 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 		pos += config.hop_length;
 	}
 
+	optimize_channel_jumping(&mut timeline);
+
 	// Write output	
 	let norm = if config.normalize { global_peak.max(1e-9) } else { 1.0 };
 	
@@ -132,4 +137,25 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 		});
 	}
 	samples
+}
+
+fn optimize_channel_jumping(frames: &mut Vec<FrameInstr>) {
+	for t in 1..frames.len() {
+		let n = frames[t + 1].voices.len();
+		let mut cost = Array2::<f32>::zeros((n, n));
+		for i in 0..n {
+			for j in 0..n {
+				let voice_a = &frames[t].voices[i];
+				let voice_b = &frames[t + 1].voices[j];
+				let error = (voice_a.frequency - voice_b.frequency).abs();
+				let criticality = (voice_a.volume + voice_b.volume) * 0.5;
+				cost[(i, j)] = error * criticality;
+			}
+		}
+
+		let (assign, _) = lapjv(&cost).expect("assignment failed");
+
+		// Reorder according to assignment
+		frames[t + 1].voices = assign.into_iter().map(|j| frames[t + 1].voices[j]).collect();
+	}
 }

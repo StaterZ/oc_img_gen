@@ -34,6 +34,8 @@ realfft = "3"
 
 #custom
 szu = { version = "0.2.2", path = "../szu" }
+lapjv = "0.3.0"
+ndarray = "0.16.1"
 
 [features]
 default = []
