@@ -1,25 +1,27 @@
 use std::{path::{Path, PathBuf}, time::Duration};
-use clap::Parser;
+use clap::{ArgAction, Args, Parser};
 use num_traits::ConstZero;
 
 use crate::{
 	encoder::{
-		EncoderArgs,
-		StreamsConfig,
-		VideoStreamDescData,
 		media_container::SizedString,
+		EncoderConfig,
+		VideoConfig,
+		VideoStreamDescData,
+		AudioConfig,
 	},
 	math::{Point, Rect, Size},
 	video::{self, oc_color::RGB8},
 	EXT,
 };
 
-pub fn parse_args() -> EncoderArgs {
-	let args = Args::parse();
-	validate_args(&args);
+pub fn parse_args() -> EncoderConfig {
+	let args = Cli::parse();
+	if !args.validate() {
+		std::process::exit(1);
+	}
+	println!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
 	
-	let streams_config = compute_stream_config(&args);
-
 	let out_path = match args.out_path {
 		None => {
 			let mut path = args.in_path.clone();
@@ -37,77 +39,30 @@ pub fn parse_args() -> EncoderArgs {
 		}
 	};
 
-	EncoderArgs {
+	let video_config = args.video.as_ref().map(build_video_config);
+	let audio_config = args.audio.as_ref().map(build_audio_config);
+	
+	EncoderConfig {
 		in_path: args.in_path,
 		out_path,
-		begin: args.begin,
-		end: args.end,
-		streams_config,
-		fill_color: RGB8::new(0x000000),
+		range: args.begin..=args.end,
+		video: video_config,
+		audio: audio_config,
 	}
 }
 
-fn validate_args(args: &Args) {
-	let mut is_bad = false;
-
-	match args.mode {
-		StreamMode::Single => {
-			if args.stream_size.is_none() {
-				eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
-				is_bad = true;
-			}
-			if args.matrix_size.is_some() {
-				eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
-				is_bad = true;
-			}
-			if args.streams_config.is_some() {
-				eprintln!("--streams-config is only valid when --mode is 'Custom'");
-				is_bad = true;
-			}
-		}
-		StreamMode::Matrix => {
-			if args.stream_size.is_none() {
-				eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
-				is_bad = true;
-			}
-			if args.matrix_size.is_none() {
-				eprintln!("--matrix-size is required when --mode is 'Matrix'");
-				is_bad = true;
-			}
-			if args.streams_config.is_some() {
-				eprintln!("--streams-config is only valid when --mode is 'Custom'");
-				is_bad = true;
-			}
-		}
-		StreamMode::Custom => {
-			if args.stream_size.is_some() {
-				eprintln!("--stream-size is only valid when --mode is 'Single' or 'Matrix'");
-				is_bad = true;
-			}
-			if args.matrix_size.is_some() {
-				eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
-				is_bad = true;
-			}
-			if args.streams_config.is_none() {
-				eprintln!("--streams-config is required when --mode is 'Custom'");
-				is_bad = true;
-			}
-		}
-	}
-
-	if is_bad {
-		std::process::exit(1);
-	}
-}
-
-pub fn compute_stream_config(args: &Args) -> StreamsConfig {
-	match args.mode {
+fn build_video_config(args: &VideoOpts) -> VideoConfig {
+	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
 		StreamMode::Single => create_main_stream(
 			args.frame_rate,
+			args.fill_color,
+			args.cmds_per_sec,
 			args.stream_size.unwrap(),
 		),
 		StreamMode::Matrix => create_matrix_streams(
 			args.frame_rate,
+			args.fill_color,
+			args.cmds_per_sec,
 			args.stream_size.unwrap(),
 			args.matrix_size.unwrap(),
 			args.matrix_gap_size
@@ -134,7 +89,12 @@ fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<
 	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
 }
 
-fn create_main_stream(frame_rate: Option<u16>, stream_size: Size<u8>) -> StreamsConfig {
+fn create_main_stream(
+	frame_rate: Option<u16>,
+	fill_color: RGB8,
+	cmds_per_sec: Option<usize>,
+	stream_size: Size<u8>,
+) -> VideoConfig {
 	let stream_descs_data = vec![VideoStreamDescData {
 		name: SizedString::new("main").expect("stream name too long"),
 		frame_rate,
@@ -142,18 +102,22 @@ fn create_main_stream(frame_rate: Option<u16>, stream_size: Size<u8>) -> Streams
 		source: None,
 	}];
 
-	StreamsConfig {
+	VideoConfig {
 		stream_descs_data,
 		container_size: stream_size.cast() * video::braille::SIZE,
+		fill_color,
+		cmds_per_sec,
 	}
 }
 
 fn create_matrix_streams(
 	frame_rate: Option<u16>,
+	fill_color: RGB8,
+	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
-) -> StreamsConfig {
+) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 
@@ -170,13 +134,15 @@ fn create_matrix_streams(
 			}))
 		.collect();
 
-	StreamsConfig {
+	VideoConfig {
 		stream_descs_data,
 		container_size,
+		fill_color,
+		cmds_per_sec,
 	}
 }
 
-fn create_streams_custom(_config_path: &Path) -> StreamsConfig {
+fn create_streams_custom(_config_path: &Path) -> VideoConfig {
 	todo!("custom stream config");
 }
 
@@ -187,9 +153,19 @@ pub enum StreamMode {
 	Custom,
 }
 
+pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
+	AudioConfig {
+		analysis_rate: args.analysis_rate,
+		fft_window_size: args.fft_window_size,
+		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
+		normalize: args.normalize,
+		num_voices: args.num_voices,
+	}
+}
+
 #[derive(Parser, Debug)]
-#[clap(author = "StaterZ")]
-pub struct Args {
+#[command(author, version)]
+pub struct Cli {
 	#[arg(
 		short = 'i',
 		long = "in",
@@ -221,14 +197,28 @@ pub struct Args {
 	)]
 	pub end: Option<Duration>,
 
-	#[arg(
-		short = 'f',
-		long = "frame-rate",
-		help = "The output framerate, copies input framerate if omitted",
-	)]
-	pub frame_rate: Option<u16>,
-	
+	#[command(flatten)]
+	video: Option<VideoOpts>,
 
+	#[command(flatten)]
+	audio: Option<AudioOpts>,
+}
+
+impl Cli {
+	fn validate(&self) -> bool {
+		let mut is_valid = true;
+		if let Some(video) = self.video.as_ref() {
+			is_valid &= video.validate();
+		}
+		if let Some(audio) = self.audio.as_ref() {
+			is_valid &= audio.validate();
+		}
+		is_valid
+	}
+}
+
+#[derive(Args, Debug)]
+struct VideoOpts {
 	#[arg(
 		value_enum,
 		short = 'm',
@@ -240,8 +230,27 @@ pub struct Args {
 		requires_if("Matrix", "matrix_screen_size"),
 		requires_if("Custom", "streams_config"),
 	)]
-	pub mode: StreamMode,
+	pub mode: Option<StreamMode>,
 
+	#[arg(
+		short = 'f',
+		long = "frame-rate",
+		help = "The output framerate, copies input framerate if omitted",
+	)]
+	pub frame_rate: Option<u16>,
+	
+	#[arg(
+		long = "fill-color",
+		help = "color of the padding around the video",
+		default_value_t = RGB8::new(0x000000),
+	)]
+	pub fill_color: RGB8,
+
+	#[arg(
+		long = "cps",
+		help = "how many commands to allow per second",
+	)]
+	pub cmds_per_sec: Option<usize>,
 
 	#[arg(
 		long = "stream-size",
@@ -272,4 +281,115 @@ pub struct Args {
 		help = "path to json streams config file",
 	)]
 	pub streams_config: Option<PathBuf>,
+}
+
+impl VideoOpts {
+	fn validate(&self) -> bool {
+		let mut is_valid = true;
+		match self.mode {
+			None => {
+				eprintln!("--mode is required");
+				is_valid = false;
+			}
+			Some(mode) => match mode {
+				StreamMode::Single => {
+					if self.stream_size.is_none() {
+						eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
+						is_valid = false;
+					}
+					if self.matrix_size.is_some() {
+						eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
+						is_valid = false;
+					}
+					if self.streams_config.is_some() {
+						eprintln!("--streams-config is only valid when --mode is 'Custom'");
+						is_valid = false;
+					}
+				}
+				StreamMode::Matrix => {
+					if self.stream_size.is_none() {
+						eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
+						is_valid = false;
+					}
+					if self.matrix_size.is_none() {
+						eprintln!("--matrix-size is required when --mode is 'Matrix'");
+						is_valid = false;
+					}
+					if self.streams_config.is_some() {
+						eprintln!("--streams-config is only valid when --mode is 'Custom'");
+						is_valid = false;
+					}
+				}
+				StreamMode::Custom => {
+					if self.stream_size.is_some() {
+						eprintln!("--stream-size is only valid when --mode is 'Single' or 'Matrix'");
+						is_valid = false;
+					}
+					if self.matrix_size.is_some() {
+						eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
+						is_valid = false;
+					}
+					if self.streams_config.is_none() {
+						eprintln!("--streams-config is required when --mode is 'Custom'");
+						is_valid = false;
+					}
+				}
+			}
+		}
+		is_valid
+	}
+}
+
+#[derive(Args, Debug)]
+pub struct AudioOpts {
+	#[arg(
+		long = "rate",
+		default_value_t = 22050,
+		help = "Target analysis sample rate (Hz)",
+	)]
+	pub analysis_rate: u32,
+
+	#[arg(
+		long = "window",
+		default_value_t = 1024,
+		help = "FFT window size (power of two)",
+	)]
+	pub fft_window_size: usize,
+
+	#[arg(
+		long = "hop",
+		help = "Hop size in samples (defaults to window/2)",
+	)]
+	pub hop_length: Option<usize>,
+
+	#[arg(
+		short = 'v',
+		long = "voices",
+		default_value_t = 8,
+		help = "How many voices to use (8 channels per sound card)",
+	)]
+	pub num_voices: usize,
+
+	#[arg(
+		short = 'n',
+		long = "normalize",
+		default_value_t = true,
+		action = ArgAction::SetTrue,
+		help = "Normalize output overall loudness",
+	)]
+	pub normalize: bool,
+}
+impl AudioOpts {
+	fn validate(&self) -> bool {
+		let mut is_valid = true;
+		if !self.fft_window_size.is_power_of_two() {
+			println!("--window must be a power of two");
+			is_valid = false;
+		}
+		if self.num_voices == 0 {
+			println!("--you need at least one voice");
+			is_valid = false;
+		}
+		is_valid
+	}
 }

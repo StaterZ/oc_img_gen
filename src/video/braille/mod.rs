@@ -1,10 +1,13 @@
 use std::borrow::Borrow;
 
-use num_traits::Zero;
-use szu::{math::int_div_round, iter::{MultiZipArrayExt, MultiZipExt}};
+use num_traits::ConstZero;
+use szu::{math::int_div_round, iter::MultiZipExt};
 
 use crate::math::Size;
 use super::{image::Image, oc_color::{RGB, RGB8}};
+
+#[cfg(feature = "gpu")]
+mod gpu;
 
 pub const SIZE: Size<usize> = Size::new(2, 4);
 pub const WIDTH: usize = SIZE.x;
@@ -12,7 +15,7 @@ pub const HEIGHT: usize = SIZE.y;
 pub const BITS: usize = WIDTH * HEIGHT;
 
 pub struct Braille<T> {
-	id: u8,
+	pub id: u8,
 	pub bg: T,
 	pub fg: T,
 }
@@ -74,8 +77,8 @@ impl Braille<RGB8> {
 				let group = group as u8;
 
 				let (bg, fg) = {
-					let mut bg_sum = RGB::<u32>::zero();
-					let mut fg_sum = RGB::<u32>::zero();
+					let mut bg_sum = RGB::<u32>::ZERO;
+					let mut fg_sum = RGB::<u32>::ZERO;
 					for i in 0..BITS {
 						let bin_sum = if (group >> i) & 1 == 0 {
 							&mut bg_sum
@@ -102,32 +105,43 @@ impl Braille<RGB8> {
 					fg: fg.unwrap_or_else(|| bg.unwrap()),
 				}
 			})
-		.max_by_key(|char| {
-			let bin_bleed = Self::compute_bin_bleed(char, pixels);
-			let cross_bin_sharpness = Self::compute_cross_bin_sharpness(char);
+		.max_by_key(|c| {
+			let bin_bleed = Self::compute_bin_bleed(c, pixels);
+			let cross_bin_sharpness = Self::compute_cross_bin_sharpness(c);
 			cross_bin_sharpness as i32 - bin_bleed as i32
 		}).unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
 	}
 }
 
+#[cfg(feature = "gpu")]
+pub use gpu::as_braille;
+
+#[cfg(not(feature = "gpu"))]
 pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
-	let braille_pixel_clusters = input.buffer()
-		.chunks_exact(input.size().x) //make grid
-		.array_chunks::<{ HEIGHT }>() //group rows by 4
-		.map(|char_row| char_row
-			.map(|row| row
-				.array_chunks::<{ WIDTH }>()) //split rows in chunks of 2
-			.multi_zip_array()); //convert the 4 chunked rows into a cluster row
-	
-	let buffer = braille_pixel_clusters
-		.flat_map(|rows| rows
-			.map(|cluster| Braille::from_pixels(&cluster)))
+	use rayon::prelude::*;
+
+	let row_len = input.size().x as usize;
+	let buffer: Vec<Braille<RGB8>> = input
+		.buffer()
+		.par_chunks_exact(HEIGHT * row_len) // parallel over row blocks
+		.flat_map(|row_block| {
+			// row_block: &[RGB8] covering HEIGHT rows
+			// split each row into WIDTH slices
+			let rows: Vec<&[RGB8]> = row_block.chunks(row_len).collect(); // safe, small vec per block
+			(0..(row_len / WIDTH)).into_par_iter().map(move |col| {
+				// create cluster from WIDTH x HEIGHT
+				let mut cluster = [[RGB8::ZERO; WIDTH]; HEIGHT];
+				for r in 0..HEIGHT {
+					let start = col * WIDTH;
+					let end = start + WIDTH;
+					cluster[r].copy_from_slice(&rows[r][start..end]);
+				}
+				Braille::from_pixels(&cluster)
+			})
+		})
 		.collect();
 
-	Image::new(
-		*input.size() / SIZE,
-		buffer,
-	)
+	Image::new(*input.size() / SIZE, buffer)
 }
 
 pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
@@ -135,7 +149,7 @@ pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
 		.chunks_exact(input.size().x)
 		.flat_map(|row| row
 			.into_iter()
-			.map(|char| char
+			.map(|c| c
 				.raster()
 				.into_iter())
 			.multi_zip()

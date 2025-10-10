@@ -1,10 +1,11 @@
 pub use renderer::Renderer;
-#[allow(unused_imports)]
-pub use basic_renderer::{BasicRenderer, CachedRenderer};
+pub use cached_renderer::{BasicRenderer, CachedRenderer, RenderState};
+pub use stat_renderer::StatRenderer;
 pub use code_renderer::CodeRenderer;
 pub use szt_renderer::SztRenderer;
 
 mod renderer;
-mod basic_renderer;
+mod cached_renderer;
+mod stat_renderer;
 mod code_renderer;
 mod szt_renderer;

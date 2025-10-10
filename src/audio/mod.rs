@@ -17,18 +17,6 @@ pub struct Config {
 	pub num_voices: usize,
 }
 
-impl Default for Config {
-	fn default() -> Self {
-		Self {
-			analysis_rate: 22050,
-			fft_window_size: 1024,
-			hop_length: 512,
-			normalize: true,
-			num_voices: 8,
-		}
-	}
-}
-
 #[derive(Clone, Copy)]
 pub struct VoiceStateFlt {
 	volume: f32,
@@ -140,7 +128,7 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 }
 
 fn optimize_channel_jumping(frames: &mut Vec<FrameInstr>) {
-	for t in 1..frames.len() {
+	for t in 0..(frames.len() - 1) {
 		let n = frames[t + 1].voices.len();
 		let mut cost = Array2::<f32>::zeros((n, n));
 		for i in 0..n {

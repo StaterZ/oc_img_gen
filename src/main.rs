@@ -24,6 +24,11 @@ const LOG: bool = false;
 const EXT: &str = "szt";
 const FORMAT_VERSION: u16 = 4;
 
+// TODO LIST:
+// * optional tracks
+// * muxer
+// * audio output
+
 fn main() -> anyhow::Result<()> {
 	#[cfg(feature = "debug-mode")]
 	return test::run();

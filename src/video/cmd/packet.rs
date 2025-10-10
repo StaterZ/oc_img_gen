@@ -4,9 +4,10 @@ use deku::prelude::*;
 
 use crate::math::{Point, Size};
 use crate::encoder::media_container::{DescriptorHeader, MediaFile, Packet, PacketData, StreamDescriptor};
+use crate::video::cmd::Machine;
 use super::super::oc_color::PackedColor;
 
-use super::{batchers, renderers::{CachedRenderer, SztRenderer}, BrailleFrame, TermFrame};
+use super::{batchers, renderers::{CachedRenderer, StatRenderer, SztRenderer}, BrailleFrame, TermFrame};
 
 #[derive(DekuWrite, ConstParamTy, PartialEq, Eq)]
 #[deku(endian = "little", id_type = "u8")]
@@ -53,6 +54,7 @@ pub struct VideoEncoder {
 	desc: Descriptor,
 	frames: Vec<Frame>,
 	prev_frame: Option<TermFrame>,
+	num_frames_since_emit: usize,
 }
 
 impl VideoEncoder {
@@ -61,6 +63,7 @@ impl VideoEncoder {
 			desc,
 			frames: Vec::new(),
 			prev_frame: None,
+			num_frames_since_emit: 0,
 		}
 	}
 	
@@ -82,6 +85,33 @@ impl VideoEncoder {
 		self.prev_frame = Some(frame);
 
 		let mut frame = renderer.into_inner().build();
+		frame.update().unwrap();
+		self.frames.push(frame);
+		self.desc.header.num_packets += 1;
+	}
+
+	fn push_frame_fancy<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
+		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
+		batchers::batcher_v2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
+		let renderer = renderer.into_inner();
+
+		let machine = Machine::new_t3();
+		let cost = renderer.get_cost(&machine);
+		self.num_frames_since_emit += 1;
+		let budget = (machine.call_budget * 20) / self.desc.frame_rate as usize * self.num_frames_since_emit;
+		//println!("cost:{}%", (cost / budget * 100).into_int());
+		let mut frame = if cost <= budget {
+			self.num_frames_since_emit = 0;
+			self.prev_frame = Some(frame);
+			renderer.into_inner().build()
+		} else {
+			//println!("experimental budget jump!");
+			Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
+				commands_len: 0,
+				command_kind: CMD_KIND,
+				commands: Vec::new(),
+			}
+		};
 		frame.update().unwrap();
 		self.frames.push(frame);
 		self.desc.header.num_packets += 1;

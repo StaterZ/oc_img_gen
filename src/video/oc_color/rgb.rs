@@ -1,10 +1,12 @@
 use std::fmt::Display;
+use std::num::ParseIntError;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
-use more_asserts::*;
-use num_traits::{Signed, Zero};
+use std::str::FromStr;
+//use more_asserts::*;
+use num_traits::{ConstZero, Signed, Zero};
 use szu::math::AbsDiff;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RGB<T> {
 	pub r: T,
 	pub g: T,
@@ -35,6 +37,14 @@ impl<T: Zero> Zero for RGB<T> {
 	}
 }
 
+impl<T: ConstZero> ConstZero for RGB<T> {
+	const ZERO: Self = Self {
+		r: T::ZERO,
+		g: T::ZERO,
+		b: T::ZERO,
+	};
+}
+
 impl<T: AbsDiff> AbsDiff for RGB<T> {
 	type Abs = RGB<T::Abs>;
 
@@ -62,8 +72,8 @@ impl RGB8 {
 	const G_SHIFT: u32 = 8 * 1;
 	const B_SHIFT: u32 = 8 * 0;
 
-	pub fn new(value: u32) -> Self {
-		debug_assert_le!(value, 0xffffff);
+	pub const fn new(value: u32) -> Self {
+		//debug_assert_le!(value, 0xffffff);
 
 		Self {
 			r: (value >> Self::R_SHIFT) as u8,
@@ -88,6 +98,29 @@ impl RGB8 {
 impl Display for RGB8 {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+	}
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ParseColorError {
+	#[error("Color must be 6 hex digits, {0} supplied")]
+	BadCharacterCount(usize),
+	#[error("{0}")]
+	ParseIntError(#[from] ParseIntError),
+}
+
+impl FromStr for RGB8 {
+	type Err = ParseColorError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let hex = s.trim();
+		if hex.len() != 6 {
+			return Err(ParseColorError::BadCharacterCount(hex.len()));
+		}
+		let r = u8::from_str_radix(&hex[0..2], 16)?;
+		let g = u8::from_str_radix(&hex[2..4], 16)?;
+		let b = u8::from_str_radix(&hex[4..6], 16)?;
+		Ok(RGB8 { r, g, b })
 	}
 }
 

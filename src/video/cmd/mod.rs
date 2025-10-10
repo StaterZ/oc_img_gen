@@ -1,13 +1,14 @@
 use super::{braille::Braille, image::Image, oc_color::{formatters::Formatter, PackedColor}};
 use renderers::{CachedRenderer, CodeRenderer, Renderer};
-
 pub use term_pixel::TermPixel;
 pub use term_char::TermChar;
+pub use machine::Machine;
 
 mod batchers;
 mod term_pixel;
 mod renderers;
 mod term_char;
+mod machine;
 pub mod packet;
 
 type TermFrame = Image<TermPixel>;

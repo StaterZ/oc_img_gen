@@ -3,15 +3,15 @@ use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use num_traits::{ConstZero, PrimInt, Zero};
 
-use super::{Frac, Point, Rect};
+use super::{Frac, GCD, Point, Rect};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Size<T: PrimInt> {
+pub struct Size<T: PrimInt + GCD> {
 	pub x: T,
 	pub y: T,
 }
 
-impl<T: PrimInt> Size<T> {
+impl<T: PrimInt + GCD> Size<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
@@ -30,13 +30,13 @@ impl<T: PrimInt> Size<T> {
 		self.x * self.y
 	}
 
-	pub fn cast<U: PrimInt + From<T>>(self) -> Size::<U> {
+	pub fn cast<U: PrimInt + GCD + From<T>>(self) -> Size::<U> {
 		Size {
 			x: self.x.into(),
 			y: self.y.into(),
 		}
 	}
-	pub fn try_cast<U: PrimInt + TryFrom<T>>(self) -> Result<Size::<U>, U::Error> {
+	pub fn try_cast<U: PrimInt + GCD + TryFrom<T>>(self) -> Result<Size::<U>, U::Error> {
 		Ok(Size {
 			x: self.x.try_into()?,
 			y: self.y.try_into()?,
@@ -65,13 +65,13 @@ impl<T: PrimInt> Size<T> {
 	}
 }
 
-impl<T: PrimInt + Display> Display for Size<T> {
+impl<T: PrimInt + GCD + Display> Display for Size<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "({},{})", self.x, self.y)
 	}
 }
 
-impl<T: PrimInt + DekuWriter> DekuWriter for Size<T> {
+impl<T: PrimInt + GCD + DekuWriter> DekuWriter for Size<T> {
 	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: ()) -> Result<(), DekuError> {
 		self.x.to_writer(writer, ctx)?;
 		self.y.to_writer(writer, ctx)?;
@@ -79,7 +79,7 @@ impl<T: PrimInt + DekuWriter> DekuWriter for Size<T> {
 	}
 }
 
-impl<T: PrimInt + FromStr> FromStr for Size<T>
+impl<T: PrimInt + GCD + FromStr> FromStr for Size<T>
 where
 	<T as FromStr>::Err: std::fmt::Debug,
 {
@@ -97,7 +97,7 @@ where
 	}
 }
 
-impl<T: PrimInt + Zero> Zero for Size<T> {
+impl<T: PrimInt + GCD + Zero> Zero for Size<T> {
 	fn zero() -> Self {
 		Self::new(T::zero(), T::zero())
 	}
@@ -107,11 +107,11 @@ impl<T: PrimInt + Zero> Zero for Size<T> {
 	}
 }
 
-impl<T: PrimInt + ConstZero> ConstZero for Size<T> {
+impl<T: PrimInt + GCD + ConstZero> ConstZero for Size<T> {
 	const ZERO: Self = Self::new(T::ZERO, T::ZERO);
 }
 
-impl<T: PrimInt> Add for Size<T> {
+impl<T: PrimInt + GCD> Add for Size<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
@@ -121,7 +121,7 @@ impl<T: PrimInt> Add for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt> Add<T> for Size<T> {
+impl<T: PrimInt + GCD> Add<T> for Size<T> {
 	type Output = Self;
 
 	fn add(self, rhs: T) -> Self::Output {
@@ -132,7 +132,7 @@ impl<T: PrimInt> Add<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt> Sub for Size<T> {
+impl<T: PrimInt + GCD> Sub for Size<T> {
 	type Output = Point<T>;
 
 	fn sub(self, rhs: Self) -> Self::Output {
@@ -142,7 +142,7 @@ impl<T: PrimInt> Sub for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt> Sub<T> for Size<T> {
+impl<T: PrimInt + GCD> Sub<T> for Size<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: T) -> Self::Output {
@@ -153,7 +153,7 @@ impl<T: PrimInt> Sub<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt> Mul for Size<T> {
+impl<T: PrimInt + GCD> Mul for Size<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self::Output {
@@ -163,7 +163,7 @@ impl<T: PrimInt> Mul for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt> Mul<T> for Size<T> {
+impl<T: PrimInt + GCD> Mul<T> for Size<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: T) -> Self::Output {
@@ -174,7 +174,7 @@ impl<T: PrimInt> Mul<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt> Div for Size<T> {
+impl<T: PrimInt + GCD> Div for Size<T> {
 	type Output = Self;
 
 	fn div(self, rhs: Self) -> Self::Output {
@@ -184,7 +184,7 @@ impl<T: PrimInt> Div for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt> Div<T> for Size<T> {
+impl<T: PrimInt + GCD> Div<T> for Size<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {

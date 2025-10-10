@@ -24,8 +24,8 @@ pub struct Descriptor {
 }
 
 pub struct AudioEncoder {
-	desc: Descriptor,
-	samples: Vec<Sample>,
+	pub desc: Descriptor,
+	pub samples: Vec<Sample>,
 }
 
 impl AudioEncoder {
@@ -40,10 +40,11 @@ impl AudioEncoder {
 		&self.desc
 	}
 
-	fn push_sample(&mut self, sample: Sample) {
-		self.samples.push(sample);
-		self.desc.header.num_packets += 1;
-	}
+	// pub fn push_sample(&mut self, sample: Sample) {
+	// 	debug_assert_eq!(self.desc.num_voices as usize, sample.voices.len());
+	// 	self.samples.push(sample);
+	// 	self.desc.header.num_packets += 1;
+	// }
 
 	pub fn attach(self, file: &mut MediaFile) {
 		let stream_id = file.header.num_streams;

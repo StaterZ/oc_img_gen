@@ -7,7 +7,7 @@
 			"args": [
 				"run",
 				"--",
-				"-i=data/miss_rgb.mp4",
+				"-i=data/bad-apple.mp4",
 				"--mode=single",
 				"--stream-size=120x60",
 				"--end=1m"

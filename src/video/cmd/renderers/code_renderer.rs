@@ -1,6 +1,9 @@
 use crate::math::{Point, Size};
-use super::super::super::oc_color::{PackedColor, formatters::Formatter};
-use super::basic_renderer::{BasicRenderer, RenderState};
+use super::{
+	BasicRenderer,
+	RenderState,
+	super::super::oc_color::{PackedColor, formatters::Formatter},
+};
 
 pub struct CodeRenderer<'a, T: Formatter> {
 	code: String,
@@ -25,15 +28,15 @@ impl<'a, T: Formatter> CodeRenderer<'a, T> {
 }
 
 impl<'a, T: Formatter> BasicRenderer for CodeRenderer<'a, T> {
-	fn set_resolution(&mut self, _state: &RenderState, value: Size<usize>) {
+	fn set_resolution(&mut self, value: Size<usize>) {
 		self.code += &format!("{}.setResolution({},{})\n", self.gpu_ident, value.x, value.y);
 	}
 
-	fn set_background(&mut self, _state: &RenderState, value: PackedColor) {
+	fn set_background(&mut self, value: PackedColor) {
 		self.code += &format!("{}.setBackground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
 	}
 
-	fn set_foreground(&mut self, _state: &RenderState, value: PackedColor) {
+	fn set_foreground(&mut self, value: PackedColor) {
 		self.code += &format!("{}.setForeground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
 	}
 

@@ -1,7 +1,9 @@
+pub use image::Image;
+
 pub mod oc_color;
 pub mod braille;
 pub mod cmd;
-pub mod image;
+mod image;
 
 #[cfg(feature = "debug-mode")]
 fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {

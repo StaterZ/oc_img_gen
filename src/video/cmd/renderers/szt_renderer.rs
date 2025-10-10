@@ -1,10 +1,12 @@
 use more_asserts::*;
 use szu::iter::SplitByBytes;
 
-use crate::math::{Point, Size};
-use super::super::{packet, super::oc_color::PackedColor};
+use crate::{math::{Point, Size}, video::cmd::renderers::cached_renderer::RenderState};
+use super::{
+	BasicRenderer,
+	super::{packet, super::oc_color::PackedColor},
+};
 
-use super::basic_renderer::{BasicRenderer, RenderState};
 
 pub struct SztRenderer<const KIND: packet::CommandKind> {
 	blob: Vec<u8>,
@@ -31,16 +33,16 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 }
 
 impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
-	fn set_resolution(&mut self, _state: &RenderState, _value: Size<usize>) {
+	fn set_resolution(&mut self, _value: Size<usize>) {
 		panic!("tried to set resoultion on SZT renderer");
 	}
 
-	fn set_background(&mut self, _state: &RenderState, _value: PackedColor) {
+	fn set_background(&mut self, _value: PackedColor) {
 		std::debug_assert_eq!(self.bg_needs_emit, false, "background set twice without set call inbetween");
 		self.bg_needs_emit = true;
 	}
 
-	fn set_foreground(&mut self, _state: &RenderState, _value: PackedColor) {
+	fn set_foreground(&mut self, _value: PackedColor) {
 		std::debug_assert_eq!(self.fg_needs_emit, false, "foreground set twice without set call inbetween");
 		self.fg_needs_emit = true;
 	}
