@@ -3,7 +3,7 @@ use std::{cell::Cell, collections::{hash_map::{Entry, OccupiedEntry}, HashMap}, 
 use itertools::Itertools;
 
 use crate::math::Point;
-use super::super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::PackedColor};
+use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::PackedColor};
 
 #[derive(Debug, Clone)]
 struct Batch {

@@ -19,16 +19,11 @@
 					"kind": "bin"
 				}
 			},
-			// "args": [
-			// 	"-i=data/test.png",
-			// 	"--begin=1m2s",
-			// 	"--stream_size=120x60"
-			// ],
 			"args": [
 				"-i=data/bad-apple.mp4",
 				"--mode=single",
-				"--stream-size=120x60",
-				"--end=1m"
+				"--end=1s",
+				"-v=8"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -51,8 +46,8 @@
 			"args": [
 				"-i=data/bad-apple.mp4",
 				"--mode=single",
-				"--stream-size=120x60",
-				"--end=1m"
+				"--end=1s",
+				"-v=8"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -64,8 +59,8 @@
 			"args": [
 				"-i=data/bad-apple.mp4",
 				"--mode=single",
-				"--stream-size=120x60",
-				"--end=1m"
+				"--end=1s",
+				"-v=8"
 			],
 			"cwd": "${workspaceFolder}",
 		}

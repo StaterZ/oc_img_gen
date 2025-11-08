@@ -9,8 +9,8 @@
 				"--",
 				"-i=data/bad-apple.mp4",
 				"--mode=single",
-				"--stream-size=120x60",
-				"--end=1m"
+				"--end=1s",
+				"-v=8"
 			],
 			"problemMatcher": [
 				"$rustc"

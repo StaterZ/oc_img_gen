@@ -5,11 +5,15 @@ use realfft::RealFftPlanner;
 use lapjv::lapjv;
 use ndarray::Array2;
 
-use crate::audio::packet::{Sample, VoiceState};
+use crate::{
+	audio::packet::{Sample, VoiceState},
+	encoder::media_container::SizedString,
+};
 
 pub mod packet;
 
 pub struct Config {
+	pub name: SizedString<u8>,
 	pub analysis_rate: u32,
 	pub fft_window_size: usize,
 	pub hop_length: usize,

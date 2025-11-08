@@ -9,6 +9,11 @@
 #![allow(dead_code)]
 
 
+use std::io::Write;
+use indicatif::ProgressStyle;
+use stopwatch::Stopwatch;
+use szu::flush_print;
+
 use math::Size;
 
 mod video;
@@ -20,14 +25,8 @@ mod cli;
 #[cfg(feature = "debug-mode")]
 mod test;
 
-const LOG: bool = false;
 const EXT: &str = "szt";
-const FORMAT_VERSION: u16 = 4;
-
-// TODO LIST:
-// * optional tracks
-// * muxer
-// * audio output
+const FORMAT_VERSION: u16 = 5;
 
 fn main() -> anyhow::Result<()> {
 	#[cfg(feature = "debug-mode")]
@@ -38,6 +37,25 @@ fn main() -> anyhow::Result<()> {
 	let args = cli::parse_args();
 
 	encoder::encode(args)
+}
+
+pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
+	if cfg!(feature = "log") {
+		flush_print!("{}", title);
+		let mut timer = Stopwatch::start_new();
+		let output = f();
+		timer.stop();
+		println!(" time: {}ms", timer.elapsed().as_millis());
+		output
+	} else {
+		f()
+	}
+}
+
+fn build_progress_style() -> ProgressStyle {
+	ProgressStyle::with_template("{msg} [{bar}] {pos}/{len} {eta}")
+		.unwrap()
+		.progress_chars("█▉▊▋▌▍▎▏ ")
 }
 
 #[derive(thiserror::Error, Debug)]

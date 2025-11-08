@@ -5,10 +5,9 @@ local event = require("event")
 local unicode = require("unicode")
 local component = require("component")
 local computer = require("computer")
-local term = require("term")
 local serialization = require("serialization")
 
-local version = "2.0"
+local version = "2.1"
 
 local linear_stream = {}
 do
@@ -137,7 +136,7 @@ end
 
 local szt = {
 	magic = "sztb",
-	version = 4,
+	version = 5,
 }
 
 local args, ops = shell.parse(...)
@@ -153,10 +152,14 @@ do
 		main_screen = gpu.getScreen()
 	end
 
-	function video.init(gpu, size_x, size_y)
+	function video.bind_main_screen(gpu)
 		if gpu.getScreen() ~= main_screen then
 			gpu.bind(main_screen, false)
 		end
+	end
+
+	function video.init(gpu, size_x, size_y)
+		video.bind_main_screen(gpu)
 
 		if not ops.no_back and size_x > 0 and size_y > 0 then
 			back = gpu.allocateBuffer(size_x, size_y)
@@ -171,9 +174,7 @@ do
 			gpu.freeBuffer(back)
 			gpu.setActiveBuffer(0)
 		end
-		if gpu.getScreen() ~= main_screen then
-			gpu.bind(main_screen, false)
-		end
+		video.bind_main_screen(gpu)
 	end
 
 
@@ -208,7 +209,7 @@ do
 		local get_value =
 			command_kind == 0x01 and gv_braille or --check 0x01 first since it's likely more common
 			command_kind == 0x00 and gv_raw or
-			error(("bad frame command_kind '%i'"):format(command_kind))
+			error(("bad frame command kind '%x2'"):format(command_kind))
 
 		if ops.batch_check then
 			get_value = function(file, len)
@@ -256,14 +257,16 @@ end
 local audio = {}
 do --audio engine
 	local num_channels = 8
-	local sound_engines = {}
+	local sound_engines
 	function audio.init(num_voices)
+		sound_engines = {}
 		for addr, _ in pairs(component.list("sound")) do
 			local engine = component.proxy(addr)
 			table.insert(sound_engines, engine)
 			--print(engine.address, engine)
 
 			engine.setTotalVolume(1)
+			engine.clear()
 			for channel = 1, num_channels do
 				engine.close(channel)
 			end
@@ -274,7 +277,7 @@ do --audio engine
 			local engine = sound_engines[engine_index + 1]
 			local channel = voice - engine_index * num_channels
 			engine.open(channel)
-			engine.setWave(channel, engine.modes.sine)
+			engine.setWave(channel, engine.modes[ops.wave or "sine"])
 			engine.resetFM(channel)
 			engine.resetAM(channel)
 			engine.resetEnvelope(channel)
@@ -282,15 +285,15 @@ do --audio engine
 	end
 
 	function audio.deinit(num_voices)
+		for _, engine in ipairs(sound_engines) do
+			engine.clear()
+		end
+
 		for voice = 1, num_voices do
 			local engine_index = math.floor((voice - 1) / num_channels)
 			local engine = sound_engines[engine_index + 1]
 			local channel = voice - engine_index * num_channels
 			engine.close(channel)
-		end
-		
-		for _, engine in ipairs(sound_engines) do
-			engine.process()
 		end
 	end
 
@@ -298,7 +301,7 @@ do --audio engine
 	local num_instructions = 0
 	local prev_proc_life = 0
 	local buf_min = 150
-	local buf_max = 1000
+	local buf_max = 250
 	local prev_proc_time = computer.uptime()
 	function audio.commit(t, num_voices, gpu)
 		for i, engine in ipairs(sound_engines) do
@@ -312,12 +315,21 @@ do --audio engine
 		local time_to_death = prev_proc_life - time_since_proc
 		local ready_life = time_to_death + buf_time
 		if ready_life > buf_max then
+			--sleep solution
 			local correction = ready_life - buf_max
 			--print(("Correction: %fms"):format(correction))
 			os.sleep(correction / 1000);
 			time_since_proc = time_since_proc + correction
 			time_to_death = time_to_death - correction
 			ready_life = ready_life - correction
+
+			-- --spin-lock solution
+			-- while ready_life < buf_max do
+			-- 	now = computer.uptime()
+			-- 	time_since_proc = (now - prev_proc_time) * 1000
+			-- 	time_to_death = prev_proc_life - time_since_proc
+			-- 	ready_life = time_to_death + buf_time
+			-- end
 		end
 		--if time_to_death < buf_min and ready_life >= buf_min then
 		if time_to_death < buf_min then
@@ -327,7 +339,7 @@ do --audio engine
 			end
 			buf_time = 0
 
-			if ops.fps and gpu then
+			if ops.fps and gpu ~= nil then
 				gpu.setBackground(0xff0000)
 				gpu.setForeground(0xffffff)
 				gpu.set(1, 2, ("INS:%03i DELTA:%06.1fms LIFE:%06.1fms"):format(num_instructions, time_since_proc, ready_life))
@@ -358,9 +370,9 @@ local function read_header(file)
 	local streams = {}
 	for i = 1, num_streams do
 		local stream = {
-			kind = read_u8(file),
 			num_packets = read_u32(file),
 			name = file:read(read_u8(file)),
+			kind = read_u8(file),
 		}
 		if stream.kind == 0x00 then
 			stream.frame_rate = read_u16(file)
@@ -469,7 +481,7 @@ local function play(gpu, file, surfaces)
 
 			local stream_id = read_u8(file)
 			local stream = streams[stream_id + 1]
-			if stream.kind == 0x00 then
+			if stream.kind == 0x00 then --video
 				local commands_len = read_u16(file)
 				if commands_len > 0 then
 					if gpu.getScreen() ~= stream.surface.screen_addr then
@@ -509,11 +521,14 @@ local function play(gpu, file, surfaces)
 						gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
 					end
 				end
-			elseif stream.kind == 0x01 then
+			elseif stream.kind == 0x01 then --audio
 				audio.play(file, stream.num_voices, gpu)
+			else
+				--we probably just wanna skip unknowns rather than get mad about it
+				--error("unknown packet kind: %x2", stream.kind)
 			end
 
-			if not ops.fast and stream.frame_rate ~= 0 and stream.frame_rate ~= nil then
+			if not ops.fast and stream.frame_rate ~= 0 and stream.kind == 0x00 then
 				repeat
 					local current_time = (computer.uptime() - video_begin_time_up)
 					local next_frame_index = math.ceil(current_time * stream.frame_rate)

@@ -1,16 +1,17 @@
 use std::{path::{Path, PathBuf}, time::Duration};
 use clap::{ArgAction, Args, Parser};
+use color_print::cprintln;
 use num_traits::ConstZero;
 
 use crate::{
 	encoder::{
 		media_container::SizedString,
+		AudioConfig,
 		EncoderConfig,
 		VideoConfig,
 		VideoStreamDescData,
-		AudioConfig,
 	},
-	math::{Point, Rect, Size},
+	math::{Frac, Point, Rect, Size},
 	video::{self, oc_color::RGB8},
 	EXT,
 };
@@ -53,22 +54,37 @@ pub fn parse_args() -> EncoderConfig {
 
 fn build_video_config(args: &VideoOpts) -> VideoConfig {
 	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
-		StreamMode::Single => create_main_stream(
-			args.frame_rate,
-			args.fill_color,
-			args.cmds_per_sec,
-			args.stream_size.unwrap(),
-		),
+		StreamMode::Single => {
+			let stream_size = args.stream_size.map_or_else(
+				|| {
+					let gpu_t3_max_res = Size::<usize>::new(160, 50);
+					//let content_size = Size::<usize>::new(1920, 1080); //TODO: bad assumption here!!!
+					let content_size = Size::<usize>::new(480, 360); //TODO: bad assumption here!!!
+					cprintln!("<red>TODO: we have bad assumptions here about content resolution!!!</>");
+					let size = compute_largest_size(content_size.ratio(), gpu_t3_max_res.area(), gpu_t3_max_res.x); //TODO
+					println!("auto-size: {}", size);
+					size.try_cast().expect("stream size too large")
+				},
+				|stream_size| stream_size.try_cast().expect("stream size too large")
+			);
+
+			create_main_stream(
+				args.frame_rate,
+				args.fill_color,
+				args.cmds_per_sec,
+				stream_size,
+			)
+		},
 		StreamMode::Matrix => create_matrix_streams(
 			args.frame_rate,
 			args.fill_color,
 			args.cmds_per_sec,
-			args.stream_size.unwrap(),
+			args.stream_size.map(|stream_size| stream_size.try_cast().expect("stream size too large")).unwrap(),
 			args.matrix_size.unwrap(),
 			args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
-						let gap = compute_gap_size(args.stream_size.unwrap().cast(), matrix_screen_size);
+						let gap = compute_gap_size(args.stream_size.unwrap(), matrix_screen_size);
 						println!("auto-gap: {}", gap);
 						gap
 					}))
@@ -89,6 +105,25 @@ fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<
 	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
 }
 
+pub fn compute_largest_size(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {
+	debug_assert!(ratio.numerator > 0 && ratio.denominator > 0, "Invalid ratio");
+	debug_assert!(max_pixels > 0, "max_pixels must be positive");
+
+	// Start by assuming width is limited by pixel count
+	// width * height <= max_pixels
+	// height = width / ratio
+	// so: width^2 / ratio <= max_pixels
+	// => width <= sqrt(max_pixels * ratio)
+	const SUB_PIXEL_SIZE: Size<usize> = video::braille::SIZE;
+	let ratio = ratio / SUB_PIXEL_SIZE.ratio();
+	let width_limit = (ratio * max_pixels).sqrt();
+
+	let width = width_limit.min(max_width.into());
+	let height = width / ratio;
+
+	Size::new(width.into_int_trunc(), height.into_int_trunc())
+}
+
 fn create_main_stream(
 	frame_rate: Option<u16>,
 	fill_color: RGB8,
@@ -99,7 +134,7 @@ fn create_main_stream(
 		name: SizedString::new("main").expect("stream name too long"),
 		frame_rate,
 		size: stream_size,
-		source: None,
+		source_area: None,
 	}];
 
 	VideoConfig {
@@ -127,7 +162,7 @@ fn create_matrix_streams(
 				name: SizedString::new(&format!("{},{}", x, y)).expect("stream name too long"),
 				frame_rate,
 				size: stream_size,
-				source: Some(Rect {
+				source_area: Some(Rect {
 					pos: Point::new(x, y) * (stream_input_size + matrix_gap_size),
 					size: stream_input_size,
 				})
@@ -155,6 +190,7 @@ pub enum StreamMode {
 
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 	AudioConfig {
+		name: SizedString::new("main").unwrap(),
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
@@ -256,7 +292,7 @@ struct VideoOpts {
 		long = "stream-size",
 		help = "The size of the streams",
 	)]
-	pub stream_size: Option<Size<u8>>,
+	pub stream_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "matrix-size",
@@ -293,10 +329,6 @@ impl VideoOpts {
 			}
 			Some(mode) => match mode {
 				StreamMode::Single => {
-					if self.stream_size.is_none() {
-						eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
-						is_valid = false;
-					}
 					if self.matrix_size.is_some() {
 						eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
 						is_valid = false;
@@ -307,10 +339,6 @@ impl VideoOpts {
 					}
 				}
 				StreamMode::Matrix => {
-					if self.stream_size.is_none() {
-						eprintln!("--stream-size is required when --mode is 'Single' or 'Matrix'");
-						is_valid = false;
-					}
 					if self.matrix_size.is_none() {
 						eprintln!("--matrix-size is required when --mode is 'Matrix'");
 						is_valid = false;
@@ -383,11 +411,11 @@ impl AudioOpts {
 	fn validate(&self) -> bool {
 		let mut is_valid = true;
 		if !self.fft_window_size.is_power_of_two() {
-			println!("--window must be a power of two");
+			eprintln!("--window must be a power of two");
 			is_valid = false;
 		}
 		if self.num_voices == 0 {
-			println!("--you need at least one voice");
+			eprintln!("--you need at least one voice");
 			is_valid = false;
 		}
 		is_valid

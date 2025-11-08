@@ -2,12 +2,30 @@ use std::marker::ConstParamTy;
 
 use deku::prelude::*;
 
-use crate::math::{Point, Size};
-use crate::encoder::media_container::{DescriptorHeader, MediaFile, Packet, PacketData, StreamDescriptor};
-use crate::video::cmd::Machine;
-use super::super::oc_color::PackedColor;
+use crate::math::{Frac, Point, Rect, Size};
+use crate::encoder::{
+	media_container::{
+		Descriptor as StreamDescriptor,
+		DescriptorContent,
+		Packet,
+		PacketContent,
+		SizedString
+	},
+	muxer::PacketWriter,
+};
 
-use super::{batchers, renderers::{CachedRenderer, StatRenderer, SztRenderer}, BrailleFrame, TermFrame};
+use super::{
+	super::{
+		braille,
+		oc_color::{formatters::{HybridFormatter, Formatter}, PackedColor, RGB8, PaletteOr},
+		Image,
+	},
+	batcher,
+	renderers::{CachedRenderer, StatRenderer, SztRenderer},
+	BrailleFrame,
+	TermFrame,
+	Machine,
+};
 
 #[derive(DekuWrite, ConstParamTy, PartialEq, Eq)]
 #[deku(endian = "little", id_type = "u8")]
@@ -43,56 +61,80 @@ pub struct Frame {
 	//pub commands: Vec<Command>,
 }
 
-#[derive(DekuWrite)]
+#[derive(Clone, DekuWrite)]
 pub struct Descriptor {
-	pub header: DescriptorHeader,
 	#[deku(endian = "little")] pub frame_rate: u16,
 	pub size: Size<u8>,
 }
 
 pub struct VideoEncoder {
-	desc: Descriptor,
+	name: SizedString<u8>,
+	pub desc: Descriptor,
 	frames: Vec<Frame>,
 	prev_frame: Option<TermFrame>,
 	num_frames_since_emit: usize,
+	source_area: Option<Rect<usize>>,
+	num_written_frames: u64,
+	stream_id: u8,
 }
 
 impl VideoEncoder {
-	pub fn new(desc: Descriptor) -> Self {
+	pub fn new(name: SizedString<u8>, source_area: Option<Rect<usize>>, desc: Descriptor, stream_id: u8) -> Self {
 		Self {
+			name,
+			source_area,
 			desc,
 			frames: Vec::new(),
 			prev_frame: None,
 			num_frames_since_emit: 0,
+			num_written_frames: 0,
+			stream_id,
 		}
 	}
 	
-	pub fn get_desc(&self) -> &Descriptor {
-		&self.desc
+	pub fn process(&mut self, img: &Image<RGB8>, formatter: &HybridFormatter) {
+		let img = match &self.source_area {
+			Some(source_area) => crate::stage("Stream | Preamble  | Crop", || img.crop(source_area)),
+			None => img.clone(), //TODO: PERF
+		};
+
+		let img = crate::stage("Stream | Process   | Black&White", || img.map(|p| {
+			const BLACK: RGB8 = RGB8::new(0x000000);
+			const WHITE: RGB8 = RGB8::new(0xffffff);
+			if p.perceptual_delta(WHITE) < p.perceptual_delta(BLACK) { WHITE } else { BLACK }
+		}));
+
+		// let img = crate::stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
+		// let img = crate::stage("Stream | Process   | Inflate", || img.map(|p| formatter.inflate(*p)));
+
+		let img = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img));
+		let img = crate::stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
+		
+		crate::stage("Stream | Postamble | Cmd Gen", || self.push_frame_braille(&img));
+		//println!("{}", cmd::code_gen(&img.map(|braille| braille.into()), None, &formatter));
 	}
 
-	pub fn push_frame_text(&mut self, frame: TermFrame) {
+	fn push_frame_text(&mut self, frame: TermFrame) {
 		self.push_frame::<{ CommandKind::Text }>(frame);
 	}
 
-	pub fn push_frame_braille(&mut self, frame: &BrailleFrame) {
+	fn push_frame_braille(&mut self, frame: &BrailleFrame) {
 		self.push_frame::<{ CommandKind::Braille }>(frame.map(|braille| braille.into()));
 	}
 	
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
 		let mut renderer = CachedRenderer::new(SztRenderer::<CMD_KIND>::new());
-		batchers::batcher_v2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
+		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		self.prev_frame = Some(frame);
 
 		let mut frame = renderer.into_inner().build();
 		frame.update().unwrap();
 		self.frames.push(frame);
-		self.desc.header.num_packets += 1;
 	}
 
 	fn push_frame_fancy<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
 		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
-		batchers::batcher_v2::draw(&mut renderer, &frame, self.prev_frame.as_ref());
+		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		let renderer = renderer.into_inner();
 
 		let machine = Machine::new_t3();
@@ -114,19 +156,29 @@ impl VideoEncoder {
 		};
 		frame.update().unwrap();
 		self.frames.push(frame);
-		self.desc.header.num_packets += 1;
+	}
+}
+
+impl PacketWriter for VideoEncoder {
+	fn get_descriptor(self) -> StreamDescriptor {
+		StreamDescriptor {
+			num_packets: 0,
+			name: self.name,
+			content: DescriptorContent::Video(self.desc),
+		}
 	}
 
-	pub fn attach(self, file: &mut MediaFile) {
-		let stream_id = file.header.num_streams;
-		file.header.num_streams += 1;
-		file.stream_descs.push(StreamDescriptor::Video(self.desc));
+	fn get_next_packet_time(&self) -> Option<Frac<u64>> {
+		(!self.frames.is_empty()).then_some(Frac::new(self.num_written_frames, self.desc.frame_rate as u64))
+	}
 
-		for frame in self.frames {
-			file.packets.push(Packet {
-				stream_id,
-				data: PacketData::Video(frame),
-			});
-		}
+	fn get_next_packet(&mut self) -> Option<Packet> {
+		self.frames.pop().map(|frame| {
+			self.num_written_frames += 1;
+			Packet {
+				stream_id: self.stream_id,
+				content: PacketContent::Video(frame),
+			}
+		})
 	}
 }

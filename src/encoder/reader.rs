@@ -5,118 +5,170 @@ use std::{
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use ffmpeg_next::{
-	codec::{
-		decoder::Audio as AudioDecoder,
-		Context as CodecCtx,
-	},
-	media::Type as MediaType,
-	software::resampling::Context as Resampler,
-	util::{
-		format::Sample as SampleFormat,
-		frame::audio::Audio as AudioFrame,
-	}
+	codec::Context as CodecCtx,
+	util::error::Error as FfmpegError,
+	decoder::decoder::Decoder as FfmpegDecoder,
+	format::stream::Stream as FfmpegStream,
 };
 
-use crate::{math::Frac, LOG};
-use crate::audio::{
-	packet::{
-		Descriptor as AudioStreamDesc,
-		AudioEncoder,
-	},
-	Config as AudioConfig,
-	encode as encode_audio,
-};
-use super::{
-	media_container::{DescriptorHeader, SizedString},
-	build_progress_style,
-	stage,
-};
+use crate::math::Frac;
+use super::muxer::PacketWriter;
 
-pub struct ReaderData<'a> {	
+pub struct ReaderData<'a, TDecoder: DecoderInterface> {
 	stream_index: usize,
-	decoder: AudioDecoder,
-	receive_buffer: AudioFrame,
+	pub decoder: TDecoder,
+	time_base: Frac<i64>,
+	pub receive_buffer: TDecoder::Frame,
 	range_ts: RangeInclusive<i64>,
 	pub is_done: bool,
-	multi_progress: &'a MultiProgress,
 	progress: ProgressBar,
+	pub multi_progress: &'a MultiProgress,
 }
 
-impl<'a> StreamReader<'a> {
+pub trait DecoderInterface: Sized {
+	type Frame: FrameInterface;
+
+	fn new(decoder: FfmpegDecoder) -> Result<Self, FfmpegError>;
+
+	fn receive_frame(&mut self, frame: &mut Self::Frame) -> Result<(), FfmpegError>;
+	fn send_eof(&mut self) -> Result<(), FfmpegError>;
+	fn send_packet<P: ffmpeg_next::packet::Ref>(&mut self, packet: &P) -> Result<(), FfmpegError>;
+}
+
+pub trait FrameInterface: Sized {
+	fn empty() -> Self;
+
+	fn pts(&self) -> Option<i64>;
+}
+
+impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 	pub fn new(
-		ictx: &ffmpeg_next::format::context::Input,
+		name: &'static str,
+		stream: &FfmpegStream,
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
-		config: AudioConfig,
-	) -> Option<Self> {
-		let stream = ictx
-			.streams()
-			.best(MediaType::Audio)?;
-
+	) -> Self {
 		let codec_ctx = CodecCtx::from_parameters(stream.parameters())
 			.expect("failed to create codec context");
 
-		let decoder = codec_ctx.decoder().audio().unwrap();
+		let decoder = TDecoder::new(codec_ctx.decoder()).unwrap();
 
-		let tb = Frac::from(stream.time_base()).cast::<i64>();
+		let time_base = Frac::from(stream.time_base()).cast::<i64>();
 		let end_ts = stream.start_time() + stream.duration();
 		
-		let ms_to_ts = |ms: u128, tb: Frac<i64>| (Frac::new(ms, 1000) / tb.try_cast::<u128>().unwrap()).into_int() as i64;
-		let range_ts = range.start().map_or(0, |start| ms_to_ts(start.as_millis(), tb))..=range.end().map_or(end_ts, |end| ms_to_ts(end.as_millis(), tb));
+		let ms_to_ts = |ms: u128| (Frac::new(ms, 1000) / time_base.try_cast::<u128>().unwrap()).into_int() as i64;
+		let range_ts = range.start().map_or(0, |start| ms_to_ts(start.as_millis()))..=range.end().map_or(end_ts, |end| ms_to_ts(end.as_millis()));
 
 		let num_frames = (Frac::new(stream.frames(), stream.duration()) * range_ts.try_len().unwrap() as i64).into_int();
 
 		let progress = multi_progress.add(ProgressBar::new(num_frames as u64)
-			.with_style(build_progress_style())
-			.with_message("audio"));
-		if !LOG {
-			progress.tick();
-		}
-		
-		Some(Self {
+			.with_style(crate::build_progress_style())
+			.with_message(name));
+
+		Self {
 			stream_index: stream.index(),
 			decoder,
-			receive_buffer: AudioFrame::empty(),
+			time_base,
+			receive_buffer: TDecoder::Frame::empty(),
 			range_ts,
 			is_done: false,
 			progress,
 			multi_progress,
-		})
+		}
 	}
 
-	fn receive_and_process(&mut self) {
-		let frame = &self.receive_buffer;
+	pub fn init(&mut self) {
+		if cfg!(not(feature = "log")) {
+			self.progress.tick();
+		}
+	}
+}
+
+pub trait Reader<'a> {
+	type Decoder: DecoderInterface;
+
+	fn get_data(&self) -> &ReaderData<'a, Self::Decoder>;
+	fn get_data_mut(&mut self) -> &mut ReaderData<'a, Self::Decoder>;
+
+	fn is_done(&self) -> bool { //TODO: move to CommonReader
+		self.get_data().is_done
+	}
+
+	fn init(&mut self) { //TODO: move to CommonReader
+		self.get_data_mut().init();
+	}
+
+	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
+
+	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool);
+
+	fn receive_and_process(&mut self, should_force_emit: bool) {
+		let frame = &self.get_data().receive_buffer; //TODO: move to CommonReader
 
 		let p = frame.pts().unwrap_or(0);
-		if p < *self.range_ts.start() { return; } //await start
-		if p > *self.range_ts.end() { //check is we're done yet
-			self.is_done = true;
+		if p < *self.get_data().range_ts.start() { return; } //await start
+		if p > *self.get_data().range_ts.end() { //check if we're done yet
+			self.get_data_mut().is_done = true;
 			return;
 		}
+		let stream_time_s = Frac::from(p - self.get_data().range_ts.start()) * self.get_data().time_base;
 		
-		do_magic();
-
-		if !LOG {
-			self.progress.inc(1);
+		self.process(stream_time_s, should_force_emit);
+		
+		if cfg!(not(feature = "log")) {
+			self.get_data().progress.inc(1);
 		}
 	}
 
-	fn process_frame(&mut self) {
-		while self.decoder.receive_frame(&mut self.receive_buffer).is_ok() {
-			self.receive_and_process();
+	fn process_frame(&mut self, should_force_emit: bool) { //TODO: move to CommonReader
+		while {
+			let reader_data = self.get_data_mut(); //FUCK YOU RUST!!!!
+			reader_data.decoder.receive_frame(&mut reader_data.receive_buffer).is_ok()
+		} {
+			self.receive_and_process(should_force_emit);
 		}
 	}
 
-	pub fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {
-		if stream.index() != self.stream_index { return false; }
+	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool { //TODO: move to CommonReader
+		if stream.index() != self.get_data().stream_index { return false; }
 
-		self.decoder.send_packet(packet).unwrap();
-		self.process_frame();
+		self.get_data_mut().decoder.send_packet(packet).unwrap();
+		self.process_frame(false);
 		true
 	}
 
-	pub fn process_eof(&mut self) {
-		self.decoder.send_eof().unwrap();
-		self.process_frame();
+	fn process_eof(&mut self) { //TODO: move to CommonReader
+		self.get_data_mut().decoder.send_eof().unwrap();
+		self.process_frame(true);
+	}
+}
+
+pub trait CommonReader {
+	fn is_done(&self) -> bool;
+	fn init(&mut self);
+	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
+	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool;
+	fn process_eof(&mut self);
+}
+
+impl<'a, T: Reader<'a>> CommonReader for T {
+	fn is_done(&self) -> bool {
+		Reader::is_done(self)
+	}
+
+	fn init(&mut self) {
+		Reader::init(self)
+	}
+
+	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter> {
+		Reader::get_writers(self)
+	}
+
+	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {
+		Reader::try_process_packet(self, stream, packet)
+	}
+
+	fn process_eof(&mut self) {
+		Reader::process_eof(self)
 	}
 }

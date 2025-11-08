@@ -4,7 +4,7 @@ pub use term_pixel::TermPixel;
 pub use term_char::TermChar;
 pub use machine::Machine;
 
-mod batchers;
+mod batcher;
 mod term_pixel;
 mod renderers;
 mod term_char;
@@ -20,6 +20,6 @@ pub fn code_gen(frame: &TermFrame, prev_frame: Option<&TermFrame>, formatter: &i
 		format!(include_str!("bootstrap.lua"), frame.size().x, frame.size().y),
 		formatter
 	));
-	batchers::batcher_v2::draw(&mut renderer, &frame, prev_frame);
+	batcher::draw(&mut renderer, &frame, prev_frame);
 	renderer.into_inner().build()
 }

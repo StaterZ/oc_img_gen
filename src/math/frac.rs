@@ -1,6 +1,7 @@
 use std::{fmt::Display, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign}};
 
 use deku::{no_std_io, prelude::*};
+use integer_sqrt::IntegerSquareRoot;
 use num_traits::{ConstOne, ConstZero, Float, One, PrimInt, Zero};
 
 pub trait GCD: Copy {
@@ -12,7 +13,7 @@ impl<T: num::Integer + Copy> GCD for T {
 	}
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Ord)]
 pub struct Frac<T: PrimInt + GCD> {
 	pub numerator: T,
 	pub denominator: T,
@@ -52,6 +53,22 @@ impl<T: PrimInt + GCD> Frac<T> {
 		Self {
 			numerator: self.numerator / gcd,
 			denominator: self.denominator / gcd,
+		}
+	}
+}
+
+impl<T: PrimInt + GCD + IntegerSquareRoot> Frac<T> {
+	pub fn sqrt(self) -> Self {
+		Self {
+			numerator: (self.numerator * self.denominator).integer_sqrt(),
+			denominator: self.denominator,
+		}
+	}
+
+	pub fn inverse(self) -> Self {
+		Self {
+			numerator: self.denominator,
+			denominator: self.numerator,
 		}
 	}
 }

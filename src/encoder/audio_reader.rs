@@ -2,49 +2,69 @@ use std::{
 	ops::RangeInclusive,
 	time::Duration,
 };
-use indicatif::{MultiProgress, ProgressBar};
-use itertools::Itertools;
+use indicatif::MultiProgress;
 use ffmpeg_next::{
-	codec::{
-		decoder::Audio as AudioDecoder,
-		Context as CodecCtx,
-	},
+	codec::decoder::Audio as AudioDecoder,
 	media::Type as MediaType,
 	software::resampling::Context as Resampler,
 	util::{
 		format::Sample as SampleFormat,
 		frame::audio::Audio as AudioFrame,
+		error::Error as FfmpegError,
 	}
 };
 
-use crate::{math::Frac, LOG};
-use crate::audio::{
-	packet::{
-		Descriptor as AudioStreamDesc,
-		AudioEncoder,
+use crate::{
+	math::Frac,
+	audio::{
+		Config as AudioConfig,
+		encode as encode_audio,
+		packet::{AudioEncoder, Descriptor},
 	},
-	Config as AudioConfig,
-	encode as encode_audio,
 };
 use super::{
-	media_container::{DescriptorHeader, SizedString},
-	build_progress_style,
-	stage,
+	media_container::{Descriptor as StreamDescriptor, DescriptorContent},
+	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
+	muxer::{Muxer, PacketWriter},
 };
 
-pub struct AudioReader<'a> {	
-	stream_index: usize,
-	decoder: AudioDecoder,
-	receive_buffer: AudioFrame,
-	range_ts: RangeInclusive<i64>,
-	pub is_done: bool,
-	multi_progress: &'a MultiProgress,
-	progress: ProgressBar,
-
-	config: AudioConfig,
+pub struct AudioReader<'a> {
+	reader_data: ReaderData<'a, AudioDecoder>,
 	resampler: Resampler,
 	resampler_buffer: AudioFrame,
+	config: AudioConfig,
+	encoder: AudioEncoder,
 	pcm: Vec<f32>,
+}
+
+impl DecoderInterface for AudioDecoder {
+	type Frame = AudioFrame;
+	
+	fn new(decoder: ffmpeg_next::decoder::decoder::Decoder) -> Result<Self, FfmpegError> {
+		decoder.audio()
+	}
+	
+	fn receive_frame(&mut self, frame: &mut Self::Frame) -> Result<(), FfmpegError> {
+		ffmpeg_next::decoder::Opened::receive_frame(self, frame)
+	}
+
+	fn send_eof(&mut self) -> Result<(), FfmpegError> {
+		ffmpeg_next::decoder::Opened::send_eof(self)
+	}
+
+	fn send_packet<P: ffmpeg_next::packet::Ref>(&mut self, packet: &P) -> Result<(), FfmpegError> {
+		ffmpeg_next::decoder::Opened::send_packet(self, packet)
+	}
+}
+
+impl FrameInterface for AudioFrame {
+	fn empty() -> Self {
+		AudioFrame::empty()
+	}
+
+	fn pts(&self) -> Option<i64> {
+		ffmpeg_next::Frame::pts(self)
+	}
 }
 
 impl<'a> AudioReader<'a> {
@@ -53,35 +73,18 @@ impl<'a> AudioReader<'a> {
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
 		config: AudioConfig,
+		muxer: &mut Muxer,
 	) -> Option<Self> {
 		let stream = ictx
 			.streams()
 			.best(MediaType::Audio)?;
 
-		let codec_ctx = CodecCtx::from_parameters(stream.parameters())
-			.expect("failed to create codec context");
-
-		let decoder = codec_ctx.decoder().audio().unwrap();
-
-		let tb = Frac::from(stream.time_base()).cast::<i64>();
-		let end_ts = stream.start_time() + stream.duration();
-		
-		let ms_to_ts = |ms: u128, tb: Frac<i64>| (Frac::new(ms, 1000) / tb.try_cast::<u128>().unwrap()).into_int() as i64;
-		let range_ts = range.start().map_or(0, |start| ms_to_ts(start.as_millis(), tb))..=range.end().map_or(end_ts, |end| ms_to_ts(end.as_millis(), tb));
-
-		let num_frames = (Frac::new(stream.frames(), stream.duration()) * range_ts.try_len().unwrap() as i64).into_int();
-
-		let progress = multi_progress.add(ProgressBar::new(num_frames as u64)
-			.with_style(build_progress_style())
-			.with_message("audio"));
-		if !LOG {
-			progress.tick();
-		}
+		let reader_data = ReaderData::<'a, AudioDecoder>::new("audio", &stream, multi_progress, range);
 		
 		// Setup resampler to f32 planar @ cli.rate, mono
-		let in_fmt = decoder.format();
-		let in_ch = decoder.channel_layout();
-		let in_rate = decoder.rate();
+		let in_fmt = reader_data.decoder.format();
+		let in_ch = reader_data.decoder.channel_layout();
+		let in_rate = reader_data.decoder.rate();
 
 		let target_rate = 22050; // Target analysis sample rate (Hz)
 		let target_layout = ffmpeg_next::channel_layout::ChannelLayout::MONO;
@@ -91,35 +94,55 @@ impl<'a> AudioReader<'a> {
 			in_fmt, in_ch, in_rate,
 			target_fmt, target_layout, target_rate,
 		).unwrap();
-		
-		
-		Some(Self {
-			stream_index: stream.index(),
-			decoder,
-			receive_buffer: AudioFrame::empty(),
-			range_ts,
-			is_done: false,
-			progress,
-			multi_progress,
 
-			config,
+		let desc = Descriptor {
+			num_voices: config.num_voices as u8,
+		};
+		
+		let stream_id = muxer.create_stream(StreamDescriptor {
+			num_packets: 0,
+			name: config.name.clone(),
+			content: DescriptorContent::Audio(desc.clone()),
+		});
+		
+		let encoder = AudioEncoder {
+			name: config.name.clone(),
+			desc,
+			samples: Vec::new(),
+			milis_written: 0,
+			stream_id,
+		};
+
+		Some(Self {
+			reader_data,
 			resampler,
 			resampler_buffer: AudioFrame::empty(),
+			config,
+			encoder,
 			pcm: Vec::new(),
 		})
 	}
+}
 
-	fn receive_and_process(&mut self) {
-		let frame = &self.receive_buffer;
 
-		let p = frame.pts().unwrap_or(0);
-		if p < *self.range_ts.start() { return; } //await start
-		if p > *self.range_ts.end() { //check is we're done yet
-			self.is_done = true;
-			return;
-		}
+impl<'a> Reader<'a> for AudioReader<'a> {
+	type Decoder = AudioDecoder;
+	
+	fn get_data(&self) -> &ReaderData<'a, Self::Decoder> {
+		&self.reader_data
+	}
+	fn get_data_mut(&mut self) -> &mut ReaderData<'a, Self::Decoder> {
+		&mut self.reader_data
+	}
+
+	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter> {
+		vec![&mut self.encoder as &mut dyn PacketWriter]
+	}
+
+	fn process(&mut self, _stream_time_s: Frac<i64>, _should_force_emit: bool) {
+		let frame = &self.reader_data.receive_buffer;
 		
-		let frame = stage("Audio  | Preamble  | Resample", || {
+		let frame = crate::stage("Audio  | Preamble  | Resample", || {
 			self.resampler.run(&frame, &mut self.resampler_buffer).unwrap();
 			&mut self.resampler_buffer
 		});
@@ -128,39 +151,13 @@ impl<'a> AudioReader<'a> {
 		let data = frame.data(0);
 		let slice: &[f32] = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, nb_samples) }; //SAFETY: interpret as f32 slice
 		self.pcm.extend_from_slice(slice);
-
-		if !LOG {
-			self.progress.inc(1);
-		}
 	}
 
-	fn process_frame(&mut self) {
-		while self.decoder.receive_frame(&mut self.receive_buffer).is_ok() {
-			self.receive_and_process();
-		}
-	}
-
-	pub fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {
-		if stream.index() != self.stream_index { return false; }
-
-		self.decoder.send_packet(packet).unwrap();
-		self.process_frame();
-		true
-	}
-
-	pub fn process_eof(&mut self) {
-		self.decoder.send_eof().unwrap();
-		self.process_frame();
-	}
-
-	pub fn encode(self) -> AudioEncoder {
-		let samples = encode_audio(&self.config, &self.pcm);
-		AudioEncoder {
-			desc: AudioStreamDesc {
-				header: DescriptorHeader { num_packets: samples.len() as u32, name: SizedString::new("main").unwrap() },
-				num_voices: self.config.num_voices as u8,
-			},
-			samples,
-		}
+	fn process_eof(&mut self) { //remove me later
+		//TODO: move to CommonReader
+		self.get_data_mut().decoder.send_eof().unwrap();
+		self.process_frame(true);
+		
+		self.encoder.samples = encode_audio(&self.config, &self.pcm); //TODO: this is just so terrible...
 	}
 }
