@@ -1,19 +1,14 @@
 use std::cmp::Ordering;
-
 use itertools::Itertools;
 use realfft::RealFftPlanner;
 use lapjv::lapjv;
-use ndarray::Array2;
 
-use crate::{
-	audio::packet::{Sample, VoiceState},
-	encoder::media_container::SizedString,
-};
+use crate::audio::packet::{Sample, VoiceState};
 
 pub mod packet;
 
 pub struct Config {
-	pub name: SizedString<u8>,
+	pub name: String,
 	pub analysis_rate: u32,
 	pub fft_window_size: usize,
 	pub hop_length: usize,
@@ -27,11 +22,6 @@ pub struct VoiceStateFlt {
 	frequency: f32,
 }
 
-struct FrameInstr {
-	voices: Vec<VoiceStateFlt>,
-	dur_ms: f32,
-}
-
 pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 	// Prepare FFT
 	let mut planner = RealFftPlanner::<f32>::new();
@@ -43,7 +33,7 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 	let mut global_peak = 0f32;
 
 	// Collect windows (frequency+amplitude sets)
-	let mut timeline: Vec<FrameInstr> = Vec::new();
+	let mut timeline: Vec<Vec<VoiceStateFlt>> = Vec::new();
 
 	// Window/Hop analysis
 	let mut pos = 0usize;
@@ -73,7 +63,7 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 
 		// Pick top-k non-overlapping peaks (greedy)
 		peaks.sort_by(|a, b| b.volume.partial_cmp(&a.volume).unwrap_or(Ordering::Equal));
-		let mut chosen = Vec::new();
+		let mut chosen = Vec::with_capacity(config.num_voices);
 		let mut used_bins = vec![false; fft_out.len()];
 		for peak in peaks.into_iter() {
 			if chosen.len() >= config.num_voices { break; }
@@ -101,8 +91,7 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 			global_peak = global_peak.max(local_peak.volume);
 		}
 
-		let dur_ms = (config.hop_length as f32 / config.analysis_rate as f32) * 1000.0;
-		timeline.push(FrameInstr { voices: chosen, dur_ms });
+		timeline.push(chosen);
 		pos += config.hop_length;
 	}
 
@@ -112,9 +101,9 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 	let norm = if config.normalize { global_peak.max(1e-9) } else { 1.0 };
 	
 	let mut samples = Vec::new();
-	for frame in &timeline {
+	for voices in &timeline {
 		samples.push(Sample {
-			voices: (0..config.num_voices).map(|i| if let Some(voice_state) = frame.voices.get(i) {
+			voices: (0..config.num_voices).map(|i| if let Some(voice_state) = voices.get(i) {
 				VoiceState {
 					volume: ((voice_state.volume / norm).clamp(0.0, 1.0) * (0xff as f32)) as u8,
 					frequency: ((voice_state.frequency / 20000.0).clamp(0.0, 1.0) * (0xffff as f32)) as u16,
@@ -125,20 +114,19 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 					frequency: 0, //TODO: don't put frequency in file if volume is 0
 				}
 			}).collect_vec(),
-			duration: (frame.dur_ms.round() as usize).clamp(0, 0xff) as u8,
 		});
 	}
 	samples
 }
 
-fn optimize_channel_jumping(frames: &mut Vec<FrameInstr>) {
-	for t in 0..(frames.len() - 1) {
-		let n = frames[t + 1].voices.len();
-		let mut cost = Array2::<f32>::zeros((n, n));
+fn optimize_channel_jumping(timeline: &mut Vec<Vec<VoiceStateFlt>>) {
+	for t in 0..(timeline.len() - 1) {
+		let n = timeline[t + 1].len();
+		let mut cost = lapjv::Matrix::<f32>::zeros((n, n));
 		for i in 0..n {
 			for j in 0..n {
-				let voice_a = &frames[t].voices[i];
-				let voice_b = &frames[t + 1].voices[j];
+				let voice_a = &timeline[t][i];
+				let voice_b = &timeline[t + 1][j];
 				let error = (voice_a.frequency - voice_b.frequency).abs();
 				let criticality = (voice_a.volume + voice_b.volume) * 0.5;
 				cost[(i, j)] = error * criticality;
@@ -148,6 +136,6 @@ fn optimize_channel_jumping(frames: &mut Vec<FrameInstr>) {
 		let (assign, _) = lapjv(&cost).expect("assignment failed");
 
 		// Reorder according to assignment
-		frames[t + 1].voices = assign.into_iter().map(|j| frames[t + 1].voices[j]).collect();
+		timeline[t + 1] = assign.into_iter().map(|j| timeline[t + 1][j]).collect();
 	}
 }

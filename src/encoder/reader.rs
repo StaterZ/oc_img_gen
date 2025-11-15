@@ -11,7 +11,7 @@ use ffmpeg_next::{
 	format::stream::Stream as FfmpegStream,
 };
 
-use crate::math::Frac;
+use crate::math::*;
 use super::muxer::PacketWriter;
 
 pub struct ReaderData<'a, TDecoder: DecoderInterface> {
@@ -56,8 +56,8 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 		let time_base = Frac::from(stream.time_base()).cast::<i64>();
 		let end_ts = stream.start_time() + stream.duration();
 		
-		let ms_to_ts = |ms: u128| (Frac::new(ms, 1000) / time_base.try_cast::<u128>().unwrap()).into_int() as i64;
-		let range_ts = range.start().map_or(0, |start| ms_to_ts(start.as_millis()))..=range.end().map_or(end_ts, |end| ms_to_ts(end.as_millis()));
+		let ns_to_ts = |ns: u128| (Frac::new(ns, std::time::Duration::SECOND.as_nanos()) / time_base.try_cast::<u128>().unwrap()).into_int() as i64;
+		let range_ts = range.start().map_or(0, |start| ns_to_ts(start.as_nanos()))..=range.end().map_or(end_ts, |end| ns_to_ts(end.as_nanos()));
 
 		let num_frames = (Frac::new(stream.frames(), stream.duration()) * range_ts.try_len().unwrap() as i64).into_int();
 
@@ -90,11 +90,11 @@ pub trait Reader<'a> {
 	fn get_data(&self) -> &ReaderData<'a, Self::Decoder>;
 	fn get_data_mut(&mut self) -> &mut ReaderData<'a, Self::Decoder>;
 
-	fn is_done(&self) -> bool { //TODO: move to CommonReader
+	fn is_done(&self) -> bool {
 		self.get_data().is_done
 	}
 
-	fn init(&mut self) { //TODO: move to CommonReader
+	fn init(&mut self) {
 		self.get_data_mut().init();
 	}
 
@@ -103,7 +103,7 @@ pub trait Reader<'a> {
 	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool);
 
 	fn receive_and_process(&mut self, should_force_emit: bool) {
-		let frame = &self.get_data().receive_buffer; //TODO: move to CommonReader
+		let frame = &self.get_data().receive_buffer;
 
 		let p = frame.pts().unwrap_or(0);
 		if p < *self.get_data().range_ts.start() { return; } //await start
@@ -120,7 +120,7 @@ pub trait Reader<'a> {
 		}
 	}
 
-	fn process_frame(&mut self, should_force_emit: bool) { //TODO: move to CommonReader
+	fn process_frame(&mut self, should_force_emit: bool) {
 		while {
 			let reader_data = self.get_data_mut(); //FUCK YOU RUST!!!!
 			reader_data.decoder.receive_frame(&mut reader_data.receive_buffer).is_ok()
@@ -129,7 +129,7 @@ pub trait Reader<'a> {
 		}
 	}
 
-	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool { //TODO: move to CommonReader
+	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {
 		if stream.index() != self.get_data().stream_index { return false; }
 
 		self.get_data_mut().decoder.send_packet(packet).unwrap();
@@ -137,7 +137,7 @@ pub trait Reader<'a> {
 		true
 	}
 
-	fn process_eof(&mut self) { //TODO: move to CommonReader
+	fn process_eof(&mut self) {
 		self.get_data_mut().decoder.send_eof().unwrap();
 		self.process_frame(true);
 	}

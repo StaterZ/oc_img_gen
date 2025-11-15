@@ -1,5 +1,4 @@
 use std::fmt::Display;
-
 use deku::prelude::*;
 
 use super::formatters::hybrid_formatter::StaticColor;

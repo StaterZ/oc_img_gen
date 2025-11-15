@@ -1,6 +1,6 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
-
 use deku::{no_std_io, prelude::*};
+use num::NumCast;
 use num_traits::{ConstZero, PrimInt, Zero};
 
 use super::{Frac, GCD, Point, Rect};
@@ -30,16 +30,16 @@ impl<T: PrimInt + GCD> Size<T> {
 		self.x * self.y
 	}
 
-	pub fn cast<U: PrimInt + GCD + From<T>>(self) -> Size::<U> {
+	pub fn cast<U: PrimInt + GCD>(self) -> Size::<U> {
 		Size {
-			x: self.x.into(),
-			y: self.y.into(),
+			x: NumCast::from(self.x).unwrap(),
+			y: NumCast::from(self.y).unwrap(),
 		}
 	}
-	pub fn try_cast<U: PrimInt + GCD + TryFrom<T>>(self) -> Result<Size::<U>, U::Error> {
-		Ok(Size {
-			x: self.x.try_into()?,
-			y: self.y.try_into()?,
+	pub fn try_cast<U: PrimInt + GCD>(self) -> Option<Size<U>> {
+		Some(Size {
+			x: NumCast::from(self.x)?,
+			y: NumCast::from(self.y)?,
 		})
 	}
 	
@@ -79,20 +79,24 @@ impl<T: PrimInt + GCD + DekuWriter> DekuWriter for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + FromStr> FromStr for Size<T>
-where
-	<T as FromStr>::Err: std::fmt::Debug,
-{
-	type Err = String;
+#[derive(thiserror::Error, Debug)]
+pub enum SizeParseErr<E> {
+	#[error("Size must be in WIDTHxHEIGHT format")] BadFormat,
+	#[error("parse failed")] ParseError(#[from] E),
+}
+
+impl<T: PrimInt + GCD + FromStr> FromStr for Size<T> {
+	type Err = SizeParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let parts: Vec<&str> = s.split('x').collect();
 		if parts.len() != 2 {
-			return Err("Size must be in WIDTHxHEIGHT format".into());
+			return Err(SizeParseErr::BadFormat);
 		}
-		
-		let x = parts[0].parse::<T>().map_err(|e| format!("{:?}", e))?;
-		let y = parts[1].parse::<T>().map_err(|e| format!("{:?}", e))?;
+
+		let x = parts[0].parse::<T>().map_err(SizeParseErr::ParseError)?;
+		let y = parts[1].parse::<T>().map_err(SizeParseErr::ParseError)?;
+
 		Ok(Size { x, y })
 	}
 }

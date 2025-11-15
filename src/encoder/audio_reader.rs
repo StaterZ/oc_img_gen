@@ -1,7 +1,4 @@
-use std::{
-	ops::RangeInclusive,
-	time::Duration,
-};
+use std::{ops::RangeInclusive, time::Duration};
 use indicatif::MultiProgress;
 use ffmpeg_next::{
 	codec::decoder::Audio as AudioDecoder,
@@ -23,7 +20,7 @@ use crate::{
 	},
 };
 use super::{
-	media_container::{Descriptor as StreamDescriptor, DescriptorContent},
+	media_container::Descriptor as StreamDescriptor,
 	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
 	muxer::{Muxer, PacketWriter},
 };
@@ -81,37 +78,28 @@ impl<'a> AudioReader<'a> {
 
 		let reader_data = ReaderData::<'a, AudioDecoder>::new("audio", &stream, multi_progress, range);
 		
-		// Setup resampler to f32 planar @ cli.rate, mono
-		let in_fmt = reader_data.decoder.format();
-		let in_ch = reader_data.decoder.channel_layout();
-		let in_rate = reader_data.decoder.rate();
-
-		let target_rate = 22050; // Target analysis sample rate (Hz)
-		let target_layout = ffmpeg_next::channel_layout::ChannelLayout::MONO;
-		let target_fmt = SampleFormat::F32(ffmpeg_next::format::sample::Type::Planar); // f32
-
+		// Setup resampler to f32 planar @ config.analysis_rate, mono
 		let resampler = Resampler::get(
-			in_fmt, in_ch, in_rate,
-			target_fmt, target_layout, target_rate,
+			reader_data.decoder.format(),
+			reader_data.decoder.channel_layout(),
+			reader_data.decoder.rate(),
+			SampleFormat::F32(ffmpeg_next::format::sample::Type::Planar),
+			ffmpeg_next::channel_layout::ChannelLayout::MONO,
+			config.analysis_rate,
 		).unwrap();
 
-		let desc = Descriptor {
-			num_voices: config.num_voices as u8,
-		};
-		
-		let stream_id = muxer.create_stream(StreamDescriptor {
+		let desc = StreamDescriptor::<Descriptor> {
 			num_packets: 0,
-			name: config.name.clone(),
-			content: DescriptorContent::Audio(desc.clone()),
-		});
-		
-		let encoder = AudioEncoder {
-			name: config.name.clone(),
-			desc,
-			samples: Vec::new(),
-			milis_written: 0,
-			stream_id,
+			rate: Frac::new(config.hop_length, config.analysis_rate as usize).try_cast::<u16>().unwrap(),
+			name: config.name.clone().into(),
+			content: Descriptor {
+				num_voices: config.num_voices as u8,
+			},
 		};
+		
+		let stream_id = muxer.create_stream(desc.clone().into());
+		
+		let encoder = AudioEncoder::new(desc, stream_id);
 
 		Some(Self {
 			reader_data,
@@ -158,6 +146,6 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 		self.get_data_mut().decoder.send_eof().unwrap();
 		self.process_frame(true);
 		
-		self.encoder.samples = encode_audio(&self.config, &self.pcm); //TODO: this is just so terrible...
+		self.encoder.samples = encode_audio(&self.config, &self.pcm).into(); //TODO: this is just so terrible...
 	}
 }

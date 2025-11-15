@@ -1,8 +1,7 @@
 use std::{cell::Cell, collections::{hash_map::{Entry, OccupiedEntry}, HashMap}, ops::Deref, rc::Rc};
-
 use itertools::Itertools;
 
-use crate::math::Point;
+use crate::math::*;
 use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::PackedColor};
 
 #[derive(Debug, Clone)]

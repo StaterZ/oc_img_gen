@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.1"
+local version = "2.2"
 
 local linear_stream = {}
 do
@@ -140,6 +140,8 @@ local szt = {
 }
 
 local args, ops = shell.parse(...)
+ops.no_video = ops["no-video"]
+ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
 ops.color_check = ops["color-check"]
@@ -252,12 +254,47 @@ do
 		end
 		return command_count
 	end
+
+	function video.draw_stats(
+		stream,
+		gpu,
+		frame_begin_time,
+		video_begin_time_up,
+		commands_len,
+		command_count
+	)
+		local now, now_up = os.clock(), computer.uptime()
+		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
+		local frame_time = stream.packet_index * (stream.time_base or 0)
+		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
+		local packet_len = commands_len + packet_header_len
+		gpu.setBackground(0xff0000)
+		gpu.setForeground(0xffffff)
+		gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
+			stream.packet_index,
+			time_fmt(frame_time),
+			stream.time_base == 0 and 0 or video_elapsed_up - frame_time,
+			1 / frame_elapsed,
+			frame_elapsed * 1000,
+			packet_len,
+			command_count
+		))
+	end
 end
 
 local audio = {}
 do --audio engine
 	local num_channels = 8
+	local buf_min = 0.150
+	local buf_max = 0.500
+	
 	local sound_engines
+	local num_instructions
+	local start_time
+	local buffered_time_exact
+	local buffered_time
+	local committed_time
+	local stats_text
 	function audio.init(num_voices)
 		sound_engines = {}
 		for addr, _ in pairs(component.list("sound")) do
@@ -270,7 +307,10 @@ do --audio engine
 			for channel = 1, num_channels do
 				engine.close(channel)
 			end
+
+			computer.uptime()
 		end
+		audio.e = sound_engines[1] --todo: remove me
 
 		for voice=1, num_voices do
 			local engine_index = math.floor((voice - 1) / num_channels)
@@ -282,6 +322,14 @@ do --audio engine
 			engine.resetAM(channel)
 			engine.resetEnvelope(channel)
 		end
+
+		num_instructions = 0
+		start_time = computer.uptime()
+		buffered_time_exact = 0
+		buffered_time = 0
+		committed_time = 0
+
+		stats_text = ""
 	end
 
 	function audio.deinit(num_voices)
@@ -297,68 +345,83 @@ do --audio engine
 		end
 	end
 
-	local buf_time = 0
-	local num_instructions = 0
-	local prev_proc_life = 0
-	local buf_min = 150
-	local buf_max = 250
-	local prev_proc_time = computer.uptime()
-	function audio.commit(t, num_voices, gpu)
-		for i, engine in ipairs(sound_engines) do
-			if (i - 1) * num_channels >= num_voices then break end
-			engine.delay(t);
-		end
-		buf_time = buf_time + t
-		num_instructions = num_instructions + 1
+	function audio.commit(stream)
 		local now = computer.uptime()
-		local time_since_proc = (now - prev_proc_time) * 1000
-		local time_to_death = prev_proc_life - time_since_proc
-		local ready_life = time_to_death + buf_time
-		if ready_life > buf_max then
-			--sleep solution
-			local correction = ready_life - buf_max
-			--print(("Correction: %fms"):format(correction))
-			os.sleep(correction / 1000);
-			time_since_proc = time_since_proc + correction
-			time_to_death = time_to_death - correction
-			ready_life = ready_life - correction
-
-			-- --spin-lock solution
-			-- while ready_life < buf_max do
-			-- 	now = computer.uptime()
-			-- 	time_since_proc = (now - prev_proc_time) * 1000
-			-- 	time_to_death = prev_proc_life - time_since_proc
-			-- 	ready_life = time_to_death + buf_time
-			-- end
-		end
-		--if time_to_death < buf_min and ready_life >= buf_min then
-		if time_to_death < buf_min then
+		local play_time = now - start_time
+		local committed_left = committed_time - play_time
+		local buffered_left = buffered_time - play_time
+		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
+		if committed_left < buf_min then
 			for i, engine in ipairs(sound_engines) do
-				if (i - 1) * num_channels >= num_voices then break end
+				if (i - 1) * num_channels >= stream.num_voices then break end
 				engine.process()
+				if ops.fps then
+					audio.update_stats(stream)
+				end
+				num_instructions = 0
 			end
-			buf_time = 0
+			committed_time = buffered_time
+			--NOTE: committed_left is now out of date here!
+		end
 
-			if ops.fps and gpu ~= nil then
-				gpu.setBackground(0xff0000)
-				gpu.setForeground(0xffffff)
-				gpu.set(1, 2, ("INS:%03i DELTA:%06.1fms LIFE:%06.1fms"):format(num_instructions, time_since_proc, ready_life))
+		local buffered_left = buffered_time - play_time
+		if not ops.fast then
+			local correction = buffered_left - buf_max
+			--if correction > 0 then print(("Correction: %fms"):format(correction)) end
+			if true then
+				if correction > 0 then
+					os.sleep(correction)
+				end
+			else
+				while correction > 0 do
+					now = computer.uptime()
+					play_time = now - start_time
+					buffered_left = buffered_time - play_time
+					correction = buffered_left - buf_max
+				end
 			end
-			num_instructions = 0
-			prev_proc_time = now
-			prev_proc_life = ready_life
+			--NOTE: buffered_left&correction is now out of date here!
 		end
 	end
 
-	function audio.play(file, num_voices, gpu)
-		for voice = 1, num_voices do
+	function audio.queue(file, stream)
+		for voice = 1, stream.num_voices do
 			local engine_index = math.floor((voice - 1) / num_channels)
 			local engine = sound_engines[engine_index + 1]
 			local channel = voice - engine_index * num_channels
 			engine.setVolume(channel, read_u8(file) / 0xff)
 			engine.setFrequency(channel, read_u16(file) / 0xffff * 20000)
 		end
-		audio.commit(read_u8(file), num_voices, gpu)
+		
+		buffered_time_exact = buffered_time_exact + stream.time_base
+		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
+		for i, engine in ipairs(sound_engines) do
+			if (i - 1) * num_channels >= stream.num_voices then break end
+			engine.delay(delay_ms)
+		end
+		buffered_time = buffered_time + delay_ms/1000
+		num_instructions = num_instructions + 1
+	end
+
+	function audio.update_stats(stream)
+		local now = computer.uptime()
+		local play_time = now - start_time
+		local committed_left = committed_time - play_time
+		local buffered_left = buffered_time - play_time
+		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
+		stats_text = ("%04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+			stream.packet_index,
+			num_instructions,
+			(buffered_left - committed_left) * 1000,
+			committed_left * 1000,
+			percentify(committed_left)
+		)
+	end
+
+	function audio.draw_stats(gpu)
+		gpu.setBackground(0xff0000)
+		gpu.setForeground(0xffffff)
+		gpu.set(1, 2, stats_text)
 	end
 end
 
@@ -371,11 +434,13 @@ local function read_header(file)
 	for i = 1, num_streams do
 		local stream = {
 			num_packets = read_u32(file),
+			time_base_num = read_u16(file),
+			time_base_denom = read_u16(file),
 			name = file:read(read_u8(file)),
 			kind = read_u8(file),
 		}
+
 		if stream.kind == 0x00 then
-			stream.frame_rate = read_u16(file)
 			stream.size_x = read_u8(file)
 			stream.size_y = read_u8(file)
 		elseif stream.kind == 0x01 then
@@ -407,10 +472,10 @@ local function probe_header(file)
 			stream.kind == 0x01 and "audio" or
 			"unknown"
 
-		print(("  %i: %s | '%s'"):format(i, kind_text, stream.name))
+		print(("  %i: %s | '%s'"):format(i - 1, kind_text, stream.name))
+		print(("    time_base: %i/%i"):format(stream.time_base_num, stream.time_base_denom))
 		print(("    num_packets: %i"):format(stream.num_packets))
 		if stream.kind == 0x00 then
-			print(("    frame_rate: %i"):format(stream.frame_rate))
 			print(("    size: %ix%i"):format(stream.size_x, stream.size_y))
 		elseif stream.kind == 0x01 then
 			print(("    num_voices: %i"):format(stream.num_voices))
@@ -428,25 +493,30 @@ local function play(gpu, file, surfaces)
 	assertEq(header.version, szt.version, "bad version")
 	print("version: OK")
 
-	local num_streams = header.num_streams
-
-	video.pre_init(gpu)
+	if not ops.no_video then
+		video.pre_init(gpu)
+	end
 	local max_size_x, max_size_y = 0, 0
 	local max_num_voices = 0
+	local num_total_packets = 0
+	local has_video, has_audio = false, false
 	local streams = {}
 	for i, stream_desc in ipairs(header.streams) do
 		local stream = {
 			kind = stream_desc.kind,
 			num_packets = stream_desc.num_packets,
+			time_base = stream_desc.time_base_num / stream_desc.time_base_denom,
 			name = stream_desc.name,
 		}
+		num_total_packets = num_total_packets + stream.num_packets
 		if stream_desc.kind == 0x00 then
+			has_video = true
+			
 			local surface = surfaces[stream_desc.name] or error(("missing surface for stream '%s'"):format(stream_desc.name))
 			surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
 			surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
 
 			stream.surface = surface
-			stream.frame_rate = stream_desc.frame_rate
 			stream.size_x = stream_desc.size_x
 			stream.size_y = stream_desc.size_y
 
@@ -458,6 +528,8 @@ local function play(gpu, file, surfaces)
 				gpu.setResolution(stream.size_x, stream.size_y)
 			end
 		elseif stream_desc.kind == 0x01 then
+			has_audio = true
+
 			stream.num_voices = stream_desc.num_voices
 			max_num_voices = math.max(max_num_voices, stream.num_voices)
 		end
@@ -465,14 +537,17 @@ local function play(gpu, file, surfaces)
 	end
 
 	local frames_begin_pos = file:seek()
-	video.init(gpu, max_size_x, max_size_y)
-	audio.init(max_num_voices)
+	if not ops.no_video then
+		video.init(gpu, max_size_x, max_size_y)
+	end
+	if not ops.no_audio then
+		audio.init(max_num_voices)
+	end
 
 	local function play_impl()
 		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
-		local num_total_packets = 0
 		for _, stream in ipairs(streams) do
-			num_total_packets = num_total_packets + stream.num_packets
+			stream.packet_index = 0
 		end
 
 		local packet_index = 0
@@ -483,63 +558,73 @@ local function play(gpu, file, surfaces)
 			local stream = streams[stream_id + 1]
 			if stream.kind == 0x00 then --video
 				local commands_len = read_u16(file)
-				if commands_len > 0 then
-					if gpu.getScreen() ~= stream.surface.screen_addr then
-						gpu.bind(stream.surface.screen_addr, false)
-						if back then
-							gpu.bitblt(back, nil, nil, nil, nil, 0)
+				if not ops.no_video then
+					if commands_len > 0 then
+						if gpu.getScreen() ~= stream.surface.screen_addr then
+							gpu.bind(stream.surface.screen_addr, false)
+							if back then
+								gpu.bitblt(back, nil, nil, nil, nil, 0)
+							end
 						end
 					end
-				end
 
-				local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
+					local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
 
-				if commands_len > 0 then
-					if ops.fps then
-						local now, now_up = os.clock(), computer.uptime()
-						local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-						local frame_time = packet_index / (stream.frame_rate or 0)
-						local packet_len = commands_len + 4
-						gpu.setBackground(0xff0000)
-						gpu.setForeground(0xffffff)
-						gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
-							packet_index,
-							time_fmt(frame_time),
-							stream.frame_rate == 0 and 0 or video_elapsed_up - frame_time,
-							1 / frame_elapsed,
-							frame_elapsed * 1000,
-							packet_len,
-							command_count
-						))
+					if commands_len > 0 then
+						if ops.fps then
+							video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
+							if not ops.no_audio and has_audio then
+								audio.draw_stats(gpu)
+							end
+						end
+						if not ops.no_back then
+							gpu.bitblt()
+						end
+						if ops.diff then
+							gpu.setBackground(0x000000)
+							gpu.setForeground(0xff0000)
+							gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+						end
 					end
-					if not ops.no_back then
-						gpu.bitblt()
-					end
-					if ops.diff then
-						gpu.setBackground(0x000000)
-						gpu.setForeground(0xff0000)
-						gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
-					end
+				else
+					file:seek("cur", commands_len + 1) --command_kind = 1b
 				end
 			elseif stream.kind == 0x01 then --audio
-				audio.play(file, stream.num_voices, gpu)
+				if not ops.no_audio then
+					audio.queue(file, stream)
+				else
+					file:seek("cur", stream.num_voices * 3)
+				end
 			else
 				--we probably just wanna skip unknowns rather than get mad about it
 				--error("unknown packet kind: %x2", stream.kind)
 			end
 
-			if not ops.fast and stream.frame_rate ~= 0 and stream.kind == 0x00 then
+			if not ops.no_audio then
+				for _, stream in ipairs(streams) do
+					if stream.kind == 0x01 then --audio
+						if (not has_video or ops.no_video) and ops.fps and gpu ~= nil then
+							audio.draw_stats(gpu)
+						end
+						audio.commit(stream)
+					end
+				end
+			end
+
+			if not ops.fast and stream.kind == 0x00 and not ops.no_video and stream.time_base ~= 0 then --video
 				repeat
 					local current_time = (computer.uptime() - video_begin_time_up)
-					local next_frame_index = math.ceil(current_time * stream.frame_rate)
-				until next_frame_index > packet_index
+					local next_frame_index = math.ceil(current_time / stream.time_base)
+				until next_frame_index > stream.packet_index --TODO: won't play nice with audio stream
 			end
 
 			if check_interrupted() then
 				return false
 			end
 
+			stream.packet_index = stream.packet_index + 1
 			packet_index = packet_index + 1
+			--print(("frame took: %05.1fms"):format((computer.uptime() - frame_begin_time_up) * 1000))
 		end
 		return true
 	end
@@ -552,8 +637,12 @@ local function play(gpu, file, surfaces)
 		play_impl()
 	end
 
-	video.deinit(gpu)
-	audio.deinit(max_num_voices)
+	if not ops.no_video then
+		video.deinit(gpu)
+	end
+	if not ops.no_audio then
+		audio.deinit(max_num_voices)
+	end
 end
 
 if ops.h or ops.help then
@@ -562,6 +651,8 @@ if ops.h or ops.help then
 	print("-p --probe", "show the header info")
 	print("   --fps", "show performance stats during playback")
 	print("   --loop", "loop video like a gif")
+	print("   --no-video", "skip video streams")
+	print("   --no-audio", "skip audio streams")
 	print("   --no-back", "disable double buffering and the dependency on GPU buffers")
 	print("   --cfg", "set the screen layout and other environment settings. generate a configs with 'screenConfig.lua'")
 	print("   --diff", "only draw what changed from the last frame")

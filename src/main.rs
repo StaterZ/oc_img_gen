@@ -5,13 +5,18 @@
 	const_for,
 	const_range_bounds,
 	adt_const_params,
+	duration_constants,
+	const_trait_impl,
+	slice_as_array,
 )]
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
-
 
 use std::io::Write;
 use indicatif::ProgressStyle;
 use stopwatch::Stopwatch;
+// use tracing_indicatif::IndicatifLayer;
+// use tracing_subscriber::prelude::*;
 use szu::flush_print;
 
 use math::Size;
@@ -21,6 +26,7 @@ mod audio;
 mod math;
 mod encoder;
 mod cli;
+//mod ffmpeg_tracing;
 
 #[cfg(feature = "debug-mode")]
 mod test;
@@ -31,12 +37,25 @@ const FORMAT_VERSION: u16 = 5;
 fn main() -> anyhow::Result<()> {
 	#[cfg(feature = "debug-mode")]
 	return test::run();
+	
+	// let indicatif_layer = IndicatifLayer::new();
+	// tracing_subscriber::registry()
+	// 	.with(tracing_subscriber::EnvFilter::new("info"))
+	// 	.with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
+	// 	.with(indicatif_layer)
+	// 	.init();
 
 	ffmpeg_next::init().map_err(AppError::FfmpegInitFailed)?;
+	ffmpeg_next::util::log::set_level(ffmpeg_next::log::Level::Quiet);
+	//ffmpeg_tracing::install();
 
 	let args = cli::parse_args();
 
-	encoder::encode(args)
+	let mut watch = Stopwatch::start_new();
+	let result = encoder::encode(args);
+	watch.stop();
+	eprintln!("took: {}s & {}ms", watch.elapsed().as_secs(), watch.elapsed().subsec_millis());
+	result
 }
 
 pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
@@ -45,7 +64,7 @@ pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 		let mut timer = Stopwatch::start_new();
 		let output = f();
 		timer.stop();
-		println!(" time: {}ms", timer.elapsed().as_millis());
+		eprintln!(" time: {}ms", timer.elapsed().as_millis());
 		output
 	} else {
 		f()

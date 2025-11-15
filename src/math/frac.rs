@@ -1,7 +1,7 @@
-use std::{fmt::Display, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign}};
-
+use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use integer_sqrt::IntegerSquareRoot;
+use itertools::Itertools;
 use num_traits::{ConstOne, ConstZero, Float, One, PrimInt, Zero};
 
 pub trait GCD: Copy {
@@ -13,7 +13,7 @@ impl<T: num::Integer + Copy> GCD for T {
 	}
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Ord)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Frac<T: PrimInt + GCD> {
 	pub numerator: T,
 	pub denominator: T,
@@ -107,9 +107,9 @@ impl<T: PrimInt + GCD + Display> Display for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + DekuWriter> DekuWriter for Frac<T> {
-	#[doc = " Write type to bytes"]
-	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: ()) -> Result<(), DekuError> {
+impl<T: PrimInt + GCD + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
+	#[doc = "Write type to bytes"]
+	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.numerator.to_writer(writer, ctx)?;
 		self.denominator.to_writer(writer, ctx)?;
 		Ok(())
@@ -134,9 +134,42 @@ impl From<ffmpeg_next::Rational> for Frac<i32> {
 	}
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum FracParseErr<E> {
+	#[error("Frac must be in NUM or NUM/DENOM format")] BadFormat,
+	#[error("parse failed: {0}")] ParseError(#[from] E),
+}
+
+impl<T: PrimInt + GCD + FromStr> FromStr for Frac<T> {
+	type Err = FracParseErr<<T as FromStr>::Err>;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s.split('/').collect_vec().as_slice() {
+			[denominator] => Ok(Frac::new(T::one(), denominator.parse::<T>()?)),
+			[numerator, denominator] => Ok(Frac::new(
+				numerator.parse::<T>()?,
+				denominator.parse::<T>()?,
+			)),
+			_ => Err(FracParseErr::BadFormat),
+		}
+	}
+}
+
+impl<T: PrimInt + GCD> PartialEq for Frac<T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.numerator * other.denominator == other.numerator * self.denominator
+	}
+}
+
 impl<T: PrimInt + GCD> PartialOrd for Frac<T> {
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
 		(self.numerator * other.denominator).partial_cmp(&(other.numerator * self.denominator))
+	}
+}
+
+impl<T: PrimInt + GCD> Ord for Frac<T> {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		(self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
 	}
 }
 

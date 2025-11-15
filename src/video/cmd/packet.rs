@@ -1,19 +1,16 @@
-use std::marker::ConstParamTy;
-
+use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
 
-use crate::math::{Frac, Point, Rect, Size};
+use crate::cli::VideoFilter;
+use crate::math::*;
 use crate::encoder::{
 	media_container::{
 		Descriptor as StreamDescriptor,
-		DescriptorContent,
 		Packet,
-		PacketContent,
-		SizedString
+		PacketContent
 	},
 	muxer::PacketWriter,
 };
-
 use super::{
 	super::{
 		braille,
@@ -63,32 +60,34 @@ pub struct Frame {
 
 #[derive(Clone, DekuWrite)]
 pub struct Descriptor {
-	#[deku(endian = "little")] pub frame_rate: u16,
 	pub size: Size<u8>,
 }
 
 pub struct VideoEncoder {
-	name: SizedString<u8>,
-	pub desc: Descriptor,
-	frames: Vec<Frame>,
+	pub desc: StreamDescriptor<Descriptor>,
+	stream_id: u8,
+	source_area: Option<Rect<usize>>,
+	frames: VecDeque<Frame>,
 	prev_frame: Option<TermFrame>,
 	num_frames_since_emit: usize,
-	source_area: Option<Rect<usize>>,
-	num_written_frames: u64,
-	stream_id: u8,
+	filter: Option<VideoFilter>,
 }
 
 impl VideoEncoder {
-	pub fn new(name: SizedString<u8>, source_area: Option<Rect<usize>>, desc: Descriptor, stream_id: u8) -> Self {
+	pub fn new(
+		desc: StreamDescriptor<Descriptor>,
+		stream_id: u8,
+		source_area: Option<Rect<usize>>,
+		filter: Option<VideoFilter>,
+	) -> Self {
 		Self {
-			name,
-			source_area,
 			desc,
-			frames: Vec::new(),
+			stream_id,
+			source_area,
+			frames: VecDeque::new(),
 			prev_frame: None,
 			num_frames_since_emit: 0,
-			num_written_frames: 0,
-			stream_id,
+			filter,
 		}
 	}
 	
@@ -98,11 +97,49 @@ impl VideoEncoder {
 			None => img.clone(), //TODO: PERF
 		};
 
-		let img = crate::stage("Stream | Process   | Black&White", || img.map(|p| {
-			const BLACK: RGB8 = RGB8::new(0x000000);
-			const WHITE: RGB8 = RGB8::new(0xffffff);
-			if p.perceptual_delta(WHITE) < p.perceptual_delta(BLACK) { WHITE } else { BLACK }
-		}));
+		let img = if let Some(filter) = self.filter {
+			match filter {
+				VideoFilter::Monochrome => crate::stage("Stream | Process   | Black&White", || img.map(|p| {
+					const BLACK: RGB8 = RGB8::new(0x000000);
+					const WHITE: RGB8 = RGB8::new(0xffffff);
+					if p.perceptual_delta(WHITE) < p.perceptual_delta(BLACK) { WHITE } else { BLACK }
+				})),
+				VideoFilter::Grayscale => crate::stage("Stream | Process   | Grayscale", || img.map(|p| {
+					fn srgb_to_linear(u: f64) -> f64 {
+						if u <= 0.04045 {
+							u / 12.92
+						} else {
+							((u + 0.055) / 1.055).powf(2.4)
+						}
+					}
+
+					fn linear_to_srgb(v: f64) -> f64 {
+						if v <= 0.0031308 {
+							12.92 * v
+						} else {
+							1.055 * v.powf(1.0 / 2.4) - 0.055
+						}
+					}
+				
+					let r_lin = srgb_to_linear(p.r as f64 / 255.0);
+					let g_lin = srgb_to_linear(p.g as f64 / 255.0);
+					let b_lin = srgb_to_linear(p.b as f64 / 255.0);
+
+					// Rec. 709 luminance
+					let y_lin = 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin;
+
+					// Convert back to sRGB
+					let y_srgb = linear_to_srgb(y_lin);
+
+					let luminance = (y_srgb * 255.0).round().clamp(0.0, 255.0) as u8;
+					RGB8 {
+						r: luminance,
+						g: luminance,
+						b: luminance,
+					}
+				})),
+			}
+		} else { img };
 
 		// let img = crate::stage("Stream | Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
 		// let img = crate::stage("Stream | Process   | Inflate", || img.map(|p| formatter.inflate(*p)));
@@ -129,7 +166,7 @@ impl VideoEncoder {
 
 		let mut frame = renderer.into_inner().build();
 		frame.update().unwrap();
-		self.frames.push(frame);
+		self.frames.push_back(frame);
 	}
 
 	fn push_frame_fancy<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
@@ -140,14 +177,14 @@ impl VideoEncoder {
 		let machine = Machine::new_t3();
 		let cost = renderer.get_cost(&machine);
 		self.num_frames_since_emit += 1;
-		let budget = (machine.call_budget * 20) / self.desc.frame_rate as usize * self.num_frames_since_emit;
-		//println!("cost:{}%", (cost / budget * 100).into_int());
+		let budget = (machine.call_budget * 20) / self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+		//eprintln!("cost:{}%", (cost / budget * 100).into_int());
 		let mut frame = if cost <= budget {
 			self.num_frames_since_emit = 0;
 			self.prev_frame = Some(frame);
 			renderer.into_inner().build()
 		} else {
-			//println!("experimental budget jump!");
+			//eprintln!("experimental budget jump!");
 			Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
 				commands_len: 0,
 				command_kind: CMD_KIND,
@@ -155,26 +192,18 @@ impl VideoEncoder {
 			}
 		};
 		frame.update().unwrap();
-		self.frames.push(frame);
+		self.frames.push_back(frame);
 	}
 }
 
 impl PacketWriter for VideoEncoder {
-	fn get_descriptor(self) -> StreamDescriptor {
-		StreamDescriptor {
-			num_packets: 0,
-			name: self.name,
-			content: DescriptorContent::Video(self.desc),
-		}
-	}
-
 	fn get_next_packet_time(&self) -> Option<Frac<u64>> {
-		(!self.frames.is_empty()).then_some(Frac::new(self.num_written_frames, self.desc.frame_rate as u64))
+		(!self.frames.is_empty()).then_some(Frac::from(self.desc.num_packets as u64) * self.desc.rate.cast::<u64>())
 	}
 
 	fn get_next_packet(&mut self) -> Option<Packet> {
-		self.frames.pop().map(|frame| {
-			self.num_written_frames += 1;
+		self.frames.pop_front().map(|frame| {
+			self.desc.num_packets += 1;
 			Packet {
 				stream_id: self.stream_id,
 				content: PacketContent::Video(frame),

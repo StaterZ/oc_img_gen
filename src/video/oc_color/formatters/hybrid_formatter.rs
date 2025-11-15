@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::mem::MaybeUninit;
-
 use lazy_static::lazy_static;
 use more_asserts::*;
 use szu::math::int_div_round;
@@ -20,7 +19,7 @@ lazy_static! {
 				for i_b in 0..StaticColor::NUM_BLUES {
 					let b = ((i_b * 0x100) / (StaticColor::NUM_BLUES - 1)).min(0xff) as u8;
 					result[i] = MaybeUninit::new(RGB8 { r, g, b });
-					//println!("{:02X}: {}", i, unsafe { result[i].assume_init() });
+					//eprintln!("{:02X}: {}", i, unsafe { result[i].assume_init() });
 					i = i + 1;
 				}
 			}
@@ -37,7 +36,7 @@ lazy_static! {
 				g: shade,
 				b: shade,
 			});
-			//println!("{:02X}: {}", i, unsafe { item.assume_init() });
+			//eprintln!("{:02X}: {}", i, unsafe { item.assume_init() });
 		}
 		unsafe { std::mem::transmute(result) }
 	};

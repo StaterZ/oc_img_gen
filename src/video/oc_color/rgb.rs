@@ -1,7 +1,10 @@
-use std::fmt::Display;
-use std::num::ParseIntError;
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
-use std::str::FromStr;
+use std::{
+	fmt::Display,
+	iter::Sum,
+	num::ParseIntError,
+	ops::*,
+	str::FromStr,
+};
 //use more_asserts::*;
 use num_traits::{ConstZero, Signed, Zero};
 use szu::math::AbsDiff;
@@ -86,12 +89,20 @@ impl RGB8 {
 		(self.r as u32) << Self::R_SHIFT | (self.g as u32) << Self::G_SHIFT | (self.b as u32) << Self::B_SHIFT
 	}
 
+	#[inline]
 	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)
-		let d = <RGB8 as Into<RGB<i32>>>::into(self) - other.into();
+		Into::<RGB<i32>>::into(self).perceptual_delta(other.into())
+	}
+}
+
+impl RGB<i32> {
+	#[inline]
+	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)
+		let d = self - other;
 		//let d: RGB<u32> = self.abs_diff(other).into();
 		let d2 = d * d;
-		return (2126 * d2.r + 7152 * d2.g + 0722 * d2.b) as u32;
-		//return (d2.r + d2.g + d2.b) as u32;
+		(2126 * d2.r + 7152 * d2.g + 0722 * d2.b) as u32
+		//(d2.r + d2.g + d2.b) as u32
 	}
 }
 
@@ -140,6 +151,12 @@ macro_rules! rgb_into {
 rgb_into!(u8, u32);
 rgb_into!(u8, i32);
 rgb_into!(u32, u8);
+
+impl<T: Zero> Sum for RGB<T> {
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::zero(), |lhs, rhs| lhs + rhs)
+	}
+}
 
 impl<T: Add<Output = T>> Add for RGB<T> {
 	type Output = Self;

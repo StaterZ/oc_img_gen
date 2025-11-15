@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use deku::prelude::*;
 
 use crate::{
@@ -5,10 +6,8 @@ use crate::{
 	encoder::{
 		media_container::{
 			Descriptor as StreamDescriptor,
-			DescriptorContent,
 			Packet,
 			PacketContent,
-			SizedString,
 		},
 		muxer::PacketWriter,
 	},
@@ -26,7 +25,6 @@ pub struct VoiceState {
 pub struct Sample {
 	#[deku(count = "desc.num_voices")]
 	pub voices: Vec<VoiceState>,
-	pub duration: u8,
 }
 
 #[derive(Clone, DekuWrite)]
@@ -35,41 +33,29 @@ pub struct Descriptor {
 }
 
 pub struct AudioEncoder {
-	pub name: SizedString<u8>,
-	pub desc: Descriptor,
-	pub samples: Vec<Sample>,
-	pub milis_written: u64,
-	pub stream_id: u8,
+	pub desc: StreamDescriptor<Descriptor>,
+	stream_id: u8,
+	pub samples: VecDeque<Sample>,
 }
 
 impl AudioEncoder {
-	pub fn new(name: SizedString<u8>, desc: Descriptor) -> Self {
+	pub fn new(desc: StreamDescriptor<Descriptor>, stream_id: u8) -> Self {
 		Self {
-			name,
 			desc,
-			samples: Vec::new(),
-			milis_written: 0,
-			stream_id: 0,
+			stream_id,
+			samples: VecDeque::new(),
 		}
 	}
 }
 
 impl PacketWriter for AudioEncoder {
-	fn get_descriptor(self) -> StreamDescriptor {
-		StreamDescriptor {
-			num_packets: self.samples.len() as u32,
-			name: self.name,
-			content: DescriptorContent::Audio(self.desc),
-		}
-	}
-
 	fn get_next_packet_time(&self) -> Option<Frac<u64>> {
-		(!self.samples.is_empty()).then_some(Frac::new(self.milis_written, 1000))
+		(!self.samples.is_empty()).then_some(Frac::from(self.desc.num_packets as u64) * self.desc.rate.cast::<u64>())
 	}
 
 	fn get_next_packet(&mut self) -> Option<Packet> {
-		self.samples.pop().map(|sample| {
-			self.milis_written += sample.duration as u64;
+		self.samples.pop_front().map(|sample| {
+			self.desc.num_packets += 1;
 			Packet {
 				stream_id: self.stream_id,
 				content: PacketContent::Audio(sample),

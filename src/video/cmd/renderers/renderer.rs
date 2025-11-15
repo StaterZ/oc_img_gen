@@ -1,4 +1,4 @@
-use crate::math::{Point, Size};
+use crate::math::*;
 use super::super::super::oc_color::PackedColor;
 
 pub trait Renderer {

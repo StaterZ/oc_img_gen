@@ -7,7 +7,7 @@ pub use crate::audio::Config as AudioConfig;
 use crate::AppError;
 use muxer::Muxer;
 use reader::CommonReader;
-pub use video_reader::{VideoConfig, VideoReader, VideoStreamDescData};
+pub use video_reader::{VideoConfig, VideoReader, VideoDescData};
 use audio_reader::AudioReader;
 
 pub mod media_container;

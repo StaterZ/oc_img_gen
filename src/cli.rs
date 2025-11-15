@@ -1,19 +1,11 @@
 use std::{path::{Path, PathBuf}, time::Duration};
 use clap::{ArgAction, Args, Parser};
-use color_print::cprintln;
 use num_traits::ConstZero;
 
 use crate::{
-	encoder::{
-		media_container::SizedString,
-		AudioConfig,
-		EncoderConfig,
-		VideoConfig,
-		VideoStreamDescData,
-	},
-	math::{Frac, Point, Rect, Size},
-	video::{self, oc_color::RGB8},
-	EXT,
+	EXT, encoder::{
+		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
+	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::Machine, oc_color::RGB8}
 };
 
 pub fn parse_args() -> EncoderConfig {
@@ -21,7 +13,7 @@ pub fn parse_args() -> EncoderConfig {
 	if !args.validate() {
 		std::process::exit(1);
 	}
-	println!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
+	eprintln!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
 	
 	let out_path = match args.out_path {
 		None => {
@@ -40,7 +32,15 @@ pub fn parse_args() -> EncoderConfig {
 		}
 	};
 
-	let video_config = args.video.as_ref().map(build_video_config);
+	
+	let video_config = args.video.as_ref().map(|video_args| {
+		let ictx = ffmpeg_next::format::input(&args.in_path).expect("failed to create decoder");
+		let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+		let codec_ctx = ffmpeg_next::codec::Context::from_parameters(stream.parameters()).expect("failed to create codec context");
+		let decoder = codec_ctx.decoder().video().unwrap();
+		
+		build_video_config(video_args, &decoder)
+	});
 	let audio_config = args.audio.as_ref().map(build_audio_config);
 	
 	EncoderConfig {
@@ -52,16 +52,14 @@ pub fn parse_args() -> EncoderConfig {
 	}
 }
 
-fn build_video_config(args: &VideoOpts) -> VideoConfig {
+fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
 	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
 		StreamMode::Single => {
 			let stream_size = args.stream_size.map_or_else(
 				|| {
-					let gpu_t3_max_res = Size::<usize>::new(160, 50);
-					//let content_size = Size::<usize>::new(1920, 1080); //TODO: bad assumption here!!!
-					let content_size = Size::<usize>::new(480, 360); //TODO: bad assumption here!!!
-					cprintln!("<red>TODO: we have bad assumptions here about content resolution!!!</>");
-					let size = compute_largest_size(content_size.ratio(), gpu_t3_max_res.area(), gpu_t3_max_res.x); //TODO
+					let gpu_t3_max_res = Machine::new_t3().max_screen_size;
+					let content_size = Size::<u32>::new(stream.width(), stream.height());
+					let size = compute_largest_size(content_size.cast::<usize>().ratio(), gpu_t3_max_res.area(), gpu_t3_max_res.x); //TODO
 					println!("auto-size: {}", size);
 					size.try_cast().expect("stream size too large")
 				},
@@ -73,6 +71,7 @@ fn build_video_config(args: &VideoOpts) -> VideoConfig {
 				args.fill_color,
 				args.cmds_per_sec,
 				stream_size,
+				args.filter,
 			)
 		},
 		StreamMode::Matrix => create_matrix_streams(
@@ -85,10 +84,11 @@ fn build_video_config(args: &VideoOpts) -> VideoConfig {
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
 						let gap = compute_gap_size(args.stream_size.unwrap(), matrix_screen_size);
-						println!("auto-gap: {}", gap);
+						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
 				.unwrap_or(Size::ZERO),
+			args.filter,
 		),
 		StreamMode::Custom => create_streams_custom(
 			args.streams_config.as_ref().unwrap()
@@ -125,16 +125,18 @@ pub fn compute_largest_size(ratio: Frac<usize>, max_pixels: usize, max_width: us
 }
 
 fn create_main_stream(
-	frame_rate: Option<u16>,
+	frame_rate: Option<Frac<u16>>,
 	fill_color: RGB8,
 	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
+	filter: Option<VideoFilter>,
 ) -> VideoConfig {
-	let stream_descs_data = vec![VideoStreamDescData {
-		name: SizedString::new("main").expect("stream name too long"),
+	let stream_descs_data = vec![VideoDescData {
+		name: "main".to_string(),
 		frame_rate,
 		size: stream_size,
 		source_area: None,
+		filter,
 	}];
 
 	VideoConfig {
@@ -146,26 +148,28 @@ fn create_main_stream(
 }
 
 fn create_matrix_streams(
-	frame_rate: Option<u16>,
+	frame_rate: Option<Frac<u16>>,
 	fill_color: RGB8,
 	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
+	filter: Option<VideoFilter>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 
 	let stream_descs_data = (0..matrix_size.y)
 		.flat_map(move |y| (0..matrix_size.x)
-			.map(move |x| VideoStreamDescData {
-				name: SizedString::new(&format!("{},{}", x, y)).expect("stream name too long"),
+			.map(move |x| VideoDescData {
+				name: format!("{},{}", x, y),
 				frame_rate,
 				size: stream_size,
 				source_area: Some(Rect {
 					pos: Point::new(x, y) * (stream_input_size + matrix_gap_size),
 					size: stream_input_size,
-				})
+				}),
+				filter
 			}))
 		.collect();
 
@@ -188,9 +192,15 @@ pub enum StreamMode {
 	Custom,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum VideoFilter {
+	Monochrome,
+	Grayscale,
+}
+
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 	AudioConfig {
-		name: SizedString::new("main").unwrap(),
+		name: "main".to_string(),
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
@@ -261,7 +271,9 @@ struct VideoOpts {
 		long = "mode",
 		help = "How to arrange and produce the streams",
 		requires_if("Single", "stream_size"),
+		requires_if("Single", "filter"),
 		requires_if("Matrix", "stream_size"),
+		requires_if("Matrix", "filter"),
 		requires_if("Matrix", "matrix_size"),
 		requires_if("Matrix", "matrix_screen_size"),
 		requires_if("Custom", "streams_config"),
@@ -273,7 +285,7 @@ struct VideoOpts {
 		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
 	)]
-	pub frame_rate: Option<u16>,
+	pub frame_rate: Option<Frac<u16>>,
 	
 	#[arg(
 		long = "fill-color",
@@ -317,6 +329,12 @@ struct VideoOpts {
 		help = "path to json streams config file",
 	)]
 	pub streams_config: Option<PathBuf>,
+
+	#[arg(
+		long = "filter",
+		help = "what to pass the pixels through before encoding",
+	)]
+	pub filter: Option<VideoFilter>,
 }
 
 impl VideoOpts {
@@ -361,6 +379,10 @@ impl VideoOpts {
 						eprintln!("--streams-config is required when --mode is 'Custom'");
 						is_valid = false;
 					}
+					if self.filter.is_some() {
+						eprintln!("--filter is only valid when --mode is 'Single' or 'Matrix'");
+						is_valid = false;
+					}
 				}
 			}
 		}
@@ -371,27 +393,26 @@ impl VideoOpts {
 #[derive(Args, Debug)]
 pub struct AudioOpts {
 	#[arg(
-		long = "rate",
-		default_value_t = 22050,
+		long = "analysis-rate",
+		default_value_t = 24000,
 		help = "Target analysis sample rate (Hz)",
 	)]
 	pub analysis_rate: u32,
 
 	#[arg(
-		long = "window",
+		long = "fft-window-size",
 		default_value_t = 1024,
 		help = "FFT window size (power of two)",
 	)]
 	pub fft_window_size: usize,
 
 	#[arg(
-		long = "hop",
+		long = "hop-length",
 		help = "Hop size in samples (defaults to window/2)",
 	)]
 	pub hop_length: Option<usize>,
 
 	#[arg(
-		short = 'v',
 		long = "voices",
 		default_value_t = 8,
 		help = "How many voices to use (8 channels per sound card)",

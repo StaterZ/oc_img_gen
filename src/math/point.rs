@@ -1,5 +1,4 @@
-use std::{fmt::Display, ops::{Div, Mul}, str::FromStr};
-
+use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use num_traits::PrimInt;
 

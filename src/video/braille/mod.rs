@@ -1,9 +1,9 @@
-use std::borrow::Borrow;
-
+use std::mem::MaybeUninit;
 use num_traits::ConstZero;
+use itertools::Itertools;
 use szu::{math::int_div_round, iter::MultiZipExt};
 
-use crate::math::Size;
+use crate::math::*;
 use super::{image::Image, oc_color::{RGB, RGB8}};
 
 #[cfg(feature = "gpu")]
@@ -52,30 +52,34 @@ impl<T> Braille<T> {
 }
 
 impl Braille<RGB8> {
-	fn compute_bin_bleed(&self, pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> u32 {
-		let mut output = 0;
-		for i in 0..BITS {
-			if (self.id >> i) & 1 == 0 {
-				if self.id != 0xff {
-					output += self.bg.perceptual_delta(pixels[i / WIDTH].borrow()[i % WIDTH])
-				}
-			} else {
-				if self.id != 0x00 {
-					output += self.fg.perceptual_delta(pixels[i / WIDTH].borrow()[i % WIDTH])
-				}
-			}
-		}
-		output
+	#[inline(always)]
+	fn compute_sharpness(&self) -> u32 {
+		if self.id == 0x00 || self.id == 0xff { 0 } else { self.bg.perceptual_delta(self.fg) }
 	}
 	
-	fn compute_cross_bin_sharpness(&self) -> u32 {
-		if matches!(self.id, 0x00 | 0xff) { 0 } else { self.bg.perceptual_delta(self.fg) }
+	#[inline(always)]
+	fn compute_irregularity(&self, pixels: &[RGB8; BITS]) -> u32 {
+		(0..BITS).map(|i| {
+			let pixel = pixels[i];
+			if ((self.id as usize >> i) & 1) != 0 {
+				self.fg.perceptual_delta(pixel)
+			} else {
+				self.bg.perceptual_delta(pixel)
+			}
+		}).sum()
 	}
 
-	pub fn from_pixels(pixels: &[impl Borrow<[RGB8; WIDTH]>; HEIGHT]) -> Self {
-		(0..(1 << (BITS - 1))).map(move |group| {
-				let group = group as u8;
+	#[inline(always)]
+	fn compute_score(&self, pixels: &[RGB8; BITS]) -> i32 {
+		let sharpness = self.compute_sharpness();
+		let irregular = self.compute_irregularity(pixels);
+		sharpness as i32 - irregular as i32
+	}
 
+	pub fn from_pixels_old(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
+
+		(0u8..(1 << (BITS - 1))).map(move |group| {
 				let (bg, fg) = {
 					let mut bg_sum = RGB::<u32>::ZERO;
 					let mut fg_sum = RGB::<u32>::ZERO;
@@ -85,7 +89,7 @@ impl Braille<RGB8> {
 						} else {
 							&mut fg_sum
 						};
-						*bin_sum += pixels[i / WIDTH].borrow()[i % WIDTH].into();
+						*bin_sum += pixels[i].into();
 					}
 
 					fn div_rgb(lhs: RGB<u32>, rhs: u32) -> Option<RGB8> {
@@ -105,11 +109,91 @@ impl Braille<RGB8> {
 					fg: fg.unwrap_or_else(|| bg.unwrap()),
 				}
 			})
-		.max_by_key(|c| {
-			let bin_bleed = Self::compute_bin_bleed(c, pixels);
-			let cross_bin_sharpness = Self::compute_cross_bin_sharpness(c);
-			cross_bin_sharpness as i32 - bin_bleed as i32
-		}).unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
+		.max_by_key(|candidate| candidate.compute_score(pixels))
+		.unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
+	}
+
+	pub fn from_pixels(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
+
+		#[inline]
+		fn div_rgb(lhs: &RGB<u32>, rhs: u32) -> Option<RGB8> {
+			(rhs != 0).then(|| RGB {
+				r: int_div_round(lhs.r, rhs) as u8,
+				g: int_div_round(lhs.g, rhs) as u8,
+				b: int_div_round(lhs.b, rhs) as u8,
+			})
+		}
+
+		// Precompute per-bit sums as RGB<u32> so we can add/subtract quickly.
+		let pixels32: [RGB<u32>; BITS] = std::array::from_fn(|i| pixels[i].into());
+
+		const NUM_GROUPS: usize = 1 << (BITS - 1);
+
+		// Start with group == 0 (all bits 0 => all pixels in bg)
+		// bg_sum = sum of all pixel_sums, fg_sum = ZERO
+		let mut bg_sum = pixels32.iter().copied().sum();
+		let mut fg_sum = RGB::<u32>::ZERO;
+		let mut bg_count: u32 = BITS as u32;
+		let mut fg_count: u32 = 0;
+
+		// Gray-code generation helpers:
+		// Gray(i) = i ^ (i >> 1). We iterate i from 0..GROUPS and compute gray.
+		// flipped bit index = trailing_zeros(prev_gray ^ gray).
+		let mut best = MaybeUninit::<Braille<RGB8>>::uninit();
+		let mut best_score = i32::MIN;
+
+		let mut prev_gray: usize = 0;
+		// For group 0 we already have bg_sum, fg_sum, counts set.
+		for seq in 0..NUM_GROUPS {
+			let gray = seq ^ (seq >> 1);
+			// find flipped bit compared to previous gray (except seq==0)
+			if seq != 0 {
+				let diff = prev_gray ^ gray;
+				let flipped_bit = diff.trailing_zeros() as usize; // 0..BITS-1
+				// if bit in gray is 1, we moved that pixel from bg -> fg, else fg -> bg
+				if ((gray >> flipped_bit) & 1) != 0 {
+					// 0->1: move pixel_sums[flipped_bit] from bg_sum to fg_sum
+					bg_sum -= pixels32[flipped_bit];
+					fg_sum += pixels32[flipped_bit];
+					bg_count -= 1;
+					fg_count += 1;
+				} else {
+					// 1->0: move pixel_sums[flipped_bit] from fg_sum to bg_sum
+					fg_sum -= pixels32[flipped_bit];
+					bg_sum += pixels32[flipped_bit];
+					fg_count -= 1;
+					bg_count += 1;
+				}
+			}
+
+			// Candidate id is the lower (BITS-1) bits of gray; keep type compatibility with original
+			let id = (gray as u8) & ((1u8 << (BITS - 1)) - 1); // matches original group->id mapping
+
+			// compute bg/fg averages (O(1)).
+			// If either count==0, we fall back to other color per original logic.
+			let bg_opt = div_rgb(&bg_sum, bg_count);
+			let fg_opt = div_rgb(&fg_sum, fg_count);
+
+			let (bg, fg) = match (bg_opt, fg_opt) {
+				(Some(b), Some(f)) => (b, f),
+				(Some(b), None) => (b, b),
+				(None, Some(f)) => (f, f),
+				(None, None) => unreachable!(),
+			};
+
+			let candidate = Braille { id, bg, fg };
+			let score = candidate.compute_score(pixels);
+
+			if score > best_score {
+				best_score = score;
+				best = MaybeUninit::new(candidate);
+			}
+
+			prev_gray = gray;
+		}
+
+		unsafe { best.assume_init() }
 	}
 }
 
@@ -123,19 +207,13 @@ pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
 	let row_len = input.size().x as usize;
 	let buffer: Vec<Braille<RGB8>> = input
 		.buffer()
-		.par_chunks_exact(HEIGHT * row_len) // parallel over row blocks
+		.par_chunks_exact(HEIGHT * row_len)
 		.flat_map(|row_block| {
-			// row_block: &[RGB8] covering HEIGHT rows
-			// split each row into WIDTH slices
-			let rows: Vec<&[RGB8]> = row_block.chunks(row_len).collect(); // safe, small vec per block
+			let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
 			(0..(row_len / WIDTH)).into_par_iter().map(move |col| {
-				// create cluster from WIDTH x HEIGHT
-				let mut cluster = [[RGB8::ZERO; WIDTH]; HEIGHT];
-				for r in 0..HEIGHT {
-					let start = col * WIDTH;
-					let end = start + WIDTH;
-					cluster[r].copy_from_slice(&rows[r][start..end]);
-				}
+				let start = col * WIDTH;
+				let end = start + WIDTH;
+				let cluster: [[RGB8; WIDTH]; HEIGHT] = std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap());
 				Braille::from_pixels(&cluster)
 			})
 		})

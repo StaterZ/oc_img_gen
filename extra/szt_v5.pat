@@ -19,7 +19,15 @@ struct Size {
 	u8 y;
 } [[format("size_fmt")]];
 fn size_fmt(Size value) {
-	return std::format("({},{})", value.x, value.y);
+	return std::format("({}x{})", value.x, value.y);
+};
+
+struct Frac {
+	u16 numerator;
+	u16 denominator;
+} [[format("frac_fmt")]];
+fn frac_fmt(Frac value) {
+	return std::format("({}/{})", value.numerator, value.denominator);
 };
 
 struct Color {
@@ -57,7 +65,6 @@ struct Command<auto kind> {
 };
 
 struct VideoDesc {
-	u16 frame_rate;
 	Size size;
 };
 struct AudioDesc {
@@ -69,6 +76,7 @@ enum DescKind: u8 {
 };
 struct Desc {
 	u32 num_packets;
+	Frac rate;
 	std::string::SizedString<u8> name;
 	DescKind kind;
 	match (kind) {
@@ -109,10 +117,9 @@ struct Sample<auto desc> {
 
 struct Packet {
 	u8 stream_id;
-	//StreamDesc desc = parent.stream_descs[stream_id];
 	match (parent.stream_descs[stream_id].kind) {
-		(DescKind::Video): Frame<parent.stream_descs[stream_id].desc> packet;
-		(DescKind::Audio): Sample<parent.stream_descs[stream_id].desc> packet;
+		(DescKind::Video): Frame<parent.stream_descs[stream_id].desc> content;
+		(DescKind::Audio): Sample<parent.stream_descs[stream_id].desc> content;
 	}
 };
 

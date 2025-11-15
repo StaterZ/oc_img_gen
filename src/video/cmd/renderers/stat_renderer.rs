@@ -1,4 +1,7 @@
-use crate::{math::{Frac, Point, Size}, video::cmd::{renderers::{BasicRenderer, RenderState}, Machine}};
+use crate::{
+	math::{Frac, Point, Size},
+	video::cmd::{renderers::{BasicRenderer, RenderState}, Machine}
+};
 use super::{
 	Renderer,
 	super::super::oc_color::PackedColor,

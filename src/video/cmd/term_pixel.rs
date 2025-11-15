@@ -1,6 +1,7 @@
-use super::super::{braille::Braille, oc_color::PackedColor};
-
-use super::TermChar;
+use super::{
+	super::{braille::Braille, oc_color::PackedColor},
+	TermChar,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TermPixel {

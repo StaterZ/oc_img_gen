@@ -1,5 +1,4 @@
 use std::{ops::RangeInclusive, time::Duration};
-
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use ffmpeg_next::{
@@ -14,31 +13,31 @@ use ffmpeg_next::{
 use num_traits::ConstZero;
 
 use super::{
-	media_container::SizedString,
 	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
 	muxer::{Muxer, PacketWriter},
 };
-use crate::encoder::media_container::{Descriptor as StreamDescriptor, DescriptorContent};
-use crate::math::{Frac, Rect, Size};
+use crate::{cli::VideoFilter, encoder::media_container::Descriptor as StreamDescriptor};
+use crate::math::*;
 use crate::video::{
 	self,
-	cmd::packet::{self, Descriptor as VideoStreamDesc},
+	cmd::packet::{self, Descriptor},
 	oc_color::RGB8,
 	Image,
 };
 
 pub struct VideoConfig {
-	pub stream_descs_data: Vec<VideoStreamDescData>,
+	pub stream_descs_data: Vec<VideoDescData>,
 	pub container_size: Size<usize>,
 	pub fill_color: RGB8,
 	pub cmds_per_sec: Option<usize>,
 }
 
-pub struct VideoStreamDescData {
-	pub name: SizedString<u8>,
-	pub frame_rate: Option<u16>,
+pub struct VideoDescData {
+	pub name: String,
+	pub frame_rate: Option<Frac<u16>>,
 	pub size: Size<u8>,
 	pub source_area: Option<Rect<usize>>,
+	pub filter: Option<VideoFilter>,
 }
 
 pub struct VideoReader<'a> {
@@ -123,25 +122,25 @@ impl<'a> VideoReader<'a> {
 					stream_data.size
 				} else {
 					let size = (fit_size / video::braille::SIZE).try_cast().unwrap();
-					println!("auto-size-fit: {}", size);
+					eprintln!("auto-size-fit: {}", size);
 					size
 				};
-				let desc = VideoStreamDesc {
-					frame_rate: stream_data.frame_rate.unwrap_or(in_frame_rate.into_int() as u16),
-					size,
+				let desc = StreamDescriptor::<Descriptor> {
+					num_packets: 0,
+					rate: stream_data.frame_rate.unwrap_or(in_frame_rate.try_cast::<u16>().unwrap()),
+					name: stream_data.name.into(),
+					content: Descriptor {
+						size,
+					},
 				};
 
-				let stream_id = muxer.create_stream(StreamDescriptor {
-					num_packets: 0,
-					name: stream_data.name.clone(),
-					content: DescriptorContent::Video(desc.clone()),
-				});
+				let stream_id = muxer.create_stream(desc.clone().into());
 
 				packet::VideoEncoder::new(
-					stream_data.name,
-					stream_data.source_area,
 					desc,
 					stream_id,
+					stream_data.source_area,
+					stream_data.filter,
 				)
 			})
 			.collect_vec();
@@ -194,18 +193,18 @@ impl<'a> Reader<'a> for VideoReader<'a> {
 				if stream_time_s < *last_frame_time { return None; }
 
 				let delta = stream_time_s - *last_frame_time;
-				let frame_rate = stream.desc.frame_rate as i64;
-				let mut emit_count = (delta * frame_rate).into_int_trunc();
+				let frame_rate = stream.desc.rate.cast::<i64>();
+				let mut emit_count = (delta / frame_rate).into_int_trunc();
 				if stream_time_s == 0.into() {
 					emit_count = emit_count.max(1);
 				}
-				*last_frame_time += Frac::new(emit_count, frame_rate);
+				*last_frame_time += Frac::from(emit_count) * frame_rate;
 				(emit_count > 0).then_some((stream, emit_count))
 			}).collect_vec();
 
 		if cfg!(feature = "log") {
-			println!();
-			println!("emit: {}", if !emit_streams.is_empty() { format!("yes ({})", emit_streams.iter().map(|s| s.1.to_string()).join(",")) } else { "no".to_string() });
+			eprintln!();
+			eprintln!("emit: {}", if !emit_streams.is_empty() { format!("yes ({})", emit_streams.iter().map(|s| s.1.to_string()).join(",")) } else { "no".to_string() });
 		}
 
 		if emit_streams.is_empty() { return; }

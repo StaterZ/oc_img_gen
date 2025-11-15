@@ -2,7 +2,6 @@ use more_asserts::*;
 use szu::iter::SplitByBytes;
 
 use crate::{cmd::szt, math::{Point, Size}, oc_color::PackedColor};
-
 use super::basic_renderer::{BasicRenderer, RenderState};
 
 pub struct SztRenderer<const KIND: szt::CommandKind> {
