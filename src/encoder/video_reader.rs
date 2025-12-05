@@ -122,7 +122,7 @@ impl<'a> VideoReader<'a> {
 					stream_data.size
 				} else {
 					let size = (fit_size / video::braille::SIZE).try_cast().unwrap();
-					eprintln!("auto-size-fit: {}", size);
+					eprintln!("auto-size-fit: {} (smallest possible resolution for stream that fits largest possible source resolution)", size);
 					size
 				};
 				let desc = StreamDescriptor::<Descriptor> {

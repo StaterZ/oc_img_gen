@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, time::Duration};
 use clap::{ArgAction, Args, Parser};
-use num_traits::ConstZero;
+use num_traits::{ConstOne, ConstZero};
 
 use crate::{
 	EXT, encoder::{
@@ -55,16 +55,12 @@ pub fn parse_args() -> EncoderConfig {
 fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
 	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
 		StreamMode::Single => {
-			let stream_size = args.stream_size.map_or_else(
-				|| {
-					let gpu_t3_max_res = Machine::new_t3().max_screen_size;
-					let content_size = Size::<u32>::new(stream.width(), stream.height());
-					let size = compute_largest_size(content_size.cast::<usize>().ratio(), gpu_t3_max_res.area(), gpu_t3_max_res.x); //TODO
-					println!("auto-size: {}", size);
-					size.try_cast().expect("stream size too large")
-				},
-				|stream_size| stream_size.try_cast().expect("stream size too large")
-			);
+			let stream_size = args.stream_size.unwrap_or_else(|| {
+				let content_size = Size::<u32>::new(stream.width(), stream.height());
+				let size = compute_largest_size_machine(content_size.cast::<usize>().ratio(), &Machine::T3);
+				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
+				size
+			}).try_cast().expect("stream size too large");
 
 			create_main_stream(
 				args.frame_rate,
@@ -78,7 +74,11 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 			args.frame_rate,
 			args.fill_color,
 			args.cmds_per_sec,
-			args.stream_size.map(|stream_size| stream_size.try_cast().expect("stream size too large")).unwrap(),
+			args.stream_size.unwrap_or_else(|| {
+				let size = compute_largest_size_machine(Frac::ONE, &Machine::T3);
+				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
+				size
+			}).try_cast().expect("stream size too large"),
 			args.matrix_size.unwrap(),
 			args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
@@ -103,6 +103,10 @@ fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
 	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
+}
+
+pub fn compute_largest_size_machine(ratio: Frac<usize>, machine: &Machine) -> Size<usize> {
+	compute_largest_size(ratio, machine.max_screen_size.area(), machine.max_screen_size.x)
 }
 
 pub fn compute_largest_size(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {

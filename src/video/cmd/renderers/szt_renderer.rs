@@ -1,4 +1,4 @@
-use more_asserts::*;
+use all_asserts::*;
 use szu::iter::SplitByBytes;
 
 use crate::{math::{Point, Size}, video::cmd::renderers::cached_renderer::RenderState};
@@ -60,8 +60,7 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		const MAX_BYTES: usize = 1 << (8 - 2);
 		let mut pos = *pos;
 		let mut encode_chunk = |chunk: &[u8], chunk_uni_len: usize| {
-			debug_assert_gt!(chunk.len(), 0);
-			debug_assert_le!(chunk.len(), MAX_BYTES);
+			debug_assert_range!(1..=MAX_BYTES, chunk.len());
 			{
 				let bg_flag = (self.bg_needs_emit as u8) << 7;
 				let fg_flag = (self.fg_needs_emit as u8) << 6;
@@ -95,11 +94,9 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 				while let Some(chunk) = iter.next() {
 					encode_chunk(&chunk, 64);
 				}
-				if let Some(rem) = iter.into_remainder() {
-					let rem = rem.as_slice();
-					if !rem.is_empty() {
-						encode_chunk(rem, rem.len());
-					}
+				let rem = iter.into_remainder();
+				if !rem.is_empty() {
+					encode_chunk(rem.as_slice(), rem.len());
 				}
 			},
 		}

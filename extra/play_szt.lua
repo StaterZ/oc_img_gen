@@ -635,6 +635,12 @@ local function play(gpu, file, surfaces)
 		end
 	else
 		play_impl()
+		if ops.hold then
+			while true do
+				local e = event.pull()
+				if e == "interrupted" or e == "key_down" then break end
+			end
+		end
 	end
 
 	if not ops.no_video then
@@ -651,6 +657,7 @@ if ops.h or ops.help then
 	print("-p --probe", "show the header info")
 	print("   --fps", "show performance stats during playback")
 	print("   --loop", "loop video like a gif")
+	print("   --hold", "hold image on screen")
 	print("   --no-video", "skip video streams")
 	print("   --no-audio", "skip audio streams")
 	print("   --no-back", "disable double buffering and the dependency on GPU buffers")
@@ -663,6 +670,7 @@ if ops.h or ops.help then
 end
 if ops.v or ops.version then
 	print(("SZT Stream Reader V%s"):format(version))
+	print(("understands szt%s containers"):format(szt.version))
 	return
 end
 

@@ -1,6 +1,5 @@
 use std::mem::MaybeUninit;
 use num_traits::ConstZero;
-use itertools::Itertools;
 use szu::{math::int_div_round, iter::MultiZipExt};
 
 use crate::math::*;

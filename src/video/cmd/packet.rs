@@ -174,7 +174,7 @@ impl VideoEncoder {
 		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		let renderer = renderer.into_inner();
 
-		let machine = Machine::new_t3();
+		let machine = Machine::T3;
 		let cost = renderer.get_cost(&machine);
 		self.num_frames_since_emit += 1;
 		let budget = (machine.call_budget * 20) / self.desc.rate.cast::<usize>() * self.num_frames_since_emit;

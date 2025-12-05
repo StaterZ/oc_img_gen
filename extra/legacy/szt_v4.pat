@@ -19,15 +19,7 @@ struct Size {
 	u8 y;
 } [[format("size_fmt")]];
 fn size_fmt(Size value) {
-	return std::format("({}x{})", value.x, value.y);
-};
-
-struct Frac {
-	u16 numerator;
-	u16 denominator;
-} [[format("frac_fmt")]];
-fn frac_fmt(Frac value) {
-	return std::format("({}/{})", value.numerator, value.denominator);
+	return std::format("({},{})", value.x, value.y);
 };
 
 struct Color {
@@ -64,24 +56,28 @@ struct Command<auto kind> {
 	}
 };
 
-struct VideoDesc {
+struct StreamDescHeader {
+	u32 num_packets;
+	std::string::SizedString<u8> name;
+};
+struct VideoStreamDesc {
+	StreamDescHeader header;
+	u16 frame_rate;
 	Size size;
 };
-struct AudioDesc {
+struct AudioStreamDesc {
+	StreamDescHeader header;
 	u8 num_voices;
 };
-enum DescKind: u8 {
+enum StreamDescKind: u8 {
 	Video = 0x00,
 	Audio = 0x01,
 };
-struct Desc {
-	u32 num_packets;
-	Frac rate;
-	std::string::SizedString<u8> name;
-	DescKind kind;
+struct StreamDesc {
+	StreamDescKind kind;
 	match (kind) {
-		(DescKind::Video): VideoDesc desc;
-		(DescKind::Audio): AudioDesc desc;
+		(StreamDescKind::Video): VideoStreamDesc desc;
+		(StreamDescKind::Audio): AudioStreamDesc desc;
 	}
 };
 
@@ -91,7 +87,7 @@ struct Header {
 	u8 num_streams;
 	
 	std::assert(magic == "sztb", "bad magic");
-	std::assert(version == 5, "bad version");
+	std::assert(version == 4, "bad version");
 };
 
 struct Frame<auto desc> {
@@ -112,28 +108,29 @@ struct VoiceState {
 	u16 frequency;
 };
 struct Sample<auto desc> {
-	VoiceState voices[desc.num_voices];
+	VoiceState voices[desc.header.num_voices];
 };
 
 struct Packet {
 	u8 stream_id;
+	//StreamDesc desc = parent.stream_descs[stream_id];
 	match (parent.stream_descs[stream_id].kind) {
-		(DescKind::Video): Frame<parent.stream_descs[stream_id].desc> content;
-		(DescKind::Audio): Sample<parent.stream_descs[stream_id].desc> content;
+		(StreamDescKind::Video): Frame<parent.stream_descs[stream_id].desc> packet;
+		(StreamDescKind::Audio): Sample<parent.stream_descs[stream_id].desc> packet;
 	}
 };
 
 fn calculate_total_packets(ref auto stream_descs, u32 num_streams) {
 	u32 total = 0;
 	for (u32 i = 0, i < num_streams, i += 1) {
-		total += stream_descs[i].num_packets;
+		total += stream_descs[i].desc.header.num_packets;
 	}
 	return total;
 };
 
 struct File {
 	Header header;
-	Desc stream_descs[header.num_streams];
+	StreamDesc stream_descs[header.num_streams];
 	u32 num_packets = calculate_total_packets(stream_descs, header.num_streams);
 	
 	u64 start = $;

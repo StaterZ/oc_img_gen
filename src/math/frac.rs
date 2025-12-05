@@ -103,7 +103,7 @@ impl<T: PrimInt + GCD + ConstOne> ConstOne for Frac<T> {
 
 impl<T: PrimInt + GCD + Display> Display for Frac<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "({},{} | ~{})", self.numerator, self.denominator, self.into_flt::<f32>())
+		write!(f, "({}/{} | ~{})", self.numerator, self.denominator, self.into_flt::<f32>())
 	}
 }
 

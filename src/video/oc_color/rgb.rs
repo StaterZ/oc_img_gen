@@ -5,7 +5,7 @@ use std::{
 	ops::*,
 	str::FromStr,
 };
-//use more_asserts::*;
+//use all_asserts::*;
 use num_traits::{ConstZero, Signed, Zero};
 use szu::math::AbsDiff;
 

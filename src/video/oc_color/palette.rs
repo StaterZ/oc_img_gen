@@ -1,5 +1,5 @@
 use std::fmt::Display;
-use more_asserts::*;
+use all_asserts::*;
 
 use super::RGB8;
 

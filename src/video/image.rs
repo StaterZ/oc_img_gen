@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use more_asserts::*;
+use all_asserts::*;
 
 use crate::math::*;
 use super::oc_color::RGB8;
@@ -90,8 +90,9 @@ impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
 			buffer: value.data(0)
 				.chunks_exact(value.stride(0))
 				.flat_map(|row| row[..width * 3]
+					.into_iter()
 					.array_chunks::<3>()
-					.map(|p| RGB8 { r: p[0], g: p[1], b: p[2] }))
+					.map(|p| RGB8 { r: *p[0], g: *p[1], b: *p[2] }))
 				.collect(),
 		}
 	}
