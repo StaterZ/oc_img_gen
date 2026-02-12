@@ -20,8 +20,8 @@ impl<T> Image<T> {
 	}
 
 	#[inline]
-	pub fn size(&self) -> &Size<usize> {
-		&self.size
+	pub fn size(&self) -> Size<usize> {
+		self.size
 	}
 
 	#[inline]

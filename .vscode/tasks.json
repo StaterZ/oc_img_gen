@@ -7,20 +7,24 @@
 			"args": [
 				"run",
 				"--",
+				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt",
 				"-i=data/bad-apple.mp4",
+				"-e=30s",
 				"--mode=single",
-				"--end=1s",
-				"-v=8"
+				"-f=20",
+				"--stream-size=80x80"
 			],
 			"problemMatcher": [
 				"$rustc"
 			],
-			"env": {
-				//"RUST_BACKTRACE": "1"
-			},
 			"group": {
 				"kind": "build",
 				"isDefault": true
+			},
+			"options": {
+				"env": {
+					"RUST_BACKTRACE": "1"
+				}
 			},
 			"label": "rust: cargo run",
 			"presentation": {

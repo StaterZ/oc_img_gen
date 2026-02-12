@@ -4,22 +4,26 @@ use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
 use num_traits::{ConstOne, ConstZero, Float, One, PrimInt, Zero};
 
-pub trait GCD: Copy {
+pub trait GoodInt: PrimInt + Copy {
 	fn gcd(x: Self, y: Self) -> Self;
+	fn abs(x: Self) -> Self;
 }
-impl<T: num::Integer + Copy> GCD for T {
+impl<T: num::Integer + PrimInt + Copy> GoodInt for T {
 	fn gcd(x: Self, y: Self) -> Self {
 		num::integer::gcd(x, y)
+	}
+	fn abs(x: Self) -> Self {
+		if x >= Self::zero() { x } else { Self::zero() - x }
 	}
 }
 
 #[derive(Debug, Clone, Copy, Eq)]
-pub struct Frac<T: PrimInt + GCD> {
+pub struct Frac<T: GoodInt> {
 	pub numerator: T,
 	pub denominator: T,
 }
 
-impl<T: PrimInt + GCD> Frac<T> {
+impl<T: GoodInt> Frac<T> {
 	pub const fn new(numerator: T, denominator: T) -> Self {
 		Self { numerator, denominator }
 	}
@@ -29,19 +33,20 @@ impl<T: PrimInt + GCD> Frac<T> {
 	}
 	pub fn into_int(self) -> T {
 		let two = T::one() + T::one();
-		(self.numerator + (self.denominator / two)) / self.denominator
+		let bias = T::abs(self.denominator) / if self.numerator > T::zero() { two } else { T::zero() - two };
+		(self.numerator + bias) / self.denominator
 	}
-	fn into_flt<U: Float>(self) -> U {
+	pub fn into_flt<U: Float>(self) -> U {
 		U::from(self.numerator).unwrap() / U::from(self.denominator).unwrap()
 	}
 
-	pub fn cast<U: PrimInt + GCD + From<T>>(self) -> Frac::<U> {
+	pub fn cast<U: GoodInt + From<T>>(self) -> Frac::<U> {
 		Frac {
 			numerator: self.numerator.into(),
 			denominator: self.denominator.into(),
 		}
 	}
-	pub fn try_cast<U: PrimInt + GCD + TryFrom<T>>(self) -> Result<Frac::<U>, U::Error> {
+	pub fn try_cast<U: GoodInt + TryFrom<T>>(self) -> Result<Frac::<U>, U::Error> {
 		Ok(Frac {
 			numerator: self.numerator.try_into()?,
 			denominator: self.denominator.try_into()?,
@@ -57,7 +62,7 @@ impl<T: PrimInt + GCD> Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + IntegerSquareRoot> Frac<T> {
+impl<T: GoodInt + IntegerSquareRoot> Frac<T> {
 	pub fn sqrt(self) -> Self {
 		Self {
 			numerator: (self.numerator * self.denominator).integer_sqrt(),
@@ -73,7 +78,7 @@ impl<T: PrimInt + GCD + IntegerSquareRoot> Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + Zero> Zero for Frac<T> {
+impl<T: GoodInt + Zero> Zero for Frac<T> {
 	fn zero() -> Self {
 		Self::from(T::zero())
 	}
@@ -83,11 +88,11 @@ impl<T: PrimInt + GCD + Zero> Zero for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + ConstZero + ConstOne> ConstZero for Frac<T> {
+impl<T: GoodInt + ConstZero + ConstOne> ConstZero for Frac<T> {
 	const ZERO: Self = Self::new(T::ZERO, T::ONE);
 }
 
-impl<T: PrimInt + GCD + One> One for Frac<T> {
+impl<T: GoodInt + One> One for Frac<T> {
 	fn one() -> Self {
 		Self::from(T::one())
 	}
@@ -97,17 +102,17 @@ impl<T: PrimInt + GCD + One> One for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + ConstOne> ConstOne for Frac<T> {
+impl<T: GoodInt + ConstOne> ConstOne for Frac<T> {
 	const ONE: Self = Self::new(T::ONE, T::ONE);
 }
 
-impl<T: PrimInt + GCD + Display> Display for Frac<T> {
+impl<T: GoodInt + Display> Display for Frac<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "({}/{} | ~{})", self.numerator, self.denominator, self.into_flt::<f32>())
 	}
 }
 
-impl<T: PrimInt + GCD + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
+impl<T: GoodInt + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
 	#[doc = "Write type to bytes"]
 	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.numerator.to_writer(writer, ctx)?;
@@ -116,7 +121,7 @@ impl<T: PrimInt + GCD + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> 
 	}
 }
 
-impl<T: PrimInt + GCD> From<T> for Frac<T> {
+impl<T: GoodInt> From<T> for Frac<T> {
 	fn from(value: T) -> Self {
 		Self {
 			numerator: value,
@@ -140,7 +145,7 @@ pub enum FracParseErr<E> {
 	#[error("parse failed: {0}")] ParseError(#[from] E),
 }
 
-impl<T: PrimInt + GCD + FromStr> FromStr for Frac<T> {
+impl<T: GoodInt + FromStr> FromStr for Frac<T> {
 	type Err = FracParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -155,25 +160,25 @@ impl<T: PrimInt + GCD + FromStr> FromStr for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> PartialEq for Frac<T> {
+impl<T: GoodInt> PartialEq for Frac<T> {
 	fn eq(&self, other: &Self) -> bool {
 		self.numerator * other.denominator == other.numerator * self.denominator
 	}
 }
 
-impl<T: PrimInt + GCD> PartialOrd for Frac<T> {
+impl<T: GoodInt> PartialOrd for Frac<T> {
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
 		(self.numerator * other.denominator).partial_cmp(&(other.numerator * self.denominator))
 	}
 }
 
-impl<T: PrimInt + GCD> Ord for Frac<T> {
+impl<T: GoodInt> Ord for Frac<T> {
 	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
 		(self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
 	}
 }
 
-impl<T: PrimInt + GCD> Add for Frac<T> {
+impl<T: GoodInt> Add for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
@@ -184,7 +189,7 @@ impl<T: PrimInt + GCD> Add for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Add<T> for Frac<T> {
+impl<T: GoodInt> Add<T> for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: T) -> Self::Output {
@@ -192,19 +197,19 @@ impl<T: PrimInt + GCD> Add<T> for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> AddAssign for Frac<T> {
+impl<T: GoodInt> AddAssign for Frac<T> {
 	fn add_assign(&mut self, rhs: Self) {
 		*self = *self + rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> AddAssign<T> for Frac<T> {
+impl<T: GoodInt> AddAssign<T> for Frac<T> {
 	fn add_assign(&mut self, rhs: T) {
 		*self = *self + rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> Sub for Frac<T> {
+impl<T: GoodInt> Sub for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
@@ -215,7 +220,7 @@ impl<T: PrimInt + GCD> Sub for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Sub<T> for Frac<T> {
+impl<T: GoodInt> Sub<T> for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: T) -> Self::Output {
@@ -223,19 +228,19 @@ impl<T: PrimInt + GCD> Sub<T> for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> SubAssign for Frac<T> {
+impl<T: GoodInt> SubAssign for Frac<T> {
 	fn sub_assign(&mut self, rhs: Self) {
 		*self = *self - rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> SubAssign<T> for Frac<T> {
+impl<T: GoodInt> SubAssign<T> for Frac<T> {
 	fn sub_assign(&mut self, rhs: T) {
 		*self = *self - rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> Mul for Frac<T> {
+impl<T: GoodInt> Mul for Frac<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self::Output {
@@ -246,7 +251,7 @@ impl<T: PrimInt + GCD> Mul for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Mul<T> for Frac<T> {
+impl<T: GoodInt> Mul<T> for Frac<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: T) -> Self::Output {
@@ -254,19 +259,19 @@ impl<T: PrimInt + GCD> Mul<T> for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> MulAssign for Frac<T> {
+impl<T: GoodInt> MulAssign for Frac<T> {
 	fn mul_assign(&mut self, rhs: Self) {
 		*self = *self * rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> MulAssign<T> for Frac<T> {
+impl<T: GoodInt> MulAssign<T> for Frac<T> {
 	fn mul_assign(&mut self, rhs: T) {
 		*self = *self * rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> Div for Frac<T> {
+impl<T: GoodInt> Div for Frac<T> {
 	type Output = Self;
 
 	fn div(self, rhs: Self) -> Self::Output {
@@ -277,7 +282,7 @@ impl<T: PrimInt + GCD> Div for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Div<T> for Frac<T> {
+impl<T: GoodInt> Div<T> for Frac<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {
@@ -285,19 +290,19 @@ impl<T: PrimInt + GCD> Div<T> for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> DivAssign for Frac<T> {
+impl<T: GoodInt> DivAssign for Frac<T> {
 	fn div_assign(&mut self, rhs: Self) {
 		*self = *self / rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> DivAssign<T> for Frac<T> {
+impl<T: GoodInt> DivAssign<T> for Frac<T> {
 	fn div_assign(&mut self, rhs: T) {
 		*self = *self / rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> Rem for Frac<T> {
+impl<T: GoodInt> Rem for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: Self) -> Self::Output {
@@ -308,7 +313,7 @@ impl<T: PrimInt + GCD> Rem for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Rem<T> for Frac<T> {
+impl<T: GoodInt> Rem<T> for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: T) -> Self::Output {
@@ -316,13 +321,13 @@ impl<T: PrimInt + GCD> Rem<T> for Frac<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> RemAssign for Frac<T> {
+impl<T: GoodInt> RemAssign for Frac<T> {
 	fn rem_assign(&mut self, rhs: Self) {
 		*self = *self % rhs;
 	}
 }
 
-impl<T: PrimInt + GCD> RemAssign<T> for Frac<T> {
+impl<T: GoodInt> RemAssign<T> for Frac<T> {
 	fn rem_assign(&mut self, rhs: T) {
 		*self = *self % rhs;
 	}

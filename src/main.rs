@@ -1,14 +1,13 @@
-#![feature(
-	iter_array_chunks,
-	anonymous_lifetime_in_impl_trait,
-	const_for,
-	const_range_bounds,
-	adt_const_params,
-	duration_constants,
-	const_trait_impl,
-	exact_length_collection,
-	exact_size_is_empty,
-)]
+#![feature(iter_array_chunks)]
+#![feature(anonymous_lifetime_in_impl_trait)]
+#![feature(const_for)]
+#![feature(const_range_bounds)]
+#![feature(adt_const_params)]
+#![feature(duration_constants)]
+#![feature(const_trait_impl)]
+#![feature(exact_length_collection)]
+#![feature(exact_size_is_empty)]
+#![feature(stmt_expr_attributes)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 

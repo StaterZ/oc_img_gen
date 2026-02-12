@@ -16,7 +16,7 @@ use super::{
 	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
 	muxer::{Muxer, PacketWriter},
 };
-use crate::{cli::VideoFilter, encoder::media_container::Descriptor as StreamDescriptor};
+use crate::{cli::{Budget, VideoFilter}, encoder::media_container::Descriptor as StreamDescriptor};
 use crate::math::*;
 use crate::video::{
 	self,
@@ -38,6 +38,7 @@ pub struct VideoDescData {
 	pub size: Size<u8>,
 	pub source_area: Option<Rect<usize>>,
 	pub filter: Option<VideoFilter>,
+	pub budget: Option<Budget>,
 }
 
 pub struct VideoReader<'a> {
@@ -141,6 +142,7 @@ impl<'a> VideoReader<'a> {
 					stream_id,
 					stream_data.source_area,
 					stream_data.filter,
+					stream_data.budget,
 				)
 			})
 			.collect_vec();

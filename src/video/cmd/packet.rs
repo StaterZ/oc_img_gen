@@ -1,7 +1,8 @@
 use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
+use num_traits::ConstZero;
 
-use crate::cli::VideoFilter;
+use crate::cli::{Budget, VideoFilter};
 use crate::math::*;
 use crate::encoder::{
 	media_container::{
@@ -71,6 +72,8 @@ pub struct VideoEncoder {
 	prev_frame: Option<TermFrame>,
 	num_frames_since_emit: usize,
 	filter: Option<VideoFilter>,
+	budget: Option<Budget>,
+	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
 impl VideoEncoder {
@@ -79,7 +82,33 @@ impl VideoEncoder {
 		stream_id: u8,
 		source_area: Option<Rect<usize>>,
 		filter: Option<VideoFilter>,
+		budget: Option<Budget>,
 	) -> Self {
+		#[cfg(feature = "charts")] let chart = {
+			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
+				charts_rs::Series::new("budget".to_string(), Vec::new()),
+				charts_rs::Series::new("cost".to_string(), Vec::new()),
+				charts_rs::Series::new("color".to_string(), Vec::new()),
+				charts_rs::Series::new("set".to_string(), Vec::new()),
+				charts_rs::Series::new("bitblt".to_string(), Vec::new()),
+			], Vec::new(), charts_rs::THEME_GRAFANA);
+			gpu_chart.series_symbol = Some(charts_rs::Symbol::None);
+
+			let mut cpu_chart = charts_rs::LineChart::new_with_theme(vec![
+				charts_rs::Series::new("budget".to_string(), Vec::new()),
+				charts_rs::Series::new("cost".to_string(), Vec::new()),
+			], Vec::new(), charts_rs::THEME_GRAFANA);
+			cpu_chart.series_symbol = Some(charts_rs::Symbol::None);
+			
+			
+			let mut multi_chart = charts_rs::MultiChart::new();
+			multi_chart.margin = (10.0).into();
+			multi_chart.background_color = Some((31, 29, 29, 150).into());
+			multi_chart.add(charts_rs::ChildChart::Line(gpu_chart, None));
+			multi_chart.add(charts_rs::ChildChart::Line(cpu_chart, None));
+			multi_chart
+		};
+		
 		Self {
 			desc,
 			stream_id,
@@ -88,6 +117,8 @@ impl VideoEncoder {
 			prev_frame: None,
 			num_frames_since_emit: 0,
 			filter,
+			budget,
+			#[cfg(feature = "charts")] chart,
 		}
 	}
 	
@@ -158,33 +189,54 @@ impl VideoEncoder {
 	fn push_frame_braille(&mut self, frame: &BrailleFrame) {
 		self.push_frame::<{ CommandKind::Braille }>(frame.map(|braille| braille.into()));
 	}
-	
+
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
-		let mut renderer = CachedRenderer::new(SztRenderer::<CMD_KIND>::new());
-		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
-		self.prev_frame = Some(frame);
-
-		let mut frame = renderer.into_inner().build();
-		frame.update().unwrap();
-		self.frames.push_back(frame);
-	}
-
-	fn push_frame_fancy<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
 		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
 		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
 		let renderer = renderer.into_inner();
-
+		let mut stats = renderer.get_stats();
 		let machine = Machine::T3;
-		let cost = renderer.get_cost(&machine);
+		let gpu_cost = match self.budget {
+			Some(Budget::Direct) => stats.get_cost(&machine),
+			Some(Budget::Buffered) => {
+				if stats.num_set_commands > 0 {
+					stats.num_bitblt_pixels += frame.size().area();
+				};
+				let mut temp_stats = stats;
+				temp_stats.num_set_commands = 0;
+				temp_stats.get_cost(&machine)
+			}
+			None => Frac::ZERO,
+		};
+		let cpu_cost = Frac::new(stats.num_set_pixels, 15000);
+
 		self.num_frames_since_emit += 1;
-		let budget = (machine.call_budget * 20) / self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
-		//eprintln!("cost:{}%", (cost / budget * 100).into_int());
-		let mut frame = if cost <= budget {
+		let tick_rate = 20;
+		let gpu_budget = (machine.call_budget * tick_rate) * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+		let cpu_budget = machine.cpu_speed * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+
+		#[cfg(feature = "charts")] {
+			let timestamp = format!("{:.2}s", (self.desc.rate.cast::<usize>() * self.frames.len()).into_flt::<f32>());
+
+			let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
+			gpu_chart.x_axis_data.push(timestamp.clone());
+			gpu_chart.series_list[0].data.push(gpu_budget.into_flt());
+			gpu_chart.series_list[1].data.push(gpu_cost.into_flt());
+			gpu_chart.series_list[2].data.push(stats.get_set_color_cost(&machine).into_flt());
+			gpu_chart.series_list[3].data.push(stats.get_set_cost(&machine).into_flt());
+			gpu_chart.series_list[4].data.push(stats.get_bitblt_cost(&machine).into_flt());
+
+			let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
+			cpu_chart.x_axis_data.push(timestamp.clone());
+			cpu_chart.series_list[0].data.push(cpu_budget.into_flt());
+			cpu_chart.series_list[1].data.push(cpu_cost.into_flt());
+		}
+
+		let mut frame = if gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
 			self.num_frames_since_emit = 0;
 			self.prev_frame = Some(frame);
 			renderer.into_inner().build()
 		} else {
-			//eprintln!("experimental budget jump!");
 			Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
 				commands_len: 0,
 				command_kind: CMD_KIND,
@@ -193,6 +245,12 @@ impl VideoEncoder {
 		};
 		frame.update().unwrap();
 		self.frames.push_back(frame);
+	}
+}
+
+impl Drop for VideoEncoder {
+	fn drop(&mut self) {
+		#[cfg(feature = "charts")] std::fs::write("chart.svg", self.chart.svg().unwrap()).unwrap();
 	}
 }
 

@@ -1,17 +1,17 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use num::NumCast;
-use num_traits::{ConstZero, PrimInt, Zero};
+use num_traits::{ConstZero, Zero};
 
-use super::{Frac, GCD, Point, Rect};
+use super::{Frac, GoodInt, Point, Rect};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Size<T: PrimInt + GCD> {
+pub struct Size<T: GoodInt> {
 	pub x: T,
 	pub y: T,
 }
 
-impl<T: PrimInt + GCD> Size<T> {
+impl<T: GoodInt> Size<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
@@ -30,13 +30,13 @@ impl<T: PrimInt + GCD> Size<T> {
 		self.x * self.y
 	}
 
-	pub fn cast<U: PrimInt + GCD>(self) -> Size::<U> {
+	pub fn cast<U: GoodInt>(self) -> Size::<U> {
 		Size {
 			x: NumCast::from(self.x).unwrap(),
 			y: NumCast::from(self.y).unwrap(),
 		}
 	}
-	pub fn try_cast<U: PrimInt + GCD>(self) -> Option<Size<U>> {
+	pub fn try_cast<U: GoodInt>(self) -> Option<Size<U>> {
 		Some(Size {
 			x: NumCast::from(self.x)?,
 			y: NumCast::from(self.y)?,
@@ -65,13 +65,13 @@ impl<T: PrimInt + GCD> Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + Display> Display for Size<T> {
+impl<T: GoodInt + Display> Display for Size<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}x{}", self.x, self.y)
 	}
 }
 
-impl<T: PrimInt + GCD + DekuWriter> DekuWriter for Size<T> {
+impl<T: GoodInt + DekuWriter> DekuWriter for Size<T> {
 	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: ()) -> Result<(), DekuError> {
 		self.x.to_writer(writer, ctx)?;
 		self.y.to_writer(writer, ctx)?;
@@ -85,7 +85,7 @@ pub enum SizeParseErr<E> {
 	#[error("parse failed")] ParseError(#[from] E),
 }
 
-impl<T: PrimInt + GCD + FromStr> FromStr for Size<T> {
+impl<T: GoodInt + FromStr> FromStr for Size<T> {
 	type Err = SizeParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -101,7 +101,7 @@ impl<T: PrimInt + GCD + FromStr> FromStr for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + Zero> Zero for Size<T> {
+impl<T: GoodInt + Zero> Zero for Size<T> {
 	fn zero() -> Self {
 		Self::new(T::zero(), T::zero())
 	}
@@ -111,11 +111,11 @@ impl<T: PrimInt + GCD + Zero> Zero for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD + ConstZero> ConstZero for Size<T> {
+impl<T: GoodInt + ConstZero> ConstZero for Size<T> {
 	const ZERO: Self = Self::new(T::ZERO, T::ZERO);
 }
 
-impl<T: PrimInt + GCD> Add for Size<T> {
+impl<T: GoodInt> Add for Size<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
@@ -125,7 +125,7 @@ impl<T: PrimInt + GCD> Add for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt + GCD> Add<T> for Size<T> {
+impl<T: GoodInt> Add<T> for Size<T> {
 	type Output = Self;
 
 	fn add(self, rhs: T) -> Self::Output {
@@ -136,7 +136,7 @@ impl<T: PrimInt + GCD> Add<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Sub for Size<T> {
+impl<T: GoodInt> Sub for Size<T> {
 	type Output = Point<T>;
 
 	fn sub(self, rhs: Self) -> Self::Output {
@@ -146,7 +146,7 @@ impl<T: PrimInt + GCD> Sub for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt + GCD> Sub<T> for Size<T> {
+impl<T: GoodInt> Sub<T> for Size<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: T) -> Self::Output {
@@ -157,7 +157,7 @@ impl<T: PrimInt + GCD> Sub<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Mul for Size<T> {
+impl<T: GoodInt> Mul for Size<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self::Output {
@@ -167,7 +167,7 @@ impl<T: PrimInt + GCD> Mul for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt + GCD> Mul<T> for Size<T> {
+impl<T: GoodInt> Mul<T> for Size<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: T) -> Self::Output {
@@ -178,7 +178,7 @@ impl<T: PrimInt + GCD> Mul<T> for Size<T> {
 	}
 }
 
-impl<T: PrimInt + GCD> Div for Size<T> {
+impl<T: GoodInt> Div for Size<T> {
 	type Output = Self;
 
 	fn div(self, rhs: Self) -> Self::Output {
@@ -188,7 +188,7 @@ impl<T: PrimInt + GCD> Div for Size<T> {
 		}
 	}
 }
-impl<T: PrimInt + GCD> Div<T> for Size<T> {
+impl<T: GoodInt> Div<T> for Size<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {

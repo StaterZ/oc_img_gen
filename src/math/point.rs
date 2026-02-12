@@ -2,7 +2,7 @@ use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use num_traits::PrimInt;
 
-use super::{Size, GCD};
+use super::{Size, GoodInt};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Point<T: PrimInt> {
@@ -55,7 +55,7 @@ where
 	}
 }
 
-impl<T: PrimInt + GCD> Mul<Size<T>> for Point<T> {
+impl<T: GoodInt> Mul<Size<T>> for Point<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Size<T>) -> Self::Output {

@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 #cli & user feedback
-clap = { version = "4.5.53", features= ["derive"] }
+clap = { version = "4.5.58", features= ["derive"] }
 color-print = "0.3.7"
 humantime = "2.3.0"
 indicatif = "0.18.2"
@@ -15,14 +15,15 @@ indicatif = "0.18.2"
 # tracing-core = "0.1.34"
 # tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 stopwatch = "0.0.7"
+charts-rs = { "version" = "0.3.27", optional = true }
 
 #utilities
 itertools = "0.14.0"
-deku = "0.20.2"
+deku = "0.20.3"
 deku_string = { git = "https://github.com/eirtools/deku_string", branch = "renovate/deku-0.x", version = "0.4.1-0" }
 lazy_static = "1.5.0"
 num-traits = "0.2.19"
-enum-as-inner = "0.6.1"
+enum-as-inner = "0.7.0"
 phf = { version = "0.13.1", features = ["macros"] }
 lapjv = "0.3.0"
 num = "0.4.3"
@@ -30,8 +31,8 @@ rayon = "1.11.0"
 integer-sqrt = "0.1.5"
 
 #error handling
-anyhow = "1.0.100"
-thiserror = "2.0.17"
+anyhow = "1.0.101"
+thiserror = "2.0.18"
 all_asserts = "2.3.3"
 
 #loading
@@ -44,8 +45,8 @@ rustfft = "6"
 realfft = "3"
 
 #gpu
-wgpu = { version = "27.0.1", optional = true }
-bytemuck = { version = "1.24.0", optional = true }
+wgpu = { version = "28.0.0", optional = true }
+bytemuck = { version = "1.25.0", optional = true }
 futures = { version = "0.3.31", optional = true }
 futures-intrusive = { version = "0.5.0", optional = true }
 
@@ -58,6 +59,7 @@ default = []
 log = []
 debug-mode = ["lodepng"]
 gpu = ["wgpu", "bytemuck", "futures", "futures-intrusive"]
+charts = ["charts-rs"]
 
 
 # https://stackoverflow.com/questions/60751806/how-to-compile-some-dependencies-with-release

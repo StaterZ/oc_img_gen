@@ -218,7 +218,7 @@ pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
 		})
 		.collect();
 
-	Image::new(*input.size() / SIZE, buffer)
+	Image::new(input.size() / SIZE, buffer)
 }
 
 pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
@@ -236,7 +236,7 @@ pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
 		.collect();
 
 	Image::new(
-		*input.size() * SIZE,
+		input.size() * SIZE,
 		buffer,
 	)
 }

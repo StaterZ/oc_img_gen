@@ -21,9 +21,9 @@
 			},
 			"args": [
 				"-i=data/bad-apple.mp4",
-				"--mode=single",
-				"--end=1s",
-				"-v=8"
+				"--end=1m",
+				"-v=8",
+				"--analyasis-rate=48000"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -45,9 +45,9 @@
 			},
 			"args": [
 				"-i=data/bad-apple.mp4",
-				"--mode=single",
-				"--end=1s",
-				"-v=8"
+				"--end=1m",
+				"-v=8",
+				"--analyasis-rate=48000"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -58,9 +58,9 @@
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
 				"-i=data/bad-apple.mp4",
-				"--mode=single",
-				"--end=1s",
-				"-v=8"
+				"--end=1m",
+				"-v=8",
+				"--analyasis-rate=48000"
 			],
 			"cwd": "${workspaceFolder}",
 		}

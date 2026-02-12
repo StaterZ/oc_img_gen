@@ -68,6 +68,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 				args.cmds_per_sec,
 				stream_size,
 				args.filter,
+				args.budget,
 			)
 		},
 		StreamMode::Matrix => create_matrix_streams(
@@ -89,6 +90,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 					}))
 				.unwrap_or(Size::ZERO),
 			args.filter,
+			args.budget,
 		),
 		StreamMode::Custom => create_streams_custom(
 			args.streams_config.as_ref().unwrap()
@@ -134,6 +136,7 @@ fn create_main_stream(
 	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
+	budget: Option<Budget>,
 ) -> VideoConfig {
 	let stream_descs_data = vec![VideoDescData {
 		name: "main".to_string(),
@@ -141,6 +144,7 @@ fn create_main_stream(
 		size: stream_size,
 		source_area: None,
 		filter,
+		budget,
 	}];
 
 	VideoConfig {
@@ -159,6 +163,7 @@ fn create_matrix_streams(
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
 	filter: Option<VideoFilter>,
+	budget: Option<Budget>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
@@ -173,7 +178,8 @@ fn create_matrix_streams(
 					pos: Point::new(x, y) * (stream_input_size + matrix_gap_size),
 					size: stream_input_size,
 				}),
-				filter
+				filter,
+				budget,
 			}))
 		.collect();
 
@@ -200,6 +206,12 @@ pub enum StreamMode {
 pub enum VideoFilter {
 	Monochrome,
 	Grayscale,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum Budget {
+	Direct,
+	Buffered,
 }
 
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
@@ -339,6 +351,12 @@ struct VideoOpts {
 		help = "what to pass the pixels through before encoding",
 	)]
 	pub filter: Option<VideoFilter>,
+
+	#[arg(
+		long = "budget",
+		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
+	)]
+	pub budget: Option<Budget>,
 }
 
 impl VideoOpts {
