@@ -205,7 +205,7 @@ impl VideoEncoder {
 				let mut temp_stats = stats;
 				temp_stats.num_set_commands = 0;
 				temp_stats.get_cost(&machine)
-			}
+			},
 			None => Frac::ZERO,
 		};
 		let cpu_cost = Frac::new(stats.num_set_pixels, 15000);
@@ -232,7 +232,7 @@ impl VideoEncoder {
 			cpu_chart.series_list[1].data.push(cpu_cost.into_flt());
 		}
 
-		let mut frame = if gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
+		let mut frame = if self.budget == None || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
 			self.num_frames_since_emit = 0;
 			self.prev_frame = Some(frame);
 			renderer.into_inner().build()
