@@ -2,9 +2,9 @@ use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
 use num_traits::ConstZero;
 
-use crate::cli::{Budget, VideoFilter};
 use crate::math::*;
 use crate::encoder::{
+	cli::{Budget, VideoFilter},
 	media_container::{
 		Descriptor as StreamDescriptor,
 		Packet,
@@ -25,14 +25,14 @@ use super::{
 	Machine,
 };
 
-#[derive(DekuWrite, ConstParamTy, PartialEq, Eq)]
+#[derive(DekuWrite, DekuRead, ConstParamTy, PartialEq, Eq)]
 #[deku(endian = "little", id_type = "u8")]
 pub enum CommandKind {
 	#[deku(id = 0x00)] Text,
 	#[deku(id = 0x01)] Braille,
 }
 
-#[derive(DekuWrite)]
+#[derive(Debug, DekuWrite, DekuRead)]
 #[deku(endian = "little")]
 pub struct CommandFlags {
 	#[deku(bits = 1)] pub has_background: bool,
@@ -40,17 +40,17 @@ pub struct CommandFlags {
 	#[deku(bits = 6)] pub len: u8,
 }
 
-#[derive(DekuWrite)]
+#[derive(Debug, DekuWrite, DekuRead)]
 pub struct Command {
 	pub flags: CommandFlags,
 	#[deku(cond = "flags.has_background")] pub background: Option<PackedColor>,
 	#[deku(cond = "flags.has_foreground")] pub foreground: Option<PackedColor>,
 	pub pos: Point<u8>,
-	#[deku(count = "flags.len")]
+	#[deku(count = "flags.len + 1")]
 	pub braille: Vec<u8>,
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 #[deku(ctx = "desc: &Descriptor")]
 pub struct Frame {
 	#[deku(endian = "little", update = "self.commands.len()")] pub commands_len: u16,
@@ -59,7 +59,7 @@ pub struct Frame {
 	//pub commands: Vec<Command>,
 }
 
-#[derive(Clone, DekuWrite)]
+#[derive(Debug, Clone, DekuWrite, DekuRead)]
 pub struct Descriptor {
 	pub size: Size<u8>,
 }
@@ -73,6 +73,7 @@ pub struct VideoEncoder {
 	num_frames_since_emit: usize,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
+	acceptable_loss: Frac<u32>,
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
@@ -83,6 +84,7 @@ impl VideoEncoder {
 		source_area: Option<Rect<usize>>,
 		filter: Option<VideoFilter>,
 		budget: Option<Budget>,
+		acceptable_loss: Frac<u32>,
 	) -> Self {
 		#[cfg(feature = "charts")] let chart = {
 			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
@@ -118,6 +120,7 @@ impl VideoEncoder {
 			num_frames_since_emit: 0,
 			filter,
 			budget,
+			acceptable_loss,
 			#[cfg(feature = "charts")] chart,
 		}
 	}
@@ -131,9 +134,7 @@ impl VideoEncoder {
 		let img = if let Some(filter) = self.filter {
 			match filter {
 				VideoFilter::Monochrome => crate::stage("Stream | Process   | Black&White", || img.map(|p| {
-					const BLACK: RGB8 = RGB8::new(0x000000);
-					const WHITE: RGB8 = RGB8::new(0xffffff);
-					if p.perceptual_delta(WHITE) < p.perceptual_delta(BLACK) { WHITE } else { BLACK }
+					if p.perceptual_delta(RGB8::WHITE) < p.perceptual_delta(RGB8::BLACK) { RGB8::WHITE } else { RGB8::BLACK }
 				})),
 				VideoFilter::Grayscale => crate::stage("Stream | Process   | Grayscale", || img.map(|p| {
 					fn srgb_to_linear(u: f64) -> f64 {
@@ -178,21 +179,21 @@ impl VideoEncoder {
 		let img = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img));
 		let img = crate::stage("Stream | Process   | B_Deflate ", || img.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)))));
 		
-		crate::stage("Stream | Postamble | Cmd Gen", || self.push_frame_braille(&img));
+		crate::stage("Stream | Postamble | Cmd Gen", || self.push_frame_braille(&img, self.acceptable_loss));
 		//println!("{}", cmd::code_gen(&img.map(|braille| braille.into()), None, &formatter));
 	}
 
-	fn push_frame_text(&mut self, frame: TermFrame) {
-		self.push_frame::<{ CommandKind::Text }>(frame);
+	fn push_frame_text(&mut self, frame: TermFrame, acceptable_loss: Frac<u32>) {
+		self.push_frame::<{ CommandKind::Text }>(frame, acceptable_loss);
 	}
 
-	fn push_frame_braille(&mut self, frame: &BrailleFrame) {
-		self.push_frame::<{ CommandKind::Braille }>(frame.map(|braille| braille.into()));
+	fn push_frame_braille(&mut self, frame: &BrailleFrame, acceptable_loss: Frac<u32>) {
+		self.push_frame::<{ CommandKind::Braille }>(frame.map(|braille| braille.into()), acceptable_loss);
 	}
 
-	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame) {
+	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u32>) {
 		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
-		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref());
+		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref(), acceptable_loss); //todo: acceptable_loss treated as loss here
 		let renderer = renderer.into_inner();
 		let mut stats = renderer.get_stats();
 		let machine = Machine::T3;

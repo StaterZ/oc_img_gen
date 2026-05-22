@@ -4,7 +4,7 @@ use deku::prelude::*;
 use super::formatters::hybrid_formatter::StaticColor;
 use super::palette::{Palette, PaletteColor, PaletteOr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DekuWrite)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DekuWrite, DekuRead)]
 pub struct PackedColor(pub u8);
 
 impl PackedColor {

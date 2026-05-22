@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 use clap::Parser;
 
-use crate::RGB8;
 use crate::stage;
-use crate::PaletteOr;
-use crate::Formatter;
-use crate::HybridFormatter;
-use crate::Image;
+use crate::video::{
+	oc_color::{RGB8,
+		PaletteOr,
+		formatters::{Formatter, HybridFormatter},
+	},
+	Image,
+};
 
 const EXT: &str = "png";
 #[derive(Parser, Debug)]

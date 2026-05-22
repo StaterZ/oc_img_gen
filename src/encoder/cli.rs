@@ -8,8 +8,7 @@ use crate::{
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::Machine, oc_color::RGB8}
 };
 
-pub fn parse_args() -> EncoderConfig {
-	let args = Cli::parse();
+pub fn process_args(args: Cli) -> EncoderConfig {
 	if !args.validate() {
 		std::process::exit(1);
 	}
@@ -69,6 +68,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 				stream_size,
 				args.filter,
 				args.budget,
+				args.acceptable_loss.unwrap_or(Frac::from(0)),
 			)
 		},
 		StreamMode::Matrix => create_matrix_streams(
@@ -91,6 +91,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 				.unwrap_or(Size::ZERO),
 			args.filter,
 			args.budget,
+			args.acceptable_loss.unwrap_or(Frac::from(0))
 		),
 		StreamMode::Custom => create_streams_custom(
 			args.streams_config.as_ref().unwrap()
@@ -137,6 +138,7 @@ fn create_main_stream(
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
+	acceptable_loss: Frac<u32>,
 ) -> VideoConfig {
 	let stream_descs_data = vec![VideoDescData {
 		name: "main".to_string(),
@@ -145,6 +147,7 @@ fn create_main_stream(
 		source_area: None,
 		filter,
 		budget,
+		acceptable_loss,
 	}];
 
 	VideoConfig {
@@ -164,6 +167,7 @@ fn create_matrix_streams(
 	matrix_gap_size: Size<usize>,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
+	acceptable_loss: Frac<u32>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
@@ -180,6 +184,7 @@ fn create_matrix_streams(
 				}),
 				filter,
 				budget,
+				acceptable_loss,
 			}))
 		.collect();
 
@@ -220,6 +225,7 @@ pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
+		guard: args.guard.unwrap_or(1),
 		normalize: args.normalize,
 		num_voices: args.num_voices,
 	}
@@ -357,6 +363,12 @@ struct VideoOpts {
 		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
 	)]
 	pub budget: Option<Budget>,
+
+	#[arg(
+		long = "loss",
+		help = "selects the 'bitrate' limit for each frame. default: 0",
+	)]
+	pub acceptable_loss: Option<Frac<u32>>,
 }
 
 impl VideoOpts {
@@ -433,6 +445,12 @@ pub struct AudioOpts {
 		help = "Hop size in samples (defaults to window/2)",
 	)]
 	pub hop_length: Option<usize>,
+
+	#[arg(
+		long = "guard",
+		help = "Bins around a selected peak will be removed (defaults to 1)",
+	)]
+	pub guard: Option<isize>,
 
 	#[arg(
 		long = "voices",

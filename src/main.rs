@@ -14,47 +14,43 @@
 use std::io::Write;
 use indicatif::ProgressStyle;
 use stopwatch::Stopwatch;
-// use tracing_indicatif::IndicatifLayer;
-// use tracing_subscriber::prelude::*;
 use szu::flush_print;
-
-use math::Size;
+use clap::{Parser, Subcommand};
 
 mod video;
 mod audio;
 mod math;
 mod encoder;
-mod cli;
-//mod ffmpeg_tracing;
-
-#[cfg(feature = "debug-mode")]
-mod test;
+mod player;
 
 const EXT: &str = "szt";
 const FORMAT_VERSION: u16 = 5;
 
+#[derive(Parser, Debug)]
+#[command(author, version)]
+#[command(propagate_version = true)]
+pub struct Cli {
+    #[command(subcommand)]
+    command: CliCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    Encode(encoder::cli::Cli),
+    Play(player::Cli),
+}
+
 fn main() -> anyhow::Result<()> {
-	#[cfg(feature = "debug-mode")]
-	return test::run();
+	let args = Cli::parse();
 	
-	// let indicatif_layer = IndicatifLayer::new();
-	// tracing_subscriber::registry()
-	// 	.with(tracing_subscriber::EnvFilter::new("info"))
-	// 	.with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
-	// 	.with(indicatif_layer)
-	// 	.init();
-
-	ffmpeg_next::init().map_err(AppError::FfmpegInitFailed)?;
-	ffmpeg_next::util::log::set_level(ffmpeg_next::log::Level::Quiet);
-	//ffmpeg_tracing::install();
-
-	let args = cli::parse_args();
-
 	let mut watch = Stopwatch::start_new();
-	let result = encoder::encode(args);
+	match args.command {
+		CliCommand::Encode(args) => encoder::encode(encoder::cli::process_args(args))?,
+		CliCommand::Play(args) => player::play(args)?,
+	};
 	watch.stop();
 	eprintln!("took: {}s & {}ms", watch.elapsed().as_secs(), watch.elapsed().subsec_millis());
-	result
+	Ok(())
 }
 
 pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
@@ -74,23 +70,4 @@ fn build_progress_style() -> ProgressStyle {
 	ProgressStyle::with_template("{msg} [{bar}] {pos}/{len} {eta}")
 		.unwrap()
 		.progress_chars("█▉▊▋▌▍▎▏ ")
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum AppError {
-	#[error("Failed to init FFMPEG. INNER: {0}")]
-	FfmpegInitFailed(ffmpeg_next::Error),
-	#[error("Failed to write output file. INNER: {0}")]
-	WriteFailed(std::io::Error),
-
-	#[error("stream name '{name}' ({{name.as_bytes().len()}} bytes) is too long. max length is: {max_length}")]
-	StreamNameTooLong {
-		name: String,
-		max_length: usize,
-	},
-	#[error("stream size '{size}' is too large. max is: {max_size}")]
-	StreamSizeTooLarge {
-		size: Size<usize>,
-		max_size: Size<usize>,
-	}
 }

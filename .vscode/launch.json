@@ -20,10 +20,8 @@
 				}
 			},
 			"args": [
-				"-i=data/bad-apple.mp4",
-				"--end=1m",
-				"-v=8",
-				"--analyasis-rate=48000"
+				"play",
+				"-i=./data/oblivion.szt"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -44,10 +42,8 @@
 				}
 			},
 			"args": [
-				"-i=data/bad-apple.mp4",
-				"--end=1m",
-				"-v=8",
-				"--analyasis-rate=48000"
+				"play",
+				"-i=./data/oblivion.szt"
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -57,10 +53,8 @@
 			"request": "launch",
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
-				"-i=data/bad-apple.mp4",
-				"--end=1m",
-				"-v=8",
-				"--analyasis-rate=48000"
+				"play",
+				"-i=./data/oblivion.szt"
 			],
 			"cwd": "${workspaceFolder}",
 		}

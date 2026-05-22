@@ -11,8 +11,8 @@ pub struct Image<T> {
 }
 
 impl<T> Image<T> {
-	pub fn new(size: Size<usize>, buffer: Vec<T>) -> Self {
- 		debug_assert_eq!(size.x * size.y, buffer.len());
+	pub fn with_buffer(size: Size<usize>, buffer: Vec<T>) -> Self {
+		debug_assert_eq!(size.area(), buffer.len());
 		Self {
 			size,
 			buffer,
@@ -27,6 +27,11 @@ impl<T> Image<T> {
 	#[inline]
 	pub fn buffer(&self) -> &[T] {
 		&self.buffer
+	}
+	
+	#[inline]
+	pub fn buffer_mut(&mut self) -> &mut [T] {
+		&mut self.buffer
 	}
 
 	pub fn map<B>(&self, f: impl FnMut(&T) -> B) -> Image<B> {
@@ -43,6 +48,13 @@ impl<T> Image<T> {
 }
 
 impl<T: Copy> Image<T> {
+	pub fn new(size: Size<usize>, value: T) -> Self {
+		Self {
+			size,
+			buffer: vec![value; size.area()],
+		}
+	}
+
 	pub fn crop(&self, rect: &Rect<usize>) -> Self {
 		debug_assert_le!(rect.pos.x + rect.size.x, self.size.x);
 		debug_assert_le!(rect.pos.y + rect.size.y, self.size.y);

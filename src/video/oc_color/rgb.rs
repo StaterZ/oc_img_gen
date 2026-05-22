@@ -71,6 +71,9 @@ impl<T: AbsDiff> AbsDiff for RGB<T> {
 pub type RGB8 = RGB<u8>;
 
 impl RGB8 {
+	pub const BLACK: RGB8 = RGB8::new(0x000000);
+	pub const WHITE: RGB8 = RGB8::new(0xffffff);
+	
 	const R_SHIFT: u32 = 8 * 2;
 	const G_SHIFT: u32 = 8 * 1;
 	const B_SHIFT: u32 = 8 * 0;
@@ -85,7 +88,7 @@ impl RGB8 {
 		}
 	}
 
-	pub fn value(&self) -> u32 {
+	pub const fn value(&self) -> u32 {
 		(self.r as u32) << Self::R_SHIFT | (self.g as u32) << Self::G_SHIFT | (self.b as u32) << Self::B_SHIFT
 	}
 

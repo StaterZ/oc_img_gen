@@ -6,13 +6,12 @@
 			"command": "cargo",
 			"args": [
 				"run",
+				//"--features=debug-mode",
 				"--",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt",
-				"-i=data/bad-apple.mp4",
-				"-e=30s",
+				"encode",
+				"-i=data/ussr.webp",
 				"--mode=single",
-				"-f=20",
-				"--stream-size=80x80"
+				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt"
 			],
 			"problemMatcher": [
 				"$rustc"

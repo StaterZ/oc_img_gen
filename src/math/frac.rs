@@ -2,13 +2,13 @@ use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
-use num_traits::{ConstOne, ConstZero, Float, One, PrimInt, Zero};
+use num_traits::{NumAssignOps, ConstOne, ConstZero, Float, One, PrimInt, Zero};
 
-pub trait GoodInt: PrimInt + Copy {
+pub trait GoodInt: PrimInt + NumAssignOps + Copy {
 	fn gcd(x: Self, y: Self) -> Self;
 	fn abs(x: Self) -> Self;
 }
-impl<T: num::Integer + PrimInt + Copy> GoodInt for T {
+impl<T: num::Integer + PrimInt + NumAssignOps + Copy> GoodInt for T {
 	fn gcd(x: Self, y: Self) -> Self {
 		num::integer::gcd(x, y)
 	}
@@ -28,10 +28,20 @@ impl<T: GoodInt> Frac<T> {
 		Self { numerator, denominator }
 	}
 
+	pub fn fract(self) -> Self {
+		Self {
+			numerator: self.numerator % self.denominator,
+			denominator: self.denominator,
+		}
+	}
+
 	pub fn into_int_trunc(self) -> T {
 		self.numerator / self.denominator
 	}
-	pub fn into_int(self) -> T {
+	pub fn into_int_frac(self, denominator: T) -> T {
+		self.fract().numerator / denominator
+	}
+	pub fn into_int_round(self) -> T {
 		let two = T::one() + T::one();
 		let bias = T::abs(self.denominator) / if self.numerator > T::zero() { two } else { T::zero() - two };
 		(self.numerator + bias) / self.denominator
@@ -96,10 +106,6 @@ impl<T: GoodInt + One> One for Frac<T> {
 	fn one() -> Self {
 		Self::from(T::one())
 	}
-
-	fn is_one(&self) -> bool {
-		*self == Self::zero()
-	}
 }
 
 impl<T: GoodInt + ConstOne> ConstOne for Frac<T> {
@@ -120,6 +126,16 @@ impl<T: GoodInt + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
 		Ok(())
 	}
 }
+
+impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Frac<T> {
+	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
+		Ok(Self {
+			numerator: T::from_reader_with_ctx(reader, ctx)?,
+			denominator: T::from_reader_with_ctx(reader, ctx)?,
+		})
+	}
+}
+
 
 impl<T: GoodInt> From<T> for Frac<T> {
 	fn from(value: T) -> Self {

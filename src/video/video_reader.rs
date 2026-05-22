@@ -9,19 +9,25 @@ use ffmpeg_next::{
 	},
 	codec::decoder::Video as VideoDecoder,
 	media::Type as MediaType,
+	format::context::Input as FfmpegInput,
 };
 use num_traits::ConstZero;
+use szu::int_div_ceil;
+
+use crate::{
+	math::*,
+	encoder::{
+		cli::{Budget, VideoFilter},
+		media_container::Descriptor as StreamDescriptor,
+		reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
+		muxer::{Muxer, PacketWriter},
+	}
+};
 
 use super::{
-	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
-	muxer::{Muxer, PacketWriter},
-};
-use crate::{cli::{Budget, VideoFilter}, encoder::media_container::Descriptor as StreamDescriptor};
-use crate::math::*;
-use crate::video::{
-	self,
 	cmd::packet::{self, Descriptor},
-	oc_color::RGB8,
+	oc_color::{self, RGB8},
+	braille,
 	Image,
 };
 
@@ -39,6 +45,7 @@ pub struct VideoDescData {
 	pub source_area: Option<Rect<usize>>,
 	pub filter: Option<VideoFilter>,
 	pub budget: Option<Budget>,
+	pub acceptable_loss: Frac<u32>,
 }
 
 pub struct VideoReader<'a> {
@@ -49,7 +56,7 @@ pub struct VideoReader<'a> {
 	fill_color: RGB8,
 	cmds_per_sec: Option<usize>,
 	in_frame_rate: Frac<i64>,
-	formatter: video::oc_color::formatters::HybridFormatter,
+	formatter: oc_color::formatters::HybridFormatter,
 	pub encoders: Vec<packet::VideoEncoder>,
 	stream_timers: Vec<Frac<i64>>,
 }
@@ -86,7 +93,7 @@ impl FrameInterface for VideoFrame {
 
 impl<'a> VideoReader<'a> {
 	pub fn new(
-		ictx: &ffmpeg_next::format::context::Input,
+		ictx: &FfmpegInput,
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
 		config: VideoConfig,
@@ -96,9 +103,9 @@ impl<'a> VideoReader<'a> {
 			.streams()
 			.best(MediaType::Video)?;
 
-		let reader_data = ReaderData::<'a, VideoDecoder>::new("video", &stream, multi_progress, range);
+		let reader_data = ReaderData::<'a, VideoDecoder>::new("video", ictx, &stream, multi_progress, range);
 		
-		let in_frame_rate = Frac::from(stream.rate()).cast::<i64>();
+		let in_frame_rate = Frac::from(stream.rate()).cast::<i64>().inverse();
 
 		//setup down-scaler
 		let content_size = Size::new(reader_data.decoder.width() as usize, reader_data.decoder.height() as usize);
@@ -122,7 +129,7 @@ impl<'a> VideoReader<'a> {
 				let size = if stream_data.source_area.is_some() {
 					stream_data.size
 				} else {
-					let size = (fit_size / video::braille::SIZE).try_cast().unwrap();
+					let size = int_div_ceil!(fit_size, braille::SIZE).try_cast().unwrap();
 					eprintln!("auto-size-fit: {} (smallest possible resolution for stream that fits largest possible source resolution)", size);
 					size
 				};
@@ -143,6 +150,7 @@ impl<'a> VideoReader<'a> {
 					stream_data.source_area,
 					stream_data.filter,
 					stream_data.budget,
+					stream_data.acceptable_loss,
 				)
 			})
 			.collect_vec();
@@ -157,7 +165,7 @@ impl<'a> VideoReader<'a> {
 			fill_color: config.fill_color,
 			cmds_per_sec: config.cmds_per_sec,
 			in_frame_rate,
-			formatter: video::oc_color::formatters::HybridFormatter::new(),
+			formatter: oc_color::formatters::HybridFormatter::new(),
 			encoders: streams,
 			stream_timers,
 		})

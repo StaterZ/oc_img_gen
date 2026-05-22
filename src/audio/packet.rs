@@ -13,21 +13,21 @@ use crate::{
 	},
 };
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 #[deku(endian = "little")]
 pub struct VoiceState {
 	pub volume: u8,
 	pub frequency: u16,
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 #[deku(ctx = "desc: &Descriptor")]
 pub struct Sample {
 	#[deku(count = "desc.num_voices")]
 	pub voices: Vec<VoiceState>,
 }
 
-#[derive(Clone, DekuWrite)]
+#[derive(Debug, Clone, DekuWrite, DekuRead)]
 pub struct Descriptor {
 	pub num_voices: u8,
 }

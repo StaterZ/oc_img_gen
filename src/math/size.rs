@@ -1,7 +1,7 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use num::NumCast;
-use num_traits::{ConstZero, Zero};
+use num_traits::{ConstZero, ConstOne, Zero, One};
 
 use super::{Frac, GoodInt, Point, Rect};
 
@@ -47,11 +47,11 @@ impl<T: GoodInt> Size<T> {
 		if content.ratio() > self.ratio() {
 			Self {
 				x: self.x,
-				y: (<T as Into<Frac<T>>>::into(self.x) / content.ratio()).into_int(),
+				y: (<T as Into<Frac<T>>>::into(self.x) / content.ratio()).into_int_round(),
 			}
 		} else {
 			Self {
-				x: (<T as Into<Frac<T>>>::into(self.y) * content.ratio()).into_int(),
+				x: (<T as Into<Frac<T>>>::into(self.y) * content.ratio()).into_int_round(),
 				y: self.y,
 			}
 		}
@@ -71,11 +71,20 @@ impl<T: GoodInt + Display> Display for Size<T> {
 	}
 }
 
-impl<T: GoodInt + DekuWriter> DekuWriter for Size<T> {
-	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: ()) -> Result<(), DekuError> {
+impl<Ctx: Copy, T: GoodInt + DekuWriter<Ctx>> DekuWriter<Ctx> for Size<T> {
+	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.x.to_writer(writer, ctx)?;
 		self.y.to_writer(writer, ctx)?;
 		Ok(())
+	}
+}
+
+impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Size<T> {
+	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
+		Ok(Self {
+			x: T::from_reader_with_ctx(reader, ctx)?,
+			y: T::from_reader_with_ctx(reader, ctx)?,
+		})
 	}
 }
 
@@ -103,7 +112,7 @@ impl<T: GoodInt + FromStr> FromStr for Size<T> {
 
 impl<T: GoodInt + Zero> Zero for Size<T> {
 	fn zero() -> Self {
-		Self::new(T::zero(), T::zero())
+		Self::one(T::zero())
 	}
 	
 	fn is_zero(&self) -> bool {
@@ -112,7 +121,17 @@ impl<T: GoodInt + Zero> Zero for Size<T> {
 }
 
 impl<T: GoodInt + ConstZero> ConstZero for Size<T> {
-	const ZERO: Self = Self::new(T::ZERO, T::ZERO);
+	const ZERO: Self = Self::one(T::ZERO);
+}
+
+impl<T: GoodInt + One> One for Size<T> {
+	fn one() -> Self {
+		Self::one(T::one())
+	}
+}
+
+impl<T: GoodInt + ConstOne> ConstOne for Size<T> {
+	const ONE: Self = Self::one(T::ONE);
 }
 
 impl<T: GoodInt> Add for Size<T> {

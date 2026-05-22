@@ -34,7 +34,7 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 
 impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 	fn set_resolution(&mut self, _value: Size<usize>) {
-		panic!("tried to set resoultion on SZT renderer");
+		//panic!("tried to set resoultion on SZT renderer");
 	}
 
 	fn set_background(&mut self, _value: PackedColor) {
@@ -52,7 +52,7 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 			match c {
 				' ' => 0x00,
 				'█' => 0xff,
-				'⠀'..'⣿' => (c as u32 - '⠀' as u32) as u8,
+				'⠀'..='⣿' => (c as u32 - '⠀' as u32) as u8,
 				_ => unreachable!(),
 			}
 		}
@@ -81,6 +81,8 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 				self.fg_needs_emit = false;
 			}
 
+			// debug_assert_lt!(pos.x, state.resolution.unwrap().x);
+			// debug_assert_lt!(pos.y, state.resolution.unwrap().y);
 			self.blob.push(pos.x as u8);
 			self.blob.push(pos.y as u8);
 			pos.x += chunk_uni_len;
@@ -88,11 +90,15 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		};
 
 		match KIND {
-			packet::CommandKind::Text => SplitByBytes::new(value, MAX_BYTES).for_each(|chunk| encode_chunk(chunk.as_bytes(), chunk.len())),
+			packet::CommandKind::Text => {
+				for chunk in SplitByBytes::new(value, MAX_BYTES) {
+					encode_chunk(chunk.as_bytes(), chunk.len());
+				}
+			},
 			packet::CommandKind::Braille => {
 				let mut iter = value.chars().map(to_braille).array_chunks::<MAX_BYTES>();
 				while let Some(chunk) = iter.next() {
-					encode_chunk(&chunk, 64);
+					encode_chunk(&chunk, MAX_BYTES);
 				}
 				let rem = iter.into_remainder();
 				if !rem.is_empty() {

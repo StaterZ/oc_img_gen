@@ -9,8 +9,10 @@ use ffmpeg_next::{
 	util::error::Error as FfmpegError,
 	decoder::decoder::Decoder as FfmpegDecoder,
 	format::stream::Stream as FfmpegStream,
+	format::context::Input as FfmpegInput,
+	ffi::AV_NOPTS_VALUE,
 };
-
+use num_traits::ConstZero;
 use crate::math::*;
 use super::muxer::PacketWriter;
 
@@ -44,6 +46,7 @@ pub trait FrameInterface: Sized {
 impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 	pub fn new(
 		name: &'static str,
+		ictx: &FfmpegInput,
 		stream: &FfmpegStream,
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
@@ -53,13 +56,19 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 
 		let decoder = TDecoder::new(codec_ctx.decoder()).unwrap();
 
-		let time_base = Frac::from(stream.time_base()).cast::<i64>();
-		let end_ts = stream.start_time() + stream.duration();
+		let mut time_base = Frac::from(stream.time_base()).cast::<i64>();
+		if time_base == Frac::ZERO { time_base = Frac::from(stream.rate()).cast::<i64>().inverse(); }
+		let mut start_ts = stream.start_time();
+		if start_ts == AV_NOPTS_VALUE { start_ts = 0; }
+		let mut duration_ts = stream.duration();
+		if duration_ts == AV_NOPTS_VALUE { duration_ts = ictx.duration(); }
+		if duration_ts == AV_NOPTS_VALUE { duration_ts = 1; }
+		let end_ts = start_ts + duration_ts;
 		
-		let ns_to_ts = |ns: u128| (Frac::new(ns, std::time::Duration::SECOND.as_nanos()) / time_base.try_cast::<u128>().unwrap()).into_int() as i64;
-		let range_ts = range.start().map_or(0, |start| ns_to_ts(start.as_nanos()))..=range.end().map_or(end_ts, |end| ns_to_ts(end.as_nanos()));
+		let ns_to_ts = |ns: u128| (Frac::new(ns, std::time::Duration::SECOND.as_nanos()) / time_base.try_cast::<u128>().unwrap()).into_int_round() as i64;
+		let range_ts = range.start().map_or(start_ts, |start| ns_to_ts(start.as_nanos()))..=range.end().map_or(end_ts, |end| ns_to_ts(end.as_nanos()));
 
-		let num_frames = (Frac::new(stream.frames(), stream.duration()) * range_ts.try_len().unwrap() as i64).into_int();
+		let num_frames = (Frac::new(stream.frames(), duration_ts) * range_ts.try_len().unwrap() as i64).into_int_round();
 
 		let progress = multi_progress.add(ProgressBar::new(num_frames as u64)
 			.with_style(crate::build_progress_style())

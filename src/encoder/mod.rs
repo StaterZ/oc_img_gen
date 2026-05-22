@@ -2,19 +2,24 @@ use std::{ops::RangeInclusive, path::PathBuf, time::Duration};
 use indicatif::MultiProgress;
 use deku::prelude::*;
 use itertools::Itertools;
+// use tracing_indicatif::IndicatifLayer;
+// use tracing_subscriber::prelude::*;
 
-pub use crate::audio::Config as AudioConfig;
-use crate::AppError;
+use crate::math::*;
+pub use crate::video::video_reader::{VideoConfig, VideoReader, VideoDescData};
+use crate::audio::{Config as AudioConfig, audio_reader::AudioReader};
 use muxer::Muxer;
 use reader::CommonReader;
-pub use video_reader::{VideoConfig, VideoReader, VideoDescData};
-use audio_reader::AudioReader;
 
+
+pub mod cli;
 pub mod media_container;
 pub mod muxer;
-mod reader;
-mod video_reader;
-mod audio_reader;
+pub mod reader;
+//mod ffmpeg_tracing;
+
+#[cfg(feature = "debug-mode")]
+mod test;
 
 pub struct EncoderConfig {
 	pub in_path: PathBuf,
@@ -27,6 +32,10 @@ pub struct EncoderConfig {
 }
 
 pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
+	ffmpeg_next::init().map_err(AppError::FfmpegInitFailed)?;
+	ffmpeg_next::util::log::set_level(ffmpeg_next::log::Level::Quiet);
+	//ffmpeg_tracing::install();
+
 	let mut ictx = ffmpeg_next::format::input(&config.in_path).expect("failed to create decoder");
 	let multi_progress = MultiProgress::new();
 	
@@ -77,4 +86,23 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 
 	println!("All Done! saved to: {}", config.out_path.display());
 	Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum AppError {
+	#[error("Failed to init FFMPEG. INNER: {0}")]
+	FfmpegInitFailed(ffmpeg_next::Error),
+	#[error("Failed to write output file. INNER: {0}")]
+	WriteFailed(std::io::Error),
+
+	#[error("stream name '{name}' ({{name.as_bytes().len()}} bytes) is too long. max length is: {max_length}")]
+	StreamNameTooLong {
+		name: String,
+		max_length: usize,
+	},
+	#[error("stream size '{size}' is too large. max is: {max_size}")]
+	StreamSizeTooLarge {
+		size: Size<usize>,
+		max_size: Size<usize>,
+	}
 }

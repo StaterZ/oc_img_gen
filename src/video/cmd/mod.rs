@@ -1,3 +1,5 @@
+use crate::math::Frac;
+
 use super::{braille::Braille, image::Image, oc_color::{formatters::Formatter, PackedColor}};
 use renderers::{CachedRenderer, CodeRenderer, Renderer};
 pub use term_pixel::TermPixel;
@@ -14,12 +16,12 @@ pub mod packet;
 type TermFrame = Image<TermPixel>;
 type BrailleFrame = Image<Braille<PackedColor>>;
 
-pub fn code_gen(frame: &TermFrame, prev_frame: Option<&TermFrame>, formatter: &impl Formatter) -> String {
+pub fn code_gen(frame: &TermFrame, prev_frame: Option<&TermFrame>, formatter: &impl Formatter, acceptable_loss: Frac<u32>) -> String {
 	let mut renderer = CachedRenderer::new(CodeRenderer::new(
 		"gpu".to_string(),
 		format!(include_str!("bootstrap.lua"), frame.size().x, frame.size().y),
 		formatter
 	));
-	batcher::draw(&mut renderer, &frame, prev_frame);
+	batcher::draw(&mut renderer, &frame, prev_frame, acceptable_loss);
 	renderer.into_inner().build()
 }

@@ -8,21 +8,23 @@ use ffmpeg_next::{
 		format::Sample as SampleFormat,
 		frame::audio::Audio as AudioFrame,
 		error::Error as FfmpegError,
-	}
+	},
+	format::context::Input as FfmpegInput,
 };
 
 use crate::{
 	math::Frac,
-	audio::{
-		Config as AudioConfig,
-		encode as encode_audio,
-		packet::{AudioEncoder, Descriptor},
+	encoder::{
+		media_container::Descriptor as StreamDescriptor,
+		reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
+		muxer::{Muxer, PacketWriter},
 	},
 };
+
 use super::{
-	media_container::Descriptor as StreamDescriptor,
-	reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
-	muxer::{Muxer, PacketWriter},
+	Config as AudioConfig,
+	encode as encode_audio,
+	packet::{AudioEncoder, Descriptor},
 };
 
 pub struct AudioReader<'a> {
@@ -66,7 +68,7 @@ impl FrameInterface for AudioFrame {
 
 impl<'a> AudioReader<'a> {
 	pub fn new(
-		ictx: &ffmpeg_next::format::context::Input,
+		ictx: &FfmpegInput,
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
 		config: AudioConfig,
@@ -76,7 +78,7 @@ impl<'a> AudioReader<'a> {
 			.streams()
 			.best(MediaType::Audio)?;
 
-		let reader_data = ReaderData::<'a, AudioDecoder>::new("audio", &stream, multi_progress, range);
+		let reader_data = ReaderData::<'a, AudioDecoder>::new("audio", ictx, &stream, multi_progress, range);
 		
 		// Setup resampler to f32 planar @ config.analysis_rate, mono
 		let resampler = Resampler::get(

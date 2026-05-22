@@ -20,6 +20,10 @@ pub struct Braille<T> {
 }
 
 impl<T> Braille<T> {
+	pub fn new() {
+
+	}
+
 	pub fn char(&self) -> char {
 		std::char::from_u32('⠀' as u32 + self.char_index() as u32).unwrap() //unwrap is safe: we know the unicode range to be valid
 	}
@@ -33,20 +37,22 @@ impl<T> Braille<T> {
 		bit4 | bit3 | bit2 | bit1 | bit7650
 	}
 
-	pub fn raster(&self) -> [[&T; WIDTH]; HEIGHT] {
-		std::array::from_fn::<_, { HEIGHT }, _>(move |y|
-			std::array::from_fn::<_, { WIDTH }, _>(move |x| {
-				let i = y * WIDTH + x;
-				if (self.id >> i) & 1 == 0 { &self.bg } else { &self.fg }
-			}))
-	}
-
 	pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Braille<U> {
 		Braille::<U> {
 			id: self.id,
 			bg: f(&self.bg),
 			fg: f(&self.fg),
 		}
+	}
+}
+
+impl<T: Copy> Braille<T> {
+	pub fn raster(&self) -> [[T; WIDTH]; HEIGHT] {
+		std::array::from_fn::<_, { HEIGHT }, _>(move |y|
+			std::array::from_fn::<_, { WIDTH }, _>(move |x| {
+				let i = y * WIDTH + x;
+				if (self.id >> i) & 1 == 0 { self.bg } else { self.fg }
+			}))
 	}
 }
 
@@ -60,11 +66,8 @@ impl Braille<RGB8> {
 	fn compute_irregularity(&self, pixels: &[RGB8; BITS]) -> u32 {
 		(0..BITS).map(|i| {
 			let pixel = pixels[i];
-			if ((self.id as usize >> i) & 1) != 0 {
-				self.fg.perceptual_delta(pixel)
-			} else {
-				self.bg.perceptual_delta(pixel)
-			}
+			let palette_color = if ((self.id as usize >> i) & 1) != 0 { self.fg } else { self.bg };
+			pixel.perceptual_delta(palette_color)
 		}).sum()
 	}
 
@@ -199,7 +202,7 @@ impl Braille<RGB8> {
 #[cfg(feature = "gpu")]
 pub use gpu::as_braille;
 
-#[cfg(not(feature = "gpu"))]
+#[cfg(all(not(feature = "gpu"), not(debug_assertions)))]
 pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
 	use rayon::prelude::*;
 
@@ -218,7 +221,28 @@ pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
 		})
 		.collect();
 
-	Image::new(input.size() / SIZE, buffer)
+	Image::with_buffer(input.size() / SIZE, buffer)
+}
+
+//used for debugging due to weird breakpointing with rayon
+#[cfg(all(not(feature = "gpu"), debug_assertions))]
+pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
+	let row_len = input.size().x as usize;
+	let buffer: Vec<Braille<RGB8>> = input
+		.buffer()
+		.chunks_exact(HEIGHT * row_len)
+		.flat_map(|row_block| {
+			let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
+			(0..(row_len / WIDTH)).into_iter().map(move |col| {
+				let start = col * WIDTH;
+				let end = start + WIDTH;
+				let cluster: [[RGB8; WIDTH]; HEIGHT] = std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap());
+				Braille::from_pixels(&cluster)
+			})
+		})
+		.collect();
+
+	Image::with_buffer(input.size() / SIZE, buffer)
 }
 
 pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
@@ -232,10 +256,9 @@ pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
 			.multi_zip()
 			.flatten())
 		.flatten()
-		.copied()
 		.collect();
 
-	Image::new(
+	Image::with_buffer(
 		input.size() * SIZE,
 		buffer,
 	)

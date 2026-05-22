@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use deku::prelude::*;
 use deku_string::StringDeku;
 use enum_as_inner::EnumAsInner;
@@ -5,8 +6,8 @@ use enum_as_inner::EnumAsInner;
 use crate::math::*;
 use crate::FORMAT_VERSION;
 
-#[derive(Clone, DekuWrite)]
-pub struct Descriptor<TContent: DekuWriter> {
+#[derive(Clone, DekuWrite, DekuRead)]
+pub struct Descriptor<TContent: Debug + DekuWriter + for<'a> DekuReader<'a>> {
 	#[deku(endian = "little")] pub num_packets: u32,
 	#[deku(endian = "little")] pub rate: Frac<u16>,
 	#[deku(endian = "little", ctx = "deku_string::Encoding::Utf8, deku_string::StringLayout::LengthPrefix(deku_string::Size::U8)")] pub name: StringDeku,
@@ -33,7 +34,7 @@ impl Into<Descriptor<DescriptorContent>> for Descriptor<crate::audio::packet::De
 	}
 }
 
-#[derive(DekuWrite, EnumAsInner)]
+#[derive(Debug, DekuWrite, DekuRead, EnumAsInner)]
 #[deku(id_type = "u8")]
 pub enum DescriptorContent {
 	#[deku(id = 0x00)] Video(crate::video::cmd::packet::Descriptor),
@@ -49,28 +50,28 @@ impl DescriptorContent {
 	}
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 #[deku(ctx = "stream_descs: &[Descriptor<DescriptorContent>]")]
 pub struct Packet {
 	#[deku(endian = "little")] pub stream_id: u8,
 	#[deku(ctx = "&stream_descs[*stream_id as usize]")] pub content: PacketContent,
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead, EnumAsInner)]
 #[deku(ctx = "desc: &Descriptor<DescriptorContent>", id = "desc.content.tag()")]
 pub enum PacketContent {
 	#[deku(id = 0x00)] Video(#[deku(ctx = "desc.content.as_video().unwrap()")] crate::video::cmd::packet::Frame),
 	#[deku(id = 0x01)] Audio(#[deku(ctx = "desc.content.as_audio().unwrap()")] crate::audio::packet::Sample),
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 #[deku(endian = "little", magic = b"sztb")]
 pub struct Header {
 	pub version: u16,
 	pub num_streams: u8,
 }
 
-#[derive(DekuWrite)]
+#[derive(DekuWrite, DekuRead)]
 pub struct MediaFile {
 	pub header: Header,
 
@@ -78,7 +79,7 @@ pub struct MediaFile {
 	pub stream_descs: Vec<Descriptor<DescriptorContent>>,
 
 	#[deku(
-		count = "stream_descs.iter().map(|desc| desc.num_packets).sum()",
+		count = "stream_descs.iter().map(|desc| desc.num_packets).sum::<u32>()",
 		ctx = "stream_descs.as_slice()",
 	)]
 	pub packets: Vec<Packet>,

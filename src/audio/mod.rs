@@ -6,20 +6,22 @@ use lapjv::lapjv;
 use crate::audio::packet::{Sample, VoiceState};
 
 pub mod packet;
+pub mod audio_reader;
 
 pub struct Config {
 	pub name: String,
 	pub analysis_rate: u32,
 	pub fft_window_size: usize,
 	pub hop_length: usize,
+	pub guard: isize,
 	pub normalize: bool,
 	pub num_voices: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct VoiceStateFlt {
-	volume: f32,
-	frequency: f32,
+	pub volume: f32,
+	pub frequency: f32,
 }
 
 pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
@@ -69,9 +71,8 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 			if chosen.len() >= config.num_voices { break; }
 
 			let bin = (peak.frequency / bin_hz).round() as isize;
-			let guard = 1; // simple local exclusion
 			let mut ok = true;
-			for off in -guard..=guard {
+			for off in -config.guard..=config.guard {
 				let idx = bin + off;
 				if idx >= 0 && (idx as usize) < used_bins.len() && used_bins[idx as usize] {
 					ok = false;
@@ -105,8 +106,8 @@ pub fn encode(config: &Config, pcm: &Vec<f32>) -> Vec<Sample> {
 		samples.push(Sample {
 			voices: (0..config.num_voices).map(|i| if let Some(voice_state) = voices.get(i) {
 				VoiceState {
-					volume: ((voice_state.volume / norm).clamp(0.0, 1.0) * (0xff as f32)) as u8,
-					frequency: ((voice_state.frequency / 20000.0).clamp(0.0, 1.0) * (0xffff as f32)) as u16,
+					volume: ((voice_state.volume / norm).clamp(0.0, 1.0) * (u8::MAX as f32)) as u8,
+					frequency: ((voice_state.frequency / 20000.0).clamp(0.0, 1.0) * (u16::MAX as f32)) as u16,
 				}
 			} else {
 				VoiceState {

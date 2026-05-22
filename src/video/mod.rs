@@ -1,9 +1,19 @@
 pub use image::Image;
 
+pub mod video_reader;
 pub mod oc_color;
 pub mod braille;
 pub mod cmd;
 mod image;
+
+#[cfg(feature = "debug-mode")]
+use std::path::Path;
+#[cfg(feature = "debug-mode")]
+use itertools::Itertools;
+
+#[cfg(feature = "debug-mode")]
+use crate::video::oc_color::RGB8;
+
 
 #[cfg(feature = "debug-mode")]
 fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {

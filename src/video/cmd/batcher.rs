@@ -1,4 +1,5 @@
 use std::{cell::Cell, collections::{hash_map::{Entry, OccupiedEntry}, HashMap}, ops::Deref, rc::Rc};
+use all_asserts::*;
 use itertools::Itertools;
 
 use crate::math::*;
@@ -235,13 +236,14 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>) {
-	let batches = generate_batches(frame, prev_frame);
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>, loss: Frac<u32>) {
+	let batches = generate_batches(frame, prev_frame, loss);
 	
 	let mut accelerator = Accelerator::new();
 	for batch in batches {
 		accelerator.push(&Rc::new(BucketBatch::new(batch)));
 	}
+	renderer.set_resolution(frame.size());
 	accelerator.draw(renderer);
 }
 
@@ -259,7 +261,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, _loss: Frac<u32>) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
@@ -285,7 +287,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 
 			let is_same_as_prev_frame = if let Some(prev_frame) = prev_frame {
 				let char_prev = &prev_frame.buffer()[i];
-				char == char_prev
+				char == char_prev //|| char.compute_loss(char_prev, rend) <= loss //todo: loss
 			} else {
 				false
 			};
@@ -370,6 +372,8 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 				output.push(work_batch.last_with_change);
 			}
 			if !is_same_as_prev_frame {
+				debug_assert_lt!(x, frame.size().x);
+				debug_assert_lt!(y, frame.size().y);
 				work_batch = Some(WorkBatch::new(Batch {
 					kind: char_batch_kind,
 					pos: Point { x, y },
@@ -385,160 +389,4 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Ba
 	}
 
 	output
-}
-
-
-
-
-
-fn generate_batches_naive(frame: &TermFrame, prev_frame: Option<&TermFrame>) -> Vec<Batch> {
-	let mut output = Vec::new();
-
-	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
-		if c.bg == c.fg {
-			debug_assert_eq!(c.sym, ' '.into());
-			BatchKind::BgOnly
-		} else if c.sym.is_bg_only() {
-			BatchKind::BgOnly
-		} else if c.sym.is_fg_only() {
-			BatchKind::FgOnly
-		} else if c.flip().is_some() { //TODO: optimize this shit
-			BatchKind::Flippable
-		} else {
-			BatchKind::Unique
-		}
-	}
-
-	for y in 0..frame.size().y {
-		let mut batch = None::<Batch>;
-		for x in 0..frame.size().x {
-			let i = y * frame.size().x + x;
-			let char = &frame.buffer()[i];
-			if let Some(prev_frame) = prev_frame {
-				let char_prev = &prev_frame.buffer()[i];
-				if char == char_prev { continue; }
-			}
-
-			let char = char.to_canonical();
-
-			if let Some(batch) = batch.as_mut() {
-				let char_batch_kind = compute_char_batch_kind(&char);
-
-				//    c b   c b
-				// P: F=F ∩ B=B //perfect
-				// F: F=B ∩ B=F //flipped
-				// I: F≠B ∪ B≠F //insert
-				// 
-				//    | U   | F   | BG  | FG  |
-				// ---|-----|-----|-----|-----|
-				//  U | P__ | PF_ | PF_ | PF_ |
-				//  F | PF_ | PF_ | PF_ | PF_ |
-				// BG | PF_ | PF_ | P_I | *FI |
-				// FG | PF_ | PF_ | *FI | P_I |
-
-				let cond_vars = CondVars {
-					char: CondColors { using_bg: char_batch_kind != BatchKind::FgOnly, using_fg: char_batch_kind != BatchKind::BgOnly },
-					batch: CondColors { using_bg: batch.kind != BatchKind::FgOnly, using_fg: batch.kind != BatchKind::BgOnly },
-					matches: CondMatches {
-						perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
-						flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
-						insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //is both are sing colors, that leaves one color for each, so we can insert
-					},
-				};
-
-				let bg_bg = (cond_vars.char.using_bg && cond_vars.batch.using_bg) && char.bg == batch.bg;
-				let bg_fg = (cond_vars.char.using_bg && cond_vars.batch.using_fg) && char.bg == batch.fg;
-				let fg_bg = (cond_vars.char.using_fg && cond_vars.batch.using_bg) && char.fg == batch.bg;
-				let fg_fg = (cond_vars.char.using_fg && cond_vars.batch.using_fg) && char.fg == batch.fg;
-
-				let perfect = cond_vars.matches.perfect && bg_bg && fg_fg;
-				let flipped = cond_vars.matches.flipped && bg_fg && fg_bg;
-				let insert = cond_vars.matches.insert && !(bg_fg && fg_bg); //TODO: effectively just a flipped inverse, kinda dumb?
-
-				let can_append = perfect || flipped || insert;
-				if can_append {
-					batch.kind = if char_batch_kind == BatchKind::Unique || batch.kind == BatchKind::Unique {
-						BatchKind::Unique
-					} else if cond_vars.matches.insert && !insert {
-						batch.kind
-					} else {
-						BatchKind::Flippable
-					};
-
-					if insert {
-						if batch.kind == BatchKind::BgOnly {
-							batch.fg = char.bg
-						} else {
-							batch.bg = char.fg
-						};
-					}
-					
-					let mut sym = char.sym;
-					let is_flip = !perfect && flipped;
-					if is_flip {
-						if char_batch_kind == BatchKind::Unique { //if the char is unique, we need to flip the batch instead
-							*batch = batch.flip();
-						} else {
-							sym = sym.flip().unwrap();
-						}
-					}
-
-					batch.chars.push(sym.into());
-					continue;
-				}
-			}
-			
-			if let Some(batch) = batch.replace(Batch {
-				kind: compute_char_batch_kind(&char),
-				pos: Point { x, y },
-				bg: char.bg,
-				fg: char.fg,
-				chars: char.sym.into_inner().to_string(),
-			}) {
-				output.push(batch);
-			}
-		}
-		if let Some(batch) = batch {
-			output.push(batch);
-		}
-	}
-
-	output
-}
-
-fn draw_batches_naive<>(renderer: &mut impl Renderer, mut batches: Vec<Batch>) {
-	fn batch_cost(state: &RenderState, batch: &Batch) -> usize {
-		let mut cost = 0;
-		if state.bg != Some(batch.bg) && batch.kind != BatchKind::FgOnly { cost += 1 }
-		if state.fg != Some(batch.fg) && batch.kind != BatchKind::BgOnly { cost += 1 }
-		cost
-	}
-
-	fn batch_cost_with_flip(state: &RenderState, batch: &Batch) -> (usize, bool) {
-		let perfect_cost = batch_cost(&state, &batch);
-		if batch.kind != BatchKind::Unique {
-			let flipped_cost = batch_cost(&state, &batch.flip());
-			if flipped_cost < perfect_cost {
-				return (flipped_cost, true);
-			}
-		}
-		(perfect_cost, false)
-	}
-
-	let mut state = RenderState::new();
-	while let Some(batch) = batches
-		.iter()
-		.enumerate()
-		.map(|(i, batch)| (i, batch, batch_cost_with_flip(&state, &batch)))
-		.min_by_key(|(_i, _batch, (cost, _needs_flip))| *cost)
-		.map(|(i, _batch, (_cost, needs_flip))| (i, needs_flip))
-		.map(|(i, needs_flip)| {
-			let batch = batches.swap_remove(i);
-			if needs_flip { batch.flip() } else { batch }
-		})
-	{
-		batch.draw(renderer);
-		state.bg = Some(batch.bg);
-		state.fg = Some(batch.fg);
-	}
 }
