@@ -5,7 +5,7 @@ use num_traits::{ConstOne, ConstZero};
 use crate::{
 	EXT, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
-	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::Machine, oc_color::RGB8}
+	}, math::{Frac, Point, Rect, Size, SizeTrait}, video::{self, cmd::machine::{Machine, Tier}, oc_color::RGB8}
 };
 
 pub fn process_args(args: Cli) -> EncoderConfig {
@@ -31,14 +31,15 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 		}
 	};
 
-	
+	let machine = args.tier.into();
+
 	let video_config = args.video.as_ref().map(|video_args| {
 		let ictx = ffmpeg_next::format::input(&args.in_path).expect("failed to create decoder");
 		let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
 		let codec_ctx = ffmpeg_next::codec::Context::from_parameters(stream.parameters()).expect("failed to create codec context");
 		let decoder = codec_ctx.decoder().video().unwrap();
 		
-		build_video_config(video_args, &decoder)
+		build_video_config(video_args, &machine, &decoder)
 	});
 	let audio_config = args.audio.as_ref().map(build_audio_config);
 	
@@ -46,19 +47,20 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 		in_path: args.in_path,
 		out_path,
 		range: args.begin..=args.end,
+		machine,
 		video: video_config,
 		audio: audio_config,
 	}
 }
 
-fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
+fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
 	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
 		StreamMode::Single => {
 			let stream_size = args.stream_size.unwrap_or_else(|| {
-				let content_size = Size::<u32>::new(stream.width(), stream.height());
-				let size = compute_largest_size_machine(content_size.cast::<usize>().ratio(), &Machine::T3);
-				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
-				size
+				let source_size = Size::<u32>::new(stream.width(), stream.height());
+				let max_screen_size = compute_machine_max_resolution(source_size.cast::<usize>().ratio() / video::braille::SIZE.ratio(), machine);
+				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
+				max_screen_size
 			}).try_cast().expect("stream size too large");
 
 			create_main_stream(
@@ -76,7 +78,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 			args.fill_color,
 			args.cmds_per_sec,
 			args.stream_size.unwrap_or_else(|| {
-				let size = compute_largest_size_machine(Frac::ONE, &Machine::T3);
+				let size = compute_machine_max_resolution(Frac::ONE / video::braille::SIZE.ratio(), machine);
 				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
 			}).try_cast().expect("stream size too large"),
@@ -84,7 +86,7 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 			args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
-						let gap = compute_gap_size(args.stream_size.unwrap(), matrix_screen_size);
+						let gap = compute_gap_size(args.stream_size.unwrap() * video::braille::SIZE, matrix_screen_size);
 						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
@@ -99,20 +101,19 @@ fn build_video_config(args: &VideoOpts, stream: &ffmpeg_next::decoder::Video) ->
 	}
 }
 
-fn compute_gap_size(stream_size: Size<usize>, screen_size: Size<usize>) -> Size<usize> {
+fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
 	const FIXED_POINT: usize = 2;
 	const PIXEL_GAP: usize = 9; //it's '(2 + 0.25) * 2' but we use x2 fixed point to remove the floats
-	const SUB_PIXEL_SIZE: Size<usize> = video::braille::SIZE;
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
-	(stream_size * SUB_PIXEL_SIZE * PIXEL_GAP) / (screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
+	(stream_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
 }
 
-pub fn compute_largest_size_machine(ratio: Frac<usize>, machine: &Machine) -> Size<usize> {
-	compute_largest_size(ratio, machine.max_screen_size.area(), machine.max_screen_size.x)
+pub fn compute_machine_max_resolution(ratio: Frac<usize>, machine: &Machine) -> Size<usize> {
+	compute_max_resolution(ratio, machine.max_screen_size.area(), machine.max_screen_size.x)
 }
 
-pub fn compute_largest_size(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {
+pub fn compute_max_resolution(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {
 	debug_assert!(ratio.numerator > 0 && ratio.denominator > 0, "Invalid ratio");
 	debug_assert!(max_pixels > 0, "max_pixels must be positive");
 
@@ -121,8 +122,6 @@ pub fn compute_largest_size(ratio: Frac<usize>, max_pixels: usize, max_width: us
 	// height = width / ratio
 	// so: width^2 / ratio <= max_pixels
 	// => width <= sqrt(max_pixels * ratio)
-	const SUB_PIXEL_SIZE: Size<usize> = video::braille::SIZE;
-	let ratio = ratio / SUB_PIXEL_SIZE.ratio();
 	let width_limit = (ratio * max_pixels).sqrt();
 
 	let width = width_limit.min(max_width.into());
@@ -138,7 +137,7 @@ fn create_main_stream(
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
-	acceptable_loss: Frac<u32>,
+	acceptable_loss: Frac<u64>,
 ) -> VideoConfig {
 	let stream_descs_data = vec![VideoDescData {
 		name: "main".to_string(),
@@ -167,7 +166,7 @@ fn create_matrix_streams(
 	matrix_gap_size: Size<usize>,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
-	acceptable_loss: Frac<u32>,
+	acceptable_loss: Frac<u64>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
@@ -211,6 +210,8 @@ pub enum StreamMode {
 pub enum VideoFilter {
 	Monochrome,
 	Grayscale,
+	Vga,
+	Hsv,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
@@ -264,6 +265,15 @@ pub struct Cli {
 		value_parser = humantime::parse_duration,
 	)]
 	pub end: Option<Duration>,
+
+	#[arg(
+		value_enum,
+		short = 't',
+		long = "tier",
+		help = "What machine tier to optimize for",
+		default_value_t = Tier::T3,
+	)]
+	tier: Tier,
 
 	#[command(flatten)]
 	video: Option<VideoOpts>,
@@ -336,7 +346,7 @@ struct VideoOpts {
 
 	#[arg(
 		long = "matrix-gap-size",
-		help = "pixels to skip between matrix cells, sets to 0 to omitted",
+		help = "sub-pixels to skip between matrix cells, sets to 0 to omitted",
 	)]
 	pub matrix_gap_size: Option<Size<usize>>,
 	
@@ -368,7 +378,7 @@ struct VideoOpts {
 		long = "loss",
 		help = "selects the 'bitrate' limit for each frame. default: 0",
 	)]
-	pub acceptable_loss: Option<Frac<u32>>,
+	pub acceptable_loss: Option<Frac<u64>>,
 }
 
 impl VideoOpts {

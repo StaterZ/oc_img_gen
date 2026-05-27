@@ -6,27 +6,94 @@ use std::{
 	str::FromStr,
 };
 //use all_asserts::*;
-use num_traits::{ConstZero, Signed, Zero};
-use szu::math::AbsDiff;
+use num::{Num, One};
+use num_traits::{ConstOne, ConstZero, Signed, Zero};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RGB<T> {
+pub struct RGB<T: Num> {
 	pub r: T,
 	pub g: T,
 	pub b: T,
 }
 
-impl<T: Signed> RGB<T> {
-	pub fn abs(self) -> Self {
+#[derive(thiserror::Error)]
+pub enum FromStrRadixErr<T: Num> {
+	#[error("too few parts")]
+	MissingPart,
+	#[error("too many parts")]
+	TooManyParts,
+    #[error(transparent)]
+	Inner(T::FromStrRadixErr),
+}
+
+impl<T: Num> Num for RGB<T> {
+	type FromStrRadixErr = FromStrRadixErr<T>;
+
+	fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
+		let mut parts = str.split(',');
+		let value = Self {
+			r: T::from_str_radix(parts.next().ok_or(Self::FromStrRadixErr::MissingPart)?, radix).map_err(FromStrRadixErr::Inner)?,
+			g: T::from_str_radix(parts.next().ok_or(Self::FromStrRadixErr::MissingPart)?, radix).map_err(FromStrRadixErr::Inner)?,
+			b: T::from_str_radix(parts.next().ok_or(Self::FromStrRadixErr::MissingPart)?, radix).map_err(FromStrRadixErr::Inner)?,
+		};
+		if parts.next().is_some() {
+			return Err(Self::FromStrRadixErr::TooManyParts);
+		}
+		Ok(value)
+	}
+}
+
+impl<T: Num + Neg<Output: Num>> Neg for RGB<T> {
+	type Output = RGB<<T as Neg>::Output>;
+
+	fn neg(self) -> Self::Output {
+		Self::Output {
+			r: self.r.neg(),
+			g: self.g.neg(),
+			b: self.b.neg(),
+		}
+	}
+}
+
+impl<T: Num + Signed> Signed for RGB<T> {
+	fn abs(&self) -> Self {
 		Self {
 			r: self.r.abs(),
 			g: self.g.abs(),
 			b: self.b.abs(),
 		}
 	}
+	
+	fn abs_sub(&self, other: &Self) -> Self {
+		Self {
+			r: self.r.abs_sub(&other.r),
+			g: self.g.abs_sub(&other.g),
+			b: self.b.abs_sub(&other.b),
+		}
+	}
+	
+	fn signum(&self) -> Self {
+		Self {
+			r: self.r.signum(),
+			g: self.g.signum(),
+			b: self.b.signum(),
+		}
+	}
+
+	fn is_positive(&self) -> bool {
+		self.r.is_positive() &&
+		self.g.is_positive() &&
+		self.b.is_positive()
+	}
+	
+	fn is_negative(&self) -> bool {
+		self.r.is_negative() &&
+		self.g.is_negative() &&
+		self.b.is_negative()
+	}
 }
 
-impl<T: Zero> Zero for RGB<T> {
+impl<T: Num + Zero> Zero for RGB<T> {
 	fn zero() -> Self {
 		Self {
 			r: T::zero(),
@@ -40,7 +107,7 @@ impl<T: Zero> Zero for RGB<T> {
 	}
 }
 
-impl<T: ConstZero> ConstZero for RGB<T> {
+impl<T: Num + ConstZero> ConstZero for RGB<T> {
 	const ZERO: Self = Self {
 		r: T::ZERO,
 		g: T::ZERO,
@@ -48,24 +115,26 @@ impl<T: ConstZero> ConstZero for RGB<T> {
 	};
 }
 
-impl<T: AbsDiff> AbsDiff for RGB<T> {
-	type Abs = RGB<T::Abs>;
-
-	fn max_abs_diff() -> Self::Abs {
-		Self::Abs {
-			r: T::max_abs_diff(),
-			g: T::max_abs_diff(),
-			b: T::max_abs_diff(),
+impl<T: Num + One> One for RGB<T> {
+	fn one() -> Self {
+		Self {
+			r: T::one(),
+			g: T::one(),
+			b: T::one(),
 		}
 	}
-
-	fn abs_diff(self, other: Self) -> Self::Abs {
-		Self::Abs {
-			r: self.r.abs_diff(other.r),
-			g: self.g.abs_diff(other.g),
-			b: self.b.abs_diff(other.b),
-		}
+	
+	fn is_one(&self) -> bool {
+		self.r.is_one() && self.g.is_one() && self.b.is_one()
 	}
+}
+
+impl<T: Num + ConstOne> ConstOne for RGB<T> {
+	const ONE: Self = Self {
+		r: T::ONE,
+		g: T::ONE,
+		b: T::ONE,
+	};
 }
 
 pub type RGB8 = RGB<u8>;
@@ -94,7 +163,7 @@ impl RGB8 {
 
 	#[inline]
 	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)
-		Into::<RGB<i32>>::into(self).perceptual_delta(other.into())
+		RGB::<i32>::from(self).perceptual_delta(other.into())
 	}
 }
 
@@ -138,30 +207,30 @@ impl FromStr for RGB8 {
 	}
 }
 
-macro_rules! rgb_into {
+macro_rules! rgb_cast {
 	($from:ty, $to:ty) => {
-		impl Into<RGB<$to>> for RGB<$from> {
-			fn into(self) -> RGB<$to> {
-				RGB {
-					r: self.r as $to,
-					g: self.g as $to,
-					b: self.b as $to,
+		impl From<RGB<$from>> for RGB<$to> {
+			fn from(value: RGB<$from>) -> Self {
+				Self {
+					r: value.r as $to,
+					g: value.g as $to,
+					b: value.b as $to,
 				}
 			}
 		}
 	};
 }
-rgb_into!(u8, u32);
-rgb_into!(u8, i32);
-rgb_into!(u32, u8);
+rgb_cast!(u8, u32);
+rgb_cast!(u8, i32);
+rgb_cast!(u32, u8);
 
-impl<T: Zero> Sum for RGB<T> {
+impl<T: Num + Zero> Sum for RGB<T> {
 	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
 		iter.fold(Self::zero(), |lhs, rhs| lhs + rhs)
 	}
 }
 
-impl<T: Add<Output = T>> Add for RGB<T> {
+impl<T: Num + Add<Output = T>> Add for RGB<T> {
 	type Output = Self;
 	
 	fn add(self, rhs: Self) -> Self::Output {
@@ -173,7 +242,7 @@ impl<T: Add<Output = T>> Add for RGB<T> {
 	}
 }
 
-impl<T: AddAssign> AddAssign for RGB<T> {
+impl<T: Num + AddAssign> AddAssign for RGB<T> {
 	fn add_assign(&mut self, rhs: Self) {
 		self.r += rhs.r;
 		self.g += rhs.g;
@@ -181,7 +250,7 @@ impl<T: AddAssign> AddAssign for RGB<T> {
 	}
 }
 
-impl<T: Sub<Output = T>> Sub for RGB<T> {
+impl<T: Num + Sub<Output = T>> Sub for RGB<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
@@ -193,7 +262,7 @@ impl<T: Sub<Output = T>> Sub for RGB<T> {
 	}
 }
 
-impl<T: SubAssign> SubAssign for RGB<T> {
+impl<T: Num + SubAssign> SubAssign for RGB<T> {
 	fn sub_assign(&mut self, rhs: Self) {
 		self.r -= rhs.r;
 		self.g -= rhs.g;
@@ -201,7 +270,7 @@ impl<T: SubAssign> SubAssign for RGB<T> {
 	}
 }
 
-impl<T: Mul<Output = T>> Mul for RGB<T> {
+impl<T: Num + Mul<Output = T>> Mul for RGB<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self::Output {
@@ -213,7 +282,7 @@ impl<T: Mul<Output = T>> Mul for RGB<T> {
 	}
 }
 
-impl<T: MulAssign> MulAssign for RGB<T> {
+impl<T: Num + MulAssign> MulAssign for RGB<T> {
 	fn mul_assign(&mut self, rhs: Self) {
 		self.r *= rhs.r;
 		self.g *= rhs.g;
@@ -221,7 +290,7 @@ impl<T: MulAssign> MulAssign for RGB<T> {
 	}
 }
 
-impl<T: Div<Output = T>> Div for RGB<T> {
+impl<T: Num + Div<Output = T>> Div for RGB<T> {
 	type Output = Self;
 
 	fn div(self, rhs: Self) -> Self::Output {
@@ -233,10 +302,30 @@ impl<T: Div<Output = T>> Div for RGB<T> {
 	}
 }
 
-impl<T: DivAssign> DivAssign for RGB<T> {
+impl<T: Num + DivAssign> DivAssign for RGB<T> {
 	fn div_assign(&mut self, rhs: Self) {
 		self.r /= rhs.r;
 		self.g /= rhs.g;
 		self.b /= rhs.b;
+	}
+}
+
+impl<T: Num + Rem<Output = T>> Rem for RGB<T> {
+	type Output = Self;
+
+	fn rem(self, rhs: Self) -> Self::Output {
+		Self {
+			r: self.r % rhs.r,
+			g: self.g % rhs.g,
+			b: self.b % rhs.b,
+		}
+	}
+}
+
+impl<T: Num + RemAssign> RemAssign for RGB<T> {
+	fn rem_assign(&mut self, rhs: Self) {
+		self.r %= rhs.r;
+		self.g %= rhs.g;
+		self.b %= rhs.b;
 	}
 }

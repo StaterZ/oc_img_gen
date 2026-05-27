@@ -8,8 +8,10 @@
 #![feature(exact_length_collection)]
 #![feature(exact_size_is_empty)]
 #![feature(stmt_expr_attributes)]
+#![feature(specialization)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
+#![allow(incomplete_features)]
 
 use std::io::Write;
 use indicatif::ProgressStyle;
@@ -55,11 +57,12 @@ fn main() -> anyhow::Result<()> {
 
 pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 	if cfg!(feature = "log") {
-		flush_print!("{}", title);
+		flush_print!("{:<32}", title);
 		let mut timer = Stopwatch::start_new();
 		let output = f();
 		timer.stop();
-		eprintln!(" time: {}ms", timer.elapsed().as_millis());
+		let e = timer.elapsed();
+		eprintln!(" time: {}.{}ms", e.as_millis(), e.as_micros() - e.as_millis() * 1000);
 		output
 	} else {
 		f()

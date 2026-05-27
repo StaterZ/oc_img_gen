@@ -1,8 +1,13 @@
+use std::ops::{Index, IndexMut};
+
 use itertools::Itertools;
 use all_asserts::*;
 
 use crate::math::*;
-use super::oc_color::RGB8;
+use super::{
+	oc_color::RGB8,
+	ImageIterator,
+};
 
 #[derive(Clone)]
 pub struct Image<T> {
@@ -34,15 +39,17 @@ impl<T> Image<T> {
 		&mut self.buffer
 	}
 
-	pub fn map<B>(&self, f: impl FnMut(&T) -> B) -> Image<B> {
-		let buffer = self.buffer
-			.iter()
-			.map(f)
-			.collect();
-
-		Image {
+	pub fn iter(&self) -> ImageIterator<impl Iterator<Item = &T>> {
+		ImageIterator {
 			size: self.size,
-			buffer,
+			iter: self.buffer.iter(),
+		}
+	}
+
+	pub fn into_iter(self) -> ImageIterator<impl Iterator<Item = T>> {
+		ImageIterator {
+			size: self.size,
+			iter: self.buffer.into_iter(),
 		}
 	}
 }
@@ -92,18 +99,41 @@ impl<T: Copy> Image<T> {
 	}
 }
 
+impl<T> Index<Point<usize>> for Image<T> {
+	type Output = T;
+
+	fn index(&self, index: Point<usize>) -> &Self::Output {
+		&self.buffer[index.y * self.size.x + index.x]
+	}
+}
+impl<T> IndexMut<Point<usize>> for Image<T> {
+	fn index_mut(&mut self, index: Point<usize>) -> &mut Self::Output {
+		&mut self.buffer[index.y * self.size.x + index.x]
+	}
+}
+
+impl<I: Iterator> From<ImageIterator<I>> for Image<I::Item> {
+	fn from(value: ImageIterator<I>) -> Self {
+		Self {
+			size: value.size,
+			buffer: value.iter.collect(),
+		}
+	}
+}
+
 impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
 	fn from(value: &'a ffmpeg_next::frame::Video) -> Self {
 		let width = value.width() as usize;
 		let height = value.height() as usize;
+		const POD_SIZE: usize = 3;
 		
 		Self {
 			size: Size::new(width, height),
 			buffer: value.data(0)
 				.chunks_exact(value.stride(0))
-				.flat_map(|row| row[..width * 3]
+				.flat_map(|row| row[..width * POD_SIZE]
 					.into_iter()
-					.array_chunks::<3>()
+					.array_chunks::<POD_SIZE>()
 					.map(|p| RGB8 { r: *p[0], g: *p[1], b: *p[2] }))
 				.collect(),
 		}
@@ -124,15 +154,15 @@ impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
 	}
 }
 #[cfg(feature = "debug-mode")]
-impl Into<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
-	fn into(self) -> lodepng::Bitmap<lodepng::RGB<u8>> {
-		lodepng::Bitmap {
-			buffer: self.buffer
+impl From<Image<RGB8>> for lodepng::Bitmap<lodepng::RGB<u8>> {
+	fn from(value: Image<RGB8>) -> lodepng::Bitmap<lodepng::RGB<u8>> {
+		Self {
+			buffer: value.buffer
 				.iter()
 				.map(|p| lodepng::RGB { r: p.r, g: p.g, b: p.b })
 				.collect(),
-			width: self.size.x,
-			height: self.size.y,
+			width: value.size.x,
+			height: value.size.y,
 		}
 	}
 }

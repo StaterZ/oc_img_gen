@@ -12,16 +12,11 @@ use ffmpeg_next::{
 	format::context::Input as FfmpegInput,
 };
 use num_traits::ConstZero;
-use szu::int_div_ceil;
 
 use crate::{
-	math::*,
 	encoder::{
-		cli::{Budget, VideoFilter},
-		media_container::Descriptor as StreamDescriptor,
-		reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
-		muxer::{Muxer, PacketWriter},
-	}
+		cli::{Budget, VideoFilter}, media_container::Descriptor as StreamDescriptor, muxer::{Muxer, PacketWriter}, reader::{DecoderInterface, FrameInterface, Reader, ReaderData}
+	}, math::*, video::cmd::machine::Machine
 };
 
 use super::{
@@ -45,10 +40,10 @@ pub struct VideoDescData {
 	pub source_area: Option<Rect<usize>>,
 	pub filter: Option<VideoFilter>,
 	pub budget: Option<Budget>,
-	pub acceptable_loss: Frac<u32>,
+	pub acceptable_loss: Frac<u64>,
 }
 
-pub struct VideoReader<'a> {
+pub struct VideoReader<'a, 'b> {
 	reader_data: ReaderData<'a, VideoDecoder>,
 	scaler: Scaler,
 	scaler_buffer: VideoFrame,
@@ -57,7 +52,7 @@ pub struct VideoReader<'a> {
 	cmds_per_sec: Option<usize>,
 	in_frame_rate: Frac<i64>,
 	formatter: oc_color::formatters::HybridFormatter,
-	pub encoders: Vec<packet::VideoEncoder>,
+	pub encoders: Vec<packet::VideoEncoder<'b>>,
 	stream_timers: Vec<Frac<i64>>,
 }
 
@@ -91,11 +86,12 @@ impl FrameInterface for VideoFrame {
 	}
 }
 
-impl<'a> VideoReader<'a> {
+impl<'a, 'b> VideoReader<'a, 'b> {
 	pub fn new(
 		ictx: &FfmpegInput,
 		multi_progress: &'a MultiProgress,
 		range: &RangeInclusive<Option<Duration>>,
+		machine: &'b Machine,
 		config: VideoConfig,
 		muxer: &mut Muxer,
 	) -> Option<Self> {
@@ -126,13 +122,18 @@ impl<'a> VideoReader<'a> {
 		let streams = config.stream_descs_data
 			.into_iter()
 			.map(|stream_data| {
-				let size = if stream_data.source_area.is_some() {
-					stream_data.size
+				let (source_area, size) = if let Some(source_area) = stream_data.source_area {
+					debug_assert_eq!(source_area.size, stream_data.size.cast() * braille::SIZE);
+					(source_area, stream_data.size)
 				} else {
-					let size = int_div_ceil!(fit_size, braille::SIZE).try_cast().unwrap();
+					let size = szu::int_div_ceil!(fit_size, braille::SIZE).try_cast().unwrap();
 					eprintln!("auto-size-fit: {} (smallest possible resolution for stream that fits largest possible source resolution)", size);
-					size
+					(Rect {
+						pos: Point::ZERO,
+						size: size.cast() * braille::SIZE,
+					}, size)
 				};
+				
 				let desc = StreamDescriptor::<Descriptor> {
 					num_packets: 0,
 					rate: stream_data.frame_rate.unwrap_or(in_frame_rate.try_cast::<u16>().unwrap()),
@@ -147,9 +148,10 @@ impl<'a> VideoReader<'a> {
 				packet::VideoEncoder::new(
 					desc,
 					stream_id,
-					stream_data.source_area,
+					source_area,
 					stream_data.filter,
 					stream_data.budget,
+					&machine,
 					stream_data.acceptable_loss,
 				)
 			})
@@ -172,7 +174,7 @@ impl<'a> VideoReader<'a> {
 	}
 }
 
-impl<'a> Reader<'a> for VideoReader<'a> {
+impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 	type Decoder = VideoDecoder;
 	
 	fn get_data(&self) -> &ReaderData<'a, Self::Decoder> {

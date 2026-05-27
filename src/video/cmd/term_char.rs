@@ -30,14 +30,10 @@ static FLIPPABLES: phf::Map<char, char> = phf_bidirectional_map! {
 pub struct TermChar(char);
 
 impl TermChar {
-	pub fn into_inner(self) -> char {
-		self.0
-	}
-
 	pub fn flip(&self) -> Option<TermChar> {
 		if ('⠀'..='⣿').contains(&self.0) {
 			const BASE: u32 = '⠀' as u32;
-			let flipped = (!((self.0 as u32) - BASE) & 0xFF) + BASE;
+			let flipped = (!(self.0 as u32 - BASE) & 0xFF) + BASE;
 			char::from_u32(flipped)
 		} else {
 			FLIPPABLES.get(&self.0).copied()
@@ -59,8 +55,8 @@ impl From<char> for TermChar {
 	}
 }
 
-impl Into<char> for TermChar {
-	fn into(self) -> char {
-		self.into_inner()
+impl From<TermChar> for char {
+	fn from(value: TermChar) -> Self {
+		value.0
 	}
 }

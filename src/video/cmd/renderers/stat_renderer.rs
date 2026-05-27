@@ -1,6 +1,6 @@
 use crate::{
 	math::{Frac, Point, Size},
-	video::cmd::{Machine, renderers::{BasicRenderer, RenderState}}
+	video::cmd::{machine::Machine, renderers::{BasicRenderer, RenderState}}
 };
 use super::{
 	Renderer,

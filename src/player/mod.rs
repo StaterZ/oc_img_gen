@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
-use deku::DekuContainerRead;
+use deku::prelude::*;
+use szu::math::GoodInt;
 use triple_buffer::TripleBuffer;
 use itertools::Itertools;
 use minifb::{Key, Scale, Window, WindowOptions};
@@ -46,21 +47,23 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		.enumerate()
 		.filter(|(_, desc)| desc.content.is_video())
 		.map(|(index, desc)| {
-			let size = desc.content.as_video().unwrap().size.cast::<usize>() * braille::SIZE;
+			let size = desc.content.as_video().unwrap().size.cast::<usize>();
+			let size_pixels = size * braille::SIZE;
 
 			VideoStream {
 				id: index as u8,
 				window: Window::new(
 					&format!("Playing: {}", desc.name),
-					size.x,
-					size.y,
+					size_pixels.x,
+					size_pixels.y,
 					WindowOptions {
 						//topmost: true,
 						scale: Scale::FitScreen,
 						..Default::default()
 					},
 				).expect("Failed to open window"),
-				image: Image::new(size, 0xff00ff),
+				image: Image::new(size_pixels, 0xff00ff),
+				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(0xff00ff), RGB8::new(0xff00ff))),
 				next_frame_index: 0,
 			}
 		})
@@ -88,8 +91,8 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		audio_stream,
 		gpu: Gpu {
 			formatter: HybridFormatter::new(),
-			background_color: RGB8::BLACK.value(),
-			foreground_color: RGB8::BLACK.value(),
+			background_color: RGB8::BLACK,
+			foreground_color: RGB8::WHITE,
 		},
 		sound_card: SoundCard {
 			voices: voices_in,
@@ -102,16 +105,20 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let config = device.default_output_config().expect("No default output config");
 
 	let sample_rate = config.sample_rate() as f32;
+	let channels = config.channels() as usize;
 	let mut voice_phases = vec![0.0; voices_out.output_buffer().len()];
 	let stream = device.build_output_stream(
 		&config.into(),
 		move |data: &mut [f32], _| {
-			for sample in data.iter_mut() {
-				*sample = 0.0;
+			for frame in data.chunks_exact_mut(channels) {
+				let mut sample = 0.0;
 				for (voice, phase) in voices_out.read().iter().zip_eq(voice_phases.iter_mut()) {
-					*sample += (*phase * std::f32::consts::TAU).sin() * voice.volume;
-					*phase += voice.frequency / 8.0 / sample_rate;
+					sample += (*phase * std::f32::consts::TAU).sin() * voice.volume;
+					*phase += voice.frequency / sample_rate;
 					*phase = phase.fract();
+				}
+				for channel_sample in frame {
+					*channel_sample = sample;
 				}
 			}
 		},
@@ -152,8 +159,8 @@ struct RenderState<'a> {
 
 struct Gpu {
 	formatter: HybridFormatter,
-	background_color: u32,
-	foreground_color: u32,
+	background_color: RGB8,
+	foreground_color: RGB8,
 }
 struct SoundCard {
 	voices: triple_buffer::Input<Vec<VoiceStateFlt>>
@@ -162,7 +169,7 @@ struct SoundCard {
 const MILIS_PER_SEC: u32 = 1_000;
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 fn frac_to_duration<T: GoodInt + Into<u64>>(value: Frac<T>) -> Duration where u32: From<T> {
-	Duration::new(value.into_int_trunc().into(), value.cast::<u32>().into_int_frac(NANOS_PER_SEC))
+	Duration::new(value.into_int_trunc().into(), value.cast::<u32>().into_int_fract(NANOS_PER_SEC))
 }
 fn clean_duration(value: Duration) -> Duration {
 	const NANOS_PER_MILI: u32 = NANOS_PER_SEC / MILIS_PER_SEC;
@@ -198,7 +205,6 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 				let desc = &state.file.stream_descs[stream.id as usize];
 
 				if Frac::from(stream.next_frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
-				println!("{} {} {} {}", stream.next_frame_index, desc.rate, Frac::from(stream.next_frame_index) * desc.rate.cast::<u64>(), present_time);
 				stream.next_frame_index += 1;
 
 				if args.diff && frame.commands_len > 0 {
@@ -206,7 +212,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 						*pixel = 0xff0000;
 					}
 				}
-				stream.draw_packet(&mut state.gpu, frame)?
+				stream.draw_packet(&mut state.gpu, args, frame)?;
 			},
 			PacketContent::Audio(sample) if Some(packet.stream_id) == state.audio_stream.as_ref().map(|audio_stream| audio_stream.id) => {
 				if let Some(stream) = &mut state.audio_stream {
@@ -237,10 +243,11 @@ struct VideoStream {
 	id: u8,
 	window: Window,
 	image: Image<u32>,
+	diff_image: Image<Braille<RGB8>>,
 	next_frame_index: u64,
 }
 impl VideoStream {
-	pub fn draw_packet(&mut self, gpu: &mut Gpu, packet: &Frame) -> anyhow::Result<()> {
+	pub fn draw_packet(&mut self, gpu: &mut Gpu, args: &Cli, packet: &Frame) -> anyhow::Result<()> {
 		match packet.command_kind {
 			CommandKind::Text => todo!(),
 			CommandKind::Braille => {
@@ -250,39 +257,55 @@ impl VideoStream {
 					parse_state = next_parse_state;
 
 					if let Some(background) = command.background {
-						gpu.background_color = gpu.formatter.inflate(background).value();
+						gpu.background_color = gpu.formatter.inflate(background);
 					}
 					if let Some(foreground) = command.foreground {
-						gpu.foreground_color = gpu.formatter.inflate(foreground).value();
+						gpu.foreground_color = gpu.formatter.inflate(foreground);
 					}
 					
+					//let rng_color = rand::random_range(0x000000..=0xffffff);
 					for	(char_offset, braille) in command.braille.iter().enumerate() {
-						let braille = Braille {
-							id: {
-								let bit7650 = (braille & 0b1110_0001) >> 0 << 0;
-								let bit1    = (braille & 0b0000_1000) >> 3 << 1;
-								let bit2    = (braille & 0b0000_0010) >> 1 << 2;
-								let bit3    = (braille & 0b0001_0000) >> 4 << 3;
-								let bit4    = (braille & 0b0000_0100) >> 2 << 4;
-								bit4 | bit3 | bit2 | bit1 | bit7650
-								//0b11101000
-							},
-							bg: gpu.background_color,
-							fg: gpu.foreground_color,
-						};
-						for (y, row) in braille.raster().into_iter().enumerate() {
-							for (x, color) in row.into_iter().enumerate() {
-								let pos = (command.pos.cast::<usize>() + Point::new(char_offset, 0)) * braille::SIZE + Point::new(x, y);
-								let index = pos.y * self.image.size().x + pos.x;
-								//if index >= self.image.size().area() { continue; } //safety
-								self.image.buffer_mut()[index] = color;
-							}
+						let braille = Braille::with_index(
+							*braille,
+							gpu.background_color,
+							gpu.foreground_color,
+						);
+						let pos = command.pos.cast::<usize>() + Point::new(char_offset, 0);
+						if args.diff && self.next_frame_index > 1 && self.diff_image[pos] == braille {
+							// if !(1..command.braille.len()).contains(&char_offset) {
+							// 	let x = self.diff_image[pos];
+							// }
+							//debug_assert_range!(1..command.braille.len(), char_offset);
+							self.draw_braille(pos, &Braille::with_index(0, 0x008000, 0x00ff00));
+							continue;
 						}
+						
+						self.diff_image[pos] = braille;
+						// self.draw_braille(pos, &Braille::with_index(0, rng_color, rng_color));
+						// continue;
+						
+						self.draw_braille(pos, &braille.map(|c| c.value()));
 					}
 				}
 			},
 		}
 		Ok(())
+	}
+
+	fn draw_braille(&mut self, pos: Point<usize>, braille: &Braille<u32>) {
+		for (y, row) in braille
+			.raster()
+			.into_iter()
+			.enumerate()
+		{
+			for (x, color) in row
+				.into_iter()
+				.enumerate()
+			{
+				let pos = pos * braille::SIZE + Point::new(x, y);
+				self.image[pos] = color;
+			}
+		}
 	}
 }
 
@@ -292,7 +315,11 @@ struct AudioStream {
 }
 impl AudioStream {
 	pub fn play_packet(&mut self, state: &mut SoundCard, packet: &Sample) -> anyhow::Result<()> {
-		for (voice, state) in state.voices.input_buffer_publisher().iter_mut().zip_eq(&packet.voices) {
+		for (voice, state) in state.voices
+			.input_buffer_publisher()
+			.iter_mut()
+			.zip_eq(&packet.voices)
+		{
 			voice.frequency = state.frequency as f32 / u16::MAX as f32 * 20000.0;
 			voice.volume = state.volume as f32 / u8::MAX as f32;
 		}

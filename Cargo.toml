@@ -20,15 +20,16 @@ charts-rs = { "version" = "0.4.2", optional = true }
 #utilities
 itertools = "0.14.0"
 deku = "0.20.3"
-deku_string = { git = "https://github.com/eirtools/deku_string", branch = "renovate/deku-0.x", version = "0.4.1-0" }
+deku_string = { version = "0.4.1-0", git = "https://github.com/eirtools/deku_string", branch = "renovate/deku-0.x" }
 lazy_static = "1.5.0"
 num-traits = "0.2.19"
 enum-as-inner = "0.7.0"
 phf = { version = "0.13.1", features = ["macros"] }
 lapjv = "0.3.0"
 num = "0.4.3"
-rayon = "1.12.0"
+rayon = { version = "1.12.0", optional = true }
 integer-sqrt = "0.1.5"
+palette = "0.7.6"
 
 #error handling
 anyhow = "1.0.102"
@@ -45,16 +46,16 @@ rustfft = "6"
 realfft = "3"
 
 #gpu
-wgpu = { version = "29.0.3", optional = true }
-bytemuck = { version = "1.25.0", optional = true }
-futures = { version = "0.3.32", optional = true }
-futures-intrusive = { version = "0.5.0", optional = true }
+# wgpu = { version = "29.0.3", optional = true }
+# bytemuck = { version = "1.25.0", optional = true }
+# futures = { version = "0.3.32", optional = true }
+# futures-intrusive = { version = "0.5.0", optional = true }
 
 #player
-#minifb = { version = "0.28.0" }
-minifb = { version = "0.28.0", path = "../rust_minifb" }
+minifb = { version = "0.28.0", git = "https://github.com/emoon/rust_minifb", branch = "master" }
 cpal = { version = "0.17.3" }
 triple_buffer = { version = "9.0.0" }
+rand = "0.10.1"
 
 #custom
 szu = { version = "0.2.2", path = "../szu" }
@@ -63,7 +64,8 @@ szu = { version = "0.2.2", path = "../szu" }
 default = []
 log = []
 debug-mode = ["lodepng"]
-gpu = ["wgpu", "bytemuck", "futures", "futures-intrusive"]
+rayon = ["dep:rayon"]
+# gpu = ["wgpu", "bytemuck", "futures", "futures-intrusive"]
 charts = ["charts-rs"]
 
 

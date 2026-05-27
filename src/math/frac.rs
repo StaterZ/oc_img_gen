@@ -2,18 +2,27 @@ use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
-use num_traits::{NumAssignOps, ConstOne, ConstZero, Float, One, PrimInt, Zero};
+use num::Signed;
+use num_traits::{ConstOne, ConstZero, Float, One, Zero};
+use szu::math::GoodInt;
 
-pub trait GoodInt: PrimInt + NumAssignOps + Copy {
-	fn gcd(x: Self, y: Self) -> Self;
-	fn abs(x: Self) -> Self;
+pub trait IntoIntRound {
+	type Output;
+	
+	fn into_int_round(self) -> Self::Output;
 }
-impl<T: num::Integer + PrimInt + NumAssignOps + Copy> GoodInt for T {
-	fn gcd(x: Self, y: Self) -> Self {
-		num::integer::gcd(x, y)
+impl<T: GoodInt> IntoIntRound for Frac<T> {
+	type Output = T;
+
+	default fn into_int_round(self) -> Self::Output {
+		let bias = self.denominator / T::from(2).unwrap();
+		(self.numerator + bias) / self.denominator
 	}
-	fn abs(x: Self) -> Self {
-		if x >= Self::zero() { x } else { Self::zero() - x }
+}
+impl<T: GoodInt + Signed> IntoIntRound for Frac<T> {
+	fn into_int_round(self) -> Self::Output {
+		let bias = self.numerator.signum() * (self.denominator.abs() / T::from(2).unwrap());
+		(self.numerator + bias) / self.denominator
 	}
 }
 
@@ -38,13 +47,8 @@ impl<T: GoodInt> Frac<T> {
 	pub fn into_int_trunc(self) -> T {
 		self.numerator / self.denominator
 	}
-	pub fn into_int_frac(self, denominator: T) -> T {
+	pub fn into_int_fract(self, denominator: T) -> T {
 		self.fract().numerator / denominator
-	}
-	pub fn into_int_round(self) -> T {
-		let two = T::one() + T::one();
-		let bias = T::abs(self.denominator) / if self.numerator > T::zero() { two } else { T::zero() - two };
-		(self.numerator + bias) / self.denominator
 	}
 	pub fn into_flt<U: Float>(self) -> U {
 		U::from(self.numerator).unwrap() / U::from(self.denominator).unwrap()

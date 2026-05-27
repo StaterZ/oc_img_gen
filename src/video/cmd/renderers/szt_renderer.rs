@@ -1,12 +1,12 @@
 use all_asserts::*;
+use deku::prelude::*;
 use szu::iter::SplitByBytes;
 
-use crate::{math::{Point, Size}, video::cmd::renderers::cached_renderer::RenderState};
+use crate::{math::{Point, Size}};
 use super::{
 	BasicRenderer,
-	super::{packet, super::oc_color::PackedColor},
+	super::{packet, super::oc_color::PackedColor, packet::Command, renderers::cached_renderer::RenderState},
 };
-
 
 pub struct SztRenderer<const KIND: packet::CommandKind> {
 	blob: Vec<u8>,
@@ -24,11 +24,13 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 	}
 	
 	pub fn build(self) -> packet::Frame {
-		packet::Frame {
+		let mut frame = packet::Frame {
 			command_kind: KIND,
 			commands_len: 0,
 			commands: self.blob,
-		}
+		};
+		frame.update().unwrap();
+		frame
 	}
 }
 
@@ -57,10 +59,9 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 			}
 		}
 
-		const MAX_BYTES: usize = 1 << (8 - 2);
 		let mut pos = *pos;
 		let mut encode_chunk = |chunk: &[u8], chunk_uni_len: usize| {
-			debug_assert_range!(1..=MAX_BYTES, chunk.len());
+			debug_assert_range!(1..=Command::MAX_COMMAND_BYTES, chunk.len());
 			{
 				let bg_flag = (self.bg_needs_emit as u8) << 7;
 				let fg_flag = (self.fg_needs_emit as u8) << 6;
@@ -91,14 +92,14 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 
 		match KIND {
 			packet::CommandKind::Text => {
-				for chunk in SplitByBytes::new(value, MAX_BYTES) {
+				for chunk in SplitByBytes::new(value, Command::MAX_COMMAND_BYTES) {
 					encode_chunk(chunk.as_bytes(), chunk.len());
 				}
 			},
 			packet::CommandKind::Braille => {
-				let mut iter = value.chars().map(to_braille).array_chunks::<MAX_BYTES>();
+				let mut iter = value.chars().map(to_braille).array_chunks::<{ Command::MAX_COMMAND_BYTES }>();
 				while let Some(chunk) = iter.next() {
-					encode_chunk(&chunk, MAX_BYTES);
+					encode_chunk(&chunk, Command::MAX_COMMAND_BYTES);
 				}
 				let rem = iter.into_remainder();
 				if !rem.is_empty() {

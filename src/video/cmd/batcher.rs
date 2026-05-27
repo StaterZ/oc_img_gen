@@ -1,9 +1,10 @@
 use std::{cell::Cell, collections::{hash_map::{Entry, OccupiedEntry}, HashMap}, ops::Deref, rc::Rc};
 use all_asserts::*;
 use itertools::Itertools;
+use num_traits::ConstZero;
 
 use crate::math::*;
-use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::PackedColor};
+use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::{PackedColor, formatters::Formatter}};
 
 #[derive(Debug, Clone)]
 struct Batch {
@@ -20,10 +21,9 @@ impl Batch {
 
 		let chars = self.chars
 			.chars()
-			.map(|c| TermChar::from(c)
+			.map(|c| char::from(TermChar::from(c)
 				.flip()
-				.unwrap()
-				.into_inner())
+				.unwrap()))
 			.join("");
 
 		Self {
@@ -70,9 +70,16 @@ impl BatchKind {
 	pub fn is_single_color(&self) -> bool {
 		matches!(self, BatchKind::BgOnly | BatchKind::FgOnly)
 	}
+
+	pub fn get_color_usage(&self) -> BatchColorUsage {
+		BatchColorUsage {
+			using_bg: *self != BatchKind::FgOnly,
+			using_fg: *self != BatchKind::BgOnly,
+		}
+	}
 }
 
-struct CondColors {
+struct BatchColorUsage {
 	using_bg: bool,
 	using_fg: bool,
 }
@@ -81,12 +88,6 @@ struct CondMatches {
 	perfect: bool,
 	flipped: bool,
 	insert: bool,
-}
-
-struct CondVars {
-	char: CondColors,
-	batch: CondColors,
-	matches: CondMatches,
 }
 
 struct RenderState {
@@ -236,8 +237,8 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>, loss: Frac<u32>) {
-	let batches = generate_batches(frame, prev_frame, loss);
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) {
+	let batches = generate_batches(frame, prev_frame, max_batch_size, loss, formatter);
 	
 	let mut accelerator = Accelerator::new();
 	for batch in batches {
@@ -261,7 +262,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, _loss: Frac<u32>) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
@@ -282,12 +283,16 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, _loss: Fr
 	for y in 0..frame.size().y {
 		let mut work_batch = None::<WorkBatch>;
 		for x in 0..frame.size().x {
-			let i = y * frame.size().x + x;
-			let char = &frame.buffer()[i];
+			let pos = Point::new(x, y);
+			let char = &frame[pos];
 
 			let is_same_as_prev_frame = if let Some(prev_frame) = prev_frame {
-				let char_prev = &prev_frame.buffer()[i];
-				char == char_prev //|| char.compute_loss(char_prev, rend) <= loss //todo: loss
+				let char_prev = &prev_frame[pos];
+				if loss == Frac::ZERO {
+					char == char_prev //faster
+				} else {
+					char.compute_loss(char_prev, formatter) <= loss
+				}
 			} else {
 				false
 			};
@@ -312,45 +317,55 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, _loss: Fr
 				// BG | PF_ | PF_ | P_I | *FI |
 				// FG | PF_ | PF_ | *FI | P_I |
 
-				let cond_vars = CondVars {
-					char: CondColors { using_bg: char_batch_kind != BatchKind::FgOnly, using_fg: char_batch_kind != BatchKind::BgOnly },
-					batch: CondColors { using_bg: batch.kind != BatchKind::FgOnly, using_fg: batch.kind != BatchKind::BgOnly },
-					matches: CondMatches {
-						perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
-						flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
-						insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //if both are single colors, that leaves one color for each, so we can insert
-					},
+				let matches = CondMatches {
+					perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
+					flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
+					insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //if both are single colors, that leaves one color for each, so we can insert
 				};
 
-				let bg_bg = (!cond_vars.char.using_bg || !cond_vars.batch.using_bg) || char.bg == batch.bg;
-				let bg_fg = (!cond_vars.char.using_bg || !cond_vars.batch.using_fg) || char.bg == batch.fg;
-				let fg_bg = (!cond_vars.char.using_fg || !cond_vars.batch.using_bg) || char.fg == batch.bg;
-				let fg_fg = (!cond_vars.char.using_fg || !cond_vars.batch.using_fg) || char.fg == batch.fg;
+				let char_usage = char_batch_kind.get_color_usage();
+				let batch_usage = batch.kind.get_color_usage();
+				let bg_bg = (!char_usage.using_bg || !batch_usage.using_bg) || char.bg == batch.bg;
+				let bg_fg = (!char_usage.using_bg || !batch_usage.using_fg) || char.bg == batch.fg;
+				let fg_bg = (!char_usage.using_fg || !batch_usage.using_bg) || char.fg == batch.bg;
+				let fg_fg = (!char_usage.using_fg || !batch_usage.using_fg) || char.fg == batch.fg;
 
-				let perfect = cond_vars.matches.perfect && bg_bg && fg_fg;
-				let flipped = cond_vars.matches.flipped && bg_fg && fg_bg;
-				let insert = cond_vars.matches.insert && !(bg_fg && fg_bg); //TODO: effectively just a flipped inverse, kinda dumb?
+				let perfect = matches.perfect && bg_bg && fg_fg;
+				let flipped = matches.flipped && bg_fg && fg_bg;
+				let insert = matches.insert && !match (char_batch_kind, batch.kind) {
+					(BatchKind::BgOnly, BatchKind::BgOnly) => bg_bg,
+					(BatchKind::BgOnly, BatchKind::FgOnly) => bg_fg,
+					(BatchKind::FgOnly, BatchKind::BgOnly) => fg_bg,
+					(BatchKind::FgOnly, BatchKind::FgOnly) => fg_fg,
+					_ => unreachable!(),
+				};
 
 				let can_append = perfect || flipped || insert;
-				if can_append {
+				if can_append && batch.chars.len() < max_batch_size {
 					batch.kind = if char_batch_kind == BatchKind::Unique || batch.kind == BatchKind::Unique {
 						BatchKind::Unique
-					} else if cond_vars.matches.insert && (perfect || flipped) {
+					} else if matches.insert && (perfect || flipped) {
 						batch.kind
 					} else {
+						if perfect {
+							match batch.kind {
+								BatchKind::BgOnly => batch.fg = char.fg,
+								BatchKind::FgOnly => batch.bg = char.bg,
+								_ => {},
+							}
+						}
+						if flipped || insert {
+							match batch.kind {
+								BatchKind::BgOnly => batch.fg = char.bg,
+								BatchKind::FgOnly => batch.bg = char.fg,
+								_ => {},
+							}
+						}
 						BatchKind::Flippable
 					};
-
-					if insert {
-						if batch.kind == BatchKind::BgOnly {
-							batch.fg = char.bg
-						} else {
-							batch.bg = char.fg
-						};
-					}
 					
 					let mut sym = char.sym;
-					let is_flip = !perfect && flipped;
+					let is_flip = !perfect && (flipped || insert);
 					if is_flip {
 						if char_batch_kind == BatchKind::Unique { //if the char is unique, we need to flip the batch instead
 							*batch = batch.flip();
@@ -379,7 +394,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, _loss: Fr
 					pos: Point { x, y },
 					bg: char.bg,
 					fg: char.fg,
-					chars: char.sym.into_inner().to_string(),
+					chars: char::from(char.sym).to_string(),
 				}));
 			}
 		}

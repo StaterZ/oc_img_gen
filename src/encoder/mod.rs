@@ -5,7 +5,7 @@ use itertools::Itertools;
 // use tracing_indicatif::IndicatifLayer;
 // use tracing_subscriber::prelude::*;
 
-use crate::math::*;
+use crate::{math::*, video::cmd::machine::Machine};
 pub use crate::video::video_reader::{VideoConfig, VideoReader, VideoDescData};
 use crate::audio::{Config as AudioConfig, audio_reader::AudioReader};
 use muxer::Muxer;
@@ -27,6 +27,7 @@ pub struct EncoderConfig {
 
 	pub range: RangeInclusive<Option<Duration>>,
 
+	pub machine: Machine,
 	pub video: Option<VideoConfig>,
 	pub audio: Option<AudioConfig>,
 }
@@ -40,7 +41,7 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	let multi_progress = MultiProgress::new();
 	
 	let mut muxer = Muxer::new();
-	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, video_config, &mut muxer));
+	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer));
 	let audio = config.audio.and_then(|audio_config| AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer));
 	
 	let mut readers = Vec::<Box<dyn CommonReader>>::new();

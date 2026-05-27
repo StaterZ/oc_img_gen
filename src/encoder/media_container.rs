@@ -13,23 +13,23 @@ pub struct Descriptor<TContent: Debug + DekuWriter + for<'a> DekuReader<'a>> {
 	#[deku(endian = "little", ctx = "deku_string::Encoding::Utf8, deku_string::StringLayout::LengthPrefix(deku_string::Size::U8)")] pub name: StringDeku,
 	pub content: TContent,
 }
-impl Into<Descriptor<DescriptorContent>> for Descriptor<crate::video::cmd::packet::Descriptor> {
-	fn into(self) -> Descriptor<DescriptorContent> {
-		Descriptor {
-			num_packets: self.num_packets,
-			rate: self.rate,
-			name: self.name,
-			content: DescriptorContent::Video(self.content),
+impl From<Descriptor<crate::video::cmd::packet::Descriptor>> for Descriptor<DescriptorContent> {
+	fn from(value: Descriptor<crate::video::cmd::packet::Descriptor>) -> Self {
+		Self {
+			num_packets: value.num_packets,
+			rate: value.rate,
+			name: value.name,
+			content: DescriptorContent::Video(value.content),
 		}
 	}
 }
-impl Into<Descriptor<DescriptorContent>> for Descriptor<crate::audio::packet::Descriptor> {
-	fn into(self) -> Descriptor<DescriptorContent> {
-		Descriptor {
-			num_packets: self.num_packets,
-			rate: self.rate,
-			name: self.name,
-			content: DescriptorContent::Audio(self.content),
+impl From<Descriptor<crate::audio::packet::Descriptor>> for Descriptor<DescriptorContent> {
+	fn from(value: Descriptor<crate::audio::packet::Descriptor>) -> Self {
+		Self {
+			num_packets: value.num_packets,
+			rate: value.rate,
+			name: value.name,
+			content: DescriptorContent::Audio(value.content),
 		}
 	}
 }

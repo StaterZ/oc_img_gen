@@ -35,8 +35,8 @@ impl Display for PackedColor {
 	}
 }
 
-impl Into<u8> for PackedColor {
-	fn into(self) -> u8 {
-		self.0
+impl From<PackedColor> for u8 {
+	fn from(value: PackedColor) -> Self {
+		value.0
 	}
 }

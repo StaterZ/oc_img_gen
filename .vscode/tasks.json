@@ -6,10 +6,11 @@
 			"command": "cargo",
 			"args": [
 				"run",
+				"--features=rayon",
 				//"--features=debug-mode",
 				"--",
 				"encode",
-				"-i=data/ussr.webp",
+				"-i=data/bad-apple.mp4",
 				"--mode=single",
 				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt"
 			],

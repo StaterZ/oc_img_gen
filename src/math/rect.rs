@@ -1,6 +1,9 @@
-use super::{Point, Size, GoodInt};
+use szu::math::GoodNum;
 
-pub struct Rect<T: GoodInt> {
+use super::{Point, Size};
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Rect<T: GoodNum> {
 	pub pos: Point<T>,
 	pub size: Size<T>,
 }

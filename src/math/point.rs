@@ -1,17 +1,18 @@
 use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
-use num::NumCast;
+use num::{NumCast, Unsigned};
 use num_traits::{ConstZero, Zero};
+use szu::math::GoodNum;
 
-use super::{Size, GoodInt};
+use super::Size;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Point<T: GoodInt> {
+pub struct Point<T: GoodNum> {
 	pub x: T,
 	pub y: T,
 }
 
-impl<T: GoodInt> Point<T> {
+impl<T: GoodNum> Point<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
@@ -22,20 +23,20 @@ impl<T: GoodInt> Point<T> {
 		}
 	}
 	
-	pub fn cast<U: GoodInt>(self) -> Point::<U> {
+	pub fn cast<U: GoodNum>(self) -> Point::<U> {
 		Point {
 			x: NumCast::from(self.x).unwrap(),
 			y: NumCast::from(self.y).unwrap(),
 		}
 	}
-	pub fn try_cast<U: GoodInt>(self) -> Option<Point<U>> {
+	pub fn try_cast<U: GoodNum>(self) -> Option<Point<U>> {
 		Some(Point {
 			x: NumCast::from(self.x)?,
 			y: NumCast::from(self.y)?,
 		})
 	}
 	
-	pub fn map<U: GoodInt>(&self, f: impl Fn(T) -> U) -> Point<U> {
+	pub fn map<U: GoodNum>(&self, f: impl Fn(T) -> U) -> Point<U> {
 		Point {
 			x: f(self.x),
 			y: f(self.y),
@@ -43,13 +44,13 @@ impl<T: GoodInt> Point<T> {
 	}
 }
 
-impl<T: GoodInt + Display> Display for Point<T> {
+impl<T: GoodNum + Display> Display for Point<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "({},{})", self.x, self.y)
 	}
 }
 
-impl<Ctx: Copy, T: GoodInt + DekuWriter<Ctx>> DekuWriter<Ctx> for Point<T> {
+impl<Ctx: Copy, T: GoodNum + DekuWriter<Ctx>> DekuWriter<Ctx> for Point<T> {
 	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.x.to_writer(writer, ctx)?;
 		self.y.to_writer(writer, ctx)?;
@@ -57,7 +58,7 @@ impl<Ctx: Copy, T: GoodInt + DekuWriter<Ctx>> DekuWriter<Ctx> for Point<T> {
 	}
 }
 
-impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Point<T> {
+impl<'a, Ctx: Copy, T: GoodNum + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Point<T> {
 	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
 		Ok(Self {
 			x: T::from_reader_with_ctx(reader, ctx)?,
@@ -66,7 +67,7 @@ impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Po
 	}
 }
 
-impl<T: GoodInt + FromStr> FromStr for Point<T>
+impl<T: GoodNum + FromStr> FromStr for Point<T>
 where
 	<T as FromStr>::Err: std::fmt::Debug,
 {
@@ -84,7 +85,7 @@ where
 	}
 }
 
-impl<T: GoodInt + Zero> Zero for Point<T> {
+impl<T: GoodNum + Zero> Zero for Point<T> {
 	fn zero() -> Self {
 		Self::one(T::zero())
 	}
@@ -94,11 +95,11 @@ impl<T: GoodInt + Zero> Zero for Point<T> {
 	}
 }
 
-impl<T: GoodInt + ConstZero> ConstZero for Point<T> {
+impl<T: GoodNum + ConstZero> ConstZero for Point<T> {
 	const ZERO: Self = Self::one(T::ZERO);
 }
 
-impl<T: GoodInt> Add for Point<T> {
+impl<T: GoodNum> Add for Point<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
@@ -109,7 +110,7 @@ impl<T: GoodInt> Add for Point<T> {
 	}
 }
 
-impl<T: GoodInt> Sub for Point<T> {
+impl<T: GoodNum> Sub for Point<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
@@ -120,18 +121,18 @@ impl<T: GoodInt> Sub for Point<T> {
 	}
 }
 
-impl<T: GoodInt> Mul<Size<T>> for Point<T> {
+impl<T: GoodNum + From<U>, U: GoodNum + Unsigned> Mul<Size<U>> for Point<T> {
 	type Output = Self;
 
-	fn mul(self, rhs: Size<T>) -> Self::Output {
+	fn mul(self, rhs: Size<U>) -> Self::Output {
 		Self {
-			x: self.x * rhs.x,
-			y: self.y * rhs.y,
+			x: self.x * rhs.x.into(),
+			y: self.y * rhs.y.into(),
 		}
 	}
 }
 
-impl<T: GoodInt> Div<T> for Point<T> {
+impl<T: GoodNum> Div<T> for Point<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {

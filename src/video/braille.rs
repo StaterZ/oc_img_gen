@@ -1,18 +1,25 @@
 use std::mem::MaybeUninit;
 use num_traits::ConstZero;
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 use szu::{math::int_div_round, iter::MultiZipExt};
 
 use crate::math::*;
-use super::{image::Image, oc_color::{RGB, RGB8}};
-
-#[cfg(feature = "gpu")]
-mod gpu;
+#[cfg(not(feature = "rayon"))]
+use super::image_iter::ImageIterator;
+#[cfg(feature = "rayon")]
+use super::image_iter::ParallelImageIterator;
+use super::{
+	image::Image,
+	oc_color::{RGB, RGB8},
+};
 
 pub const SIZE: Size<usize> = Size::new(2, 4);
 pub const WIDTH: usize = SIZE.x;
 pub const HEIGHT: usize = SIZE.y;
 pub const BITS: usize = WIDTH * HEIGHT;
 
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Braille<T> {
 	pub id: u8,
 	pub bg: T,
@@ -20,8 +27,25 @@ pub struct Braille<T> {
 }
 
 impl<T> Braille<T> {
-	pub fn new() {
+	pub fn new(c: char, bg: T, fg: T) -> Self {
+		debug_assert!(('⠀'..='⣿').contains(&c));
+		let i = (c as u32 - '⠀' as u32) as u8;
+		Self::with_index(i, bg, fg)
+	}
 
+	pub fn with_index(i: u8, bg: T, fg: T) -> Self {
+		let bit7650 = (i & 0b1110_0001) >> 0 << 0;
+		let bit1    = (i & 0b0000_1000) >> 3 << 1;
+		let bit2    = (i & 0b0000_0010) >> 1 << 2;
+		let bit3    = (i & 0b0001_0000) >> 4 << 3;
+		let bit4    = (i & 0b0000_0100) >> 2 << 4;
+		let id = bit4 | bit3 | bit2 | bit1 | bit7650;
+
+		Self {
+			id,
+			bg,
+			fg,
+		}
 	}
 
 	pub fn char(&self) -> char {
@@ -199,50 +223,54 @@ impl Braille<RGB8> {
 	}
 }
 
-#[cfg(feature = "gpu")]
-pub use gpu::as_braille;
-
-#[cfg(all(not(feature = "gpu"), not(debug_assertions)))]
-pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
-	use rayon::prelude::*;
-
-	let row_len = input.size().x as usize;
-	let buffer: Vec<Braille<RGB8>> = input
-		.buffer()
-		.par_chunks_exact(HEIGHT * row_len)
-		.flat_map(|row_block| {
-			let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
-			(0..(row_len / WIDTH)).into_par_iter().map(move |col| {
-				let start = col * WIDTH;
-				let end = start + WIDTH;
-				let cluster: [[RGB8; WIDTH]; HEIGHT] = std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap());
-				Braille::from_pixels(&cluster)
-			})
-		})
-		.collect();
-
-	Image::with_buffer(input.size() / SIZE, buffer)
+impl<T: PartialEq> PartialEq for Braille<T> {
+	fn eq(&self, other: &Self) -> bool {
+		for i in 0..BITS {
+			let self_color = if (self.id >> i) & 1 == 0 { &self.bg } else { &self.fg };
+			let other_color = if (other.id >> i) & 1 == 0 { &other.bg } else { &other.fg };
+			if self_color != other_color { return false; }
+		}
+		return true;
+	}
 }
 
-//used for debugging due to weird breakpointing with rayon
-#[cfg(all(not(feature = "gpu"), debug_assertions))]
-pub fn as_braille(input: &Image<RGB8>) -> Image<Braille<RGB8>> {
+#[cfg(feature = "rayon")]
+pub fn as_braille(input: &Image<RGB8>) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<RGB8>>> {
 	let row_len = input.size().x as usize;
-	let buffer: Vec<Braille<RGB8>> = input
-		.buffer()
-		.chunks_exact(HEIGHT * row_len)
-		.flat_map(|row_block| {
-			let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
-			(0..(row_len / WIDTH)).into_iter().map(move |col| {
-				let start = col * WIDTH;
-				let end = start + WIDTH;
-				let cluster: [[RGB8; WIDTH]; HEIGHT] = std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap());
-				Braille::from_pixels(&cluster)
+	ParallelImageIterator {
+		size: input.size() / SIZE,
+		iter: input
+			.buffer()
+			.par_chunks_exact(HEIGHT * row_len)
+			.flat_map(move |row_block| {
+				let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
+				(0..(row_len / WIDTH)).into_par_iter().map(move |col| {
+					let start = col * WIDTH;
+					let end = start + WIDTH;
+					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
+				})
 			})
-		})
-		.collect();
-
-	Image::with_buffer(input.size() / SIZE, buffer)
+			.map(|cluster| Braille::from_pixels(&cluster)),
+	}
+}
+#[cfg(not(feature = "rayon"))]
+pub fn as_braille(input: &Image<RGB8>) -> ImageIterator<impl Iterator<Item = Braille<RGB8>>> {
+	let row_len = input.size().x as usize;
+	ImageIterator {
+		size: input.size() / SIZE,
+		iter: input
+			.buffer()
+			.chunks_exact(HEIGHT * row_len)
+			.flat_map(move |row_block| {
+				let rows = row_block.chunks_exact(row_len).collect_array::<HEIGHT>().unwrap(); //SAFETY: safe due to multiplying by HEIGHT in par_chunks_exact above
+				(0..(row_len / WIDTH)).into_iter().map(move |col| {
+					let start = col * WIDTH;
+					let end = start + WIDTH;
+					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
+				})
+			})
+			.map(|cluster| Braille::from_pixels(&cluster)),
+	}
 }
 
 pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
