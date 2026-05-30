@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::{hash_map::{Entry, OccupiedEntry}, HashMap}, ops::Deref, rc::Rc};
+use std::{cell::Cell, collections::{HashMap, hash_map::{Entry, OccupiedEntry}}, ops::Deref, rc::Rc};
 use all_asserts::*;
 use itertools::Itertools;
 use num_traits::ConstZero;
@@ -237,7 +237,7 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) {
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) {
 	let batches = generate_batches(frame, prev_frame, max_batch_size, loss, formatter);
 	
 	let mut accelerator = Accelerator::new();
@@ -262,7 +262,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
@@ -286,7 +286,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch
 			let pos = Point::new(x, y);
 			let char = &frame[pos];
 
-			let is_same_as_prev_frame = if let Some(prev_frame) = prev_frame {
+			let is_same_as_prev_frame = if let Some(prev_frame) = prev_frame.as_ref() {
 				let char_prev = &prev_frame[pos];
 				if loss == Frac::ZERO {
 					char == char_prev //faster
@@ -296,6 +296,12 @@ fn generate_batches(frame: &TermFrame, prev_frame: Option<&TermFrame>, max_batch
 			} else {
 				false
 			};
+
+			if let Some(prev_frame) = prev_frame.as_mut() {
+				if !is_same_as_prev_frame {
+					prev_frame[pos] = *char;
+				}
+			}
 
 			if is_same_as_prev_frame && work_batch.is_none() { continue; }
 
