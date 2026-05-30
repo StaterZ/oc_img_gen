@@ -98,6 +98,7 @@ impl<'a> VideoEncoder<'a> {
 				charts_rs::Series::new("color".to_string(), Vec::new()),
 				charts_rs::Series::new("set".to_string(), Vec::new()),
 				charts_rs::Series::new("bitblt".to_string(), Vec::new()),
+				charts_rs::Series::new("loss".to_string(), Vec::new()),
 			], Vec::new(), charts_rs::THEME_GRAFANA);
 			gpu_chart.series_symbol = Some(charts_rs::Symbol::None);
 
@@ -227,57 +228,72 @@ impl<'a> VideoEncoder<'a> {
 	}
 
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u64>, formatter: &impl Formatter) {
-		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
-		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref(), Command::MAX_COMMAND_BYTES, acceptable_loss, formatter); //todo: acceptable_loss treated as loss here
-		let renderer = renderer.into_inner();
-		let mut stats = renderer.get_stats();
-		let gpu_cost = match self.budget {
-			Some(Budget::Direct) => stats.get_cost(&self.machine),
-			Some(Budget::Buffered) => {
-				if stats.num_set_commands > 0 {
-					stats.num_bitblt_pixels += frame.size().area();
-				};
-				let mut temp_stats = stats;
-				temp_stats.num_set_commands = 0;
-				temp_stats.get_cost(&self.machine)
-			},
-			None => Frac::ZERO,
-		};
-		let cpu_cost = Frac::new(stats.num_set_pixels, 15000);
+		let loss_step = Frac::new(1, 100);
+		let mut loss = 0.into();
 
 		self.num_frames_since_emit += 1;
-		let tick_rate = 20;
-		let gpu_budget = (self.machine.call_budget * tick_rate) * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
-		let cpu_budget = self.machine.cpu_speed * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+		let frame = loop {
+			let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
+			let mut work_frame = self.prev_frame.clone();
+			batcher::draw(&mut renderer, &frame, &mut work_frame, Command::MAX_COMMAND_BYTES, loss, formatter); //todo: acceptable_loss treated as loss here
+			let renderer = renderer.into_inner();
+			let mut stats = renderer.get_stats();
+			let gpu_cost = match self.budget {
+				Some(Budget::Direct) => stats.get_cost(&self.machine),
+				Some(Budget::Buffered) => {
+					if stats.num_set_commands > 0 {
+						stats.num_bitblt_pixels += frame.size().area();
+					};
+					let mut temp_stats = stats;
+					temp_stats.num_set_commands = 0;
+					temp_stats.get_cost(&self.machine)
+				},
+				None => Frac::ZERO,
+			};
+			let cpu_cost = Frac::new(stats.num_set_pixels, 15000);
 
-		#[cfg(feature = "charts")] {
-			let timestamp = format!("{:.2}s", (self.desc.rate.cast::<usize>() * self.frames.len()).into_flt::<f32>());
+			let tick_rate = 20;
+			let gpu_budget = (self.machine.call_budget * tick_rate) * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+			let cpu_budget = self.machine.cpu_speed * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
 
-			let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
-			gpu_chart.x_axis_data.push(timestamp.clone());
-			gpu_chart.series_list[0].data.push(gpu_budget.into_flt());
-			gpu_chart.series_list[1].data.push(gpu_cost.into_flt());
-			gpu_chart.series_list[2].data.push(stats.get_set_color_cost(&self.machine).into_flt());
-			gpu_chart.series_list[3].data.push(stats.get_set_cost(&self.machine).into_flt());
-			gpu_chart.series_list[4].data.push(stats.get_bitblt_cost(&self.machine).into_flt());
+			#[cfg(feature = "charts")] {
+				let timestamp = format!("{:.2}s", (self.desc.rate.cast::<usize>() * self.frames.len()).into_flt::<f32>());
 
-			let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
-			cpu_chart.x_axis_data.push(timestamp.clone());
-			cpu_chart.series_list[0].data.push(cpu_budget.into_flt());
-			cpu_chart.series_list[1].data.push(cpu_cost.into_flt());
-		}
+				let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
+				gpu_chart.x_axis_data.push(timestamp.clone());
+				gpu_chart.series_list[0].data.push(gpu_budget.into_flt());
+				gpu_chart.series_list[1].data.push(gpu_cost.into_flt());
+				gpu_chart.series_list[2].data.push(stats.get_set_color_cost(&self.machine).into_flt());
+				gpu_chart.series_list[3].data.push(stats.get_set_cost(&self.machine).into_flt());
+				gpu_chart.series_list[4].data.push(stats.get_bitblt_cost(&self.machine).into_flt());
+				gpu_chart.series_list[5].data.push(loss.into_flt());
 
-		let frame = if self.budget == None || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
-			self.num_frames_since_emit = 0;
-			self.prev_frame = Some(frame);
-			renderer.into_inner().build()
-		} else {
-			Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
-				commands_len: 0,
-				command_kind: CMD_KIND,
-				commands: Vec::new(),
+				let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
+				cpu_chart.x_axis_data.push(timestamp.clone());
+				cpu_chart.series_list[0].data.push(cpu_budget.into_flt());
+				cpu_chart.series_list[1].data.push(cpu_cost.into_flt());
+			}
+
+			loss += loss_step;
+			if self.budget == None || loss > acceptable_loss || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
+				if self.budget.is_some() && loss == 0.into() {
+					break Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
+						commands_len: 0,
+						command_kind: CMD_KIND,
+						commands: Vec::new(),
+					};
+				}
+
+				self.num_frames_since_emit = 0;
+				if work_frame.is_none() {
+					self.prev_frame = Some(frame);
+				} else {
+					self.prev_frame = work_frame;
+				}
+				break renderer.into_inner().build();
 			}
 		};
+
 		self.frames.push_back(frame);
 	}
 }

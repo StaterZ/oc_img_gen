@@ -15,7 +15,7 @@ pub mod packet;
 type TermFrame = Image<TermPixel>;
 type BrailleFrame = Image<Braille<PackedColor>>;
 
-pub fn code_gen(frame: &TermFrame, prev_frame: Option<&TermFrame>, acceptable_loss: Frac<u64>, formatter: &impl Formatter) -> String {
+pub fn code_gen(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, acceptable_loss: Frac<u64>, formatter: &impl Formatter) -> String {
 	let mut renderer = CachedRenderer::new(CodeRenderer::new(
 		"gpu".to_string(),
 		format!(include_str!("bootstrap.lua"), frame.size().x, frame.size().y),
