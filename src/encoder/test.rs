@@ -73,7 +73,7 @@ pub fn run() -> Result<(), String> {
 
 fn process(img: Image<RGB8>) -> Image<RGB8> {
 	let formatter = HybridFormatter::new();
-	let img = stage("Process   | Deflate", || img.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))));
+	let img = stage("Process   | Deflate", || img.iter().map(|p| formatter.deflate(PaletteOr::NonPalette(*p))).collect());
 	for y in (0..img.buffer().len()).step_by(img.size().x) {
 		let line = img.buffer()
 			.iter()

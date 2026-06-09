@@ -1,5 +1,6 @@
 use std::mem::MaybeUninit;
 use num_traits::ConstZero;
+use itertools::Itertools;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use szu::{math::int_div_round, iter::MultiZipExt};
