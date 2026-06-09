@@ -79,6 +79,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				size_pixels.x,
 				size_pixels.y,
 				WindowOptions {
+					borderless: true,
 					//topmost: true,
 					scale,
 					..Default::default()
