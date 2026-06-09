@@ -1,10 +1,10 @@
-use std::{fmt::Display, ops::*, str::FromStr};
+use std::{fmt::Display, ops::*, str::FromStr, time::Duration,};
 use deku::{no_std_io, prelude::*};
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
-use num::Signed;
+use num::{Num, NumCast, Signed, ToPrimitive};
 use num_traits::{ConstOne, ConstZero, Float, One, Zero};
-use szu::math::GoodInt;
+use szu::math::{GoodInt, GoodNum};
 
 pub trait IntoIntRound {
 	type Output;
@@ -37,18 +37,12 @@ impl<T: GoodInt> Frac<T> {
 		Self { numerator, denominator }
 	}
 
-	pub fn fract(self) -> Self {
-		Self {
-			numerator: self.numerator % self.denominator,
-			denominator: self.denominator,
-		}
+	pub fn half() -> Self {
+		Self::new(T::ONE, T::ONE + T::ONE)
 	}
 
 	pub fn into_int_trunc(self) -> T {
 		self.numerator / self.denominator
-	}
-	pub fn into_int_fract(self, denominator: T) -> T {
-		self.fract().numerator / denominator
 	}
 	pub fn into_flt<U: Float>(self) -> U {
 		U::from(self.numerator).unwrap() / U::from(self.denominator).unwrap()
@@ -92,9 +86,96 @@ impl<T: GoodInt + IntegerSquareRoot> Frac<T> {
 	}
 }
 
+impl<T: GoodInt> GoodNum for Frac<T> { }
+
+impl<T: GoodInt> NumCast for Frac<T> {
+	fn from<U: num::ToPrimitive>(n: U) -> Option<Self> {
+		Some(Self {
+			numerator: T::from(n)?,
+			denominator: T::one(),
+		})
+	}
+}
+
+impl<T: GoodInt> ToPrimitive for Frac<T> {
+	fn to_isize(&self) -> Option<isize> {
+		self.into_int_trunc().to_isize()
+	}
+	
+	fn to_i8(&self) -> Option<i8> {
+		self.into_int_trunc().to_i8()
+	}
+	
+	fn to_i16(&self) -> Option<i16> {
+		self.into_int_trunc().to_i16()
+	}
+	
+	fn to_i32(&self) -> Option<i32> {
+		self.into_int_trunc().to_i32()
+	}
+
+	fn to_i64(&self) -> Option<i64> {
+		self.into_int_trunc().to_i64()
+	}
+
+	fn to_i128(&self) -> Option<i128> {
+		self.into_int_trunc().to_i128()
+	}
+	
+	fn to_usize(&self) -> Option<usize> {
+		self.into_int_trunc().to_usize()
+	}
+	
+	fn to_u8(&self) -> Option<u8> {
+		self.into_int_trunc().to_u8()
+	}
+	
+	fn to_u16(&self) -> Option<u16> {
+		self.into_int_trunc().to_u16()
+	}
+	
+	fn to_u32(&self) -> Option<u32> {
+		self.into_int_trunc().to_u32()
+	}
+	
+	fn to_u64(&self) -> Option<u64> {
+		self.into_int_trunc().to_u64()
+	}
+	
+	fn to_u128(&self) -> Option<u128> {
+		self.into_int_trunc().to_u128()
+	}
+	
+	fn to_f32(&self) -> Option<f32> {
+		self.into_int_trunc().to_f32()
+	}
+	
+	fn to_f64(&self) -> Option<f64> {
+		self.into_int_trunc().to_f64()
+	}
+}
+
+impl<T: GoodInt> Num for Frac<T> {
+	type FromStrRadixErr = FracParseErr<<T as Num>::FromStrRadixErr>;
+
+	fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
+		match str.split('/').collect_vec().as_slice() {
+			[numerator] => Ok(Frac::new(
+				T::from_str_radix(*numerator, radix)?,
+				T::one(),
+			)),
+			[numerator, denominator] => Ok(Frac::new(
+				T::from_str_radix(*numerator, radix)?,
+				T::from_str_radix(*denominator, radix)?,
+			)),
+			_ => Err(FracParseErr::BadFormat),
+		}
+	}
+}
+
 impl<T: GoodInt + Zero> Zero for Frac<T> {
 	fn zero() -> Self {
-		Self::from(T::zero())
+		<Self as From<T>>::from(T::zero())
 	}
 
 	fn is_zero(&self) -> bool {
@@ -108,7 +189,7 @@ impl<T: GoodInt + ConstZero + ConstOne> ConstZero for Frac<T> {
 
 impl<T: GoodInt + One> One for Frac<T> {
 	fn one() -> Self {
-		Self::from(T::one())
+		<Self as From<T>>::from(T::one())
 	}
 }
 
@@ -140,7 +221,6 @@ impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Fr
 	}
 }
 
-
 impl<T: GoodInt> From<T> for Frac<T> {
 	fn from(value: T) -> Self {
 		Self {
@@ -159,6 +239,16 @@ impl From<ffmpeg_next::Rational> for Frac<i32> {
 	}
 }
 
+impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration {
+	fn from(value: Frac<T>) -> Self {
+		const NANOS_PER_SEC: usize = 1_000_000_000;
+		Self::new(
+			value.into_int_trunc().into(),
+			((value % T::one()) * T::from(NANOS_PER_SEC).unwrap()).into_int_trunc().into()
+		)
+	}
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum FracParseErr<E> {
 	#[error("Frac must be in NUM or NUM/DENOM format")] BadFormat,
@@ -172,8 +262,8 @@ impl<T: GoodInt + FromStr> FromStr for Frac<T> {
 		match s.split('/').collect_vec().as_slice() {
 			[denominator] => Ok(Frac::new(T::one(), denominator.parse::<T>()?)),
 			[numerator, denominator] => Ok(Frac::new(
-				numerator.parse::<T>()?,
-				denominator.parse::<T>()?,
+				T::from_str(numerator)?,
+				T::from_str(denominator)?,
 			)),
 			_ => Err(FracParseErr::BadFormat),
 		}
@@ -213,7 +303,7 @@ impl<T: GoodInt> Add<T> for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: T) -> Self::Output {
-		self + Frac::from(rhs)
+		self + <Self as From<T>>::from(rhs)
 	}
 }
 
@@ -244,7 +334,7 @@ impl<T: GoodInt> Sub<T> for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: T) -> Self::Output {
-		self - Frac::from(rhs)
+		self - <Self as From<T>>::from(rhs)
 	}
 }
 
@@ -275,7 +365,7 @@ impl<T: GoodInt> Mul<T> for Frac<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: T) -> Self::Output {
-		self * Self::from(rhs)
+		self * <Self as From<T>>::from(rhs)
 	}
 }
 
@@ -306,7 +396,7 @@ impl<T: GoodInt> Div<T> for Frac<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {
-		self / Self::from(rhs)
+		self / <Self as From<T>>::from(rhs)
 	}
 }
 
@@ -337,7 +427,7 @@ impl<T: GoodInt> Rem<T> for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: T) -> Self::Output {
-		self % Self::from(rhs)
+		self % <Self as From<T>>::from(rhs)
 	}
 }
 

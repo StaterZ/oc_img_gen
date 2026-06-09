@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 use deku::prelude::*;
-use szu::math::GoodInt;
+use num_traits::ConstZero;
 use triple_buffer::TripleBuffer;
 use itertools::Itertools;
 use minifb::{Key, Scale, Window, WindowOptions};
@@ -35,6 +35,20 @@ pub struct Cli {
 		help = "visualize difference from last frame",
 	)]
 	pub diff: bool,
+	
+	#[arg(
+		long = "matrix-gap-size",
+		help = "sub-pixels to skip between matrix cells, defaults to 0 to omitted",
+		conflicts_with = "matrix_screen_size",
+	)]
+	pub matrix_gap_size: Option<Size<usize>>,
+	
+	#[arg(
+		long = "matrix-screen-size",
+		help = "screen size of matrix segments, this is used to derive the matrix gap size",
+		conflicts_with = "matrix_gap_size",
+	)]
+	pub matrix_screen_size: Option<Size<usize>>,
 }
 
 pub fn play(args: Cli) -> anyhow::Result<()> {
@@ -50,18 +64,44 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 			let size = desc.content.as_video().unwrap().size.cast::<usize>();
 			let size_pixels = size * braille::SIZE;
 
+			let pos: Option<Point<isize>> = try {
+				let (x, y) = desc.name.split_once(',')?;
+				Point::new(
+					x.trim().parse().ok()?,
+					y.trim().parse().ok()?,
+				)
+			};
+
+			let scale = if pos.is_none() { Scale::FitScreen } else { Scale::X1 };
+
+			let mut window = Window::new(
+				&format!("Playing: {}", desc.name),
+				size_pixels.x,
+				size_pixels.y,
+				WindowOptions {
+					//topmost: true,
+					scale,
+					..Default::default()
+				},
+			).expect("Failed to open window");
+
+			if let Some(pos) = pos {
+				let gap_size = args.matrix_gap_size
+					.or_else(|| args.matrix_screen_size
+						.map(|matrix_screen_size| {
+							let gap = crate::encoder::cli::compute_gap_size(size_pixels, matrix_screen_size);
+							eprintln!("auto-gap: {}", gap);
+							gap
+						}))
+					.unwrap_or(Size::ZERO);
+
+				let pos = pos * (size_pixels + gap_size).cast::<isize>();
+				window.set_position(pos.x, pos.y);
+			}
+
 			VideoStream {
 				id: index as u8,
-				window: Window::new(
-					&format!("Playing: {}", desc.name),
-					size_pixels.x,
-					size_pixels.y,
-					WindowOptions {
-						//topmost: true,
-						scale: Scale::FitScreen,
-						..Default::default()
-					},
-				).expect("Failed to open window"),
+				window,
 				image: Image::new(size_pixels, 0xff00ff),
 				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(0xff00ff), RGB8::new(0xff00ff))),
 				next_frame_index: 0,
@@ -168,9 +208,6 @@ struct SoundCard {
 
 const MILIS_PER_SEC: u32 = 1_000;
 const NANOS_PER_SEC: u32 = 1_000_000_000;
-fn frac_to_duration<T: GoodInt + Into<u64>>(value: Frac<T>) -> Duration where u32: From<T> {
-	Duration::new(value.into_int_trunc().into(), value.cast::<u32>().into_int_fract(NANOS_PER_SEC))
-}
 fn clean_duration(value: Duration) -> Duration {
 	const NANOS_PER_MILI: u32 = NANOS_PER_SEC / MILIS_PER_SEC;
 	Duration::new(value.as_secs(), value.subsec_nanos() / NANOS_PER_MILI * NANOS_PER_MILI)
@@ -186,7 +223,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	let num_packets = state.file.stream_descs.iter().map(|desc| desc.num_packets as usize).sum();
 	println!("t:{}/{}, p:{}/{}",
 		humantime::Duration::from(clean_duration(elapsed)),
-		humantime::Duration::from(clean_duration(frac_to_duration(Frac::from(vis_desc.num_packets) * vis_desc.rate.cast::<u32>()))),
+		humantime::Duration::from(clean_duration((Frac::from(vis_desc.num_packets) * vis_desc.rate.cast::<u32>()).into())),
 		state.next_packet_index,
 		num_packets
 	);

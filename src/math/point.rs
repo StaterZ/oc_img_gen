@@ -1,6 +1,6 @@
 use std::{fmt::Display, ops::*, str::FromStr};
 use deku::{no_std_io, prelude::*};
-use num::{NumCast, Unsigned};
+use num::NumCast;
 use num_traits::{ConstZero, Zero};
 use szu::math::GoodNum;
 
@@ -121,7 +121,7 @@ impl<T: GoodNum> Sub for Point<T> {
 	}
 }
 
-impl<T: GoodNum + From<U>, U: GoodNum + Unsigned> Mul<Size<U>> for Point<T> {
+impl<T: GoodNum + From<U>, U: GoodNum> Mul<Size<U>> for Point<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: Size<U>) -> Self::Output {

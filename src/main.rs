@@ -9,6 +9,7 @@
 #![feature(exact_size_is_empty)]
 #![feature(stmt_expr_attributes)]
 #![feature(specialization)]
+#![feature(try_blocks)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 #![allow(incomplete_features)]

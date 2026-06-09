@@ -269,9 +269,9 @@ dependencies = [
 
 [[package]]
 name = "charts-rs"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a4df8e1cdd47ef42f836d16e77d707c7e9078e2f46c04d070fc69537781b15a"
+checksum = "6a842d6bba200c9d6706a74e7c0d0b9968c6a95e510dc73ac3d30630e9f45540"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -288,9 +288,9 @@ dependencies = [
 
 [[package]]
 name = "charts-rs-derive"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c4ce922702a7e6974cdc946cab43ec0ed524293e67e0aec8b1d012794da4830"
+checksum = "313cbdf141badb90d538e6ff2a44f9064f71de280148274c2ebc62a21b7b90a7"
 dependencies = [
  "quote",
  "syn",

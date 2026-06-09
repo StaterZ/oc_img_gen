@@ -2,6 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use itertools::Itertools;
 use all_asserts::*;
+use num_traits::ConstZero;
 
 use crate::math::*;
 use super::{
@@ -82,20 +83,25 @@ impl<T: Copy> Image<T> {
 		}
 	}
 
-	pub fn resize(&self, size: Size<usize>, fill: T) -> Self {
-		let mut buffer = vec![fill; size.area()];
-		for y in 0..self.size.y.min(size.y) {
-			for x in 0..self.size.x.min(size.x) {
-				let old_index = y * self.size.x + x;
-				let new_index = y * size.x + x;
-				buffer[new_index] = self.buffer[old_index];
+	pub fn resize(&self, size: Size<usize>, fill: T, anchor: Point<Frac<isize>>) -> Self {
+		let delta = (size.cast::<isize>() - self.size.cast::<isize>()).cast::<Frac<isize>>();
+		let offset = Point::new( //TODO: blegh!
+			(anchor.x * delta.x).into_int_round(),
+			(anchor.y * delta.y).into_int_round(),
+		);
+		
+		let mut new = Self::new(size, fill);
+		let rect = Rect::new(Point::ZERO, new.size.cast());
+		for y in 0..self.size.y {
+			for x in 0..self.size.x {
+				let old_pos = Point::new(x, y);
+				let new_pos = old_pos.cast::<isize>() + offset;
+				if !rect.contains(new_pos) { continue; }
+
+				new[new_pos.cast()] = self[old_pos];
 			}
 		}
-
-		Self {
-			size,
-			buffer,
-		}
+		new
 	}
 }
 
