@@ -126,8 +126,8 @@ impl<T: GoodNum + From<U>, U: GoodNum> Mul<Size<U>> for Point<T> {
 
 	fn mul(self, rhs: Size<U>) -> Self::Output {
 		Self {
-			x: self.x * rhs.x.into(),
-			y: self.y * rhs.y.into(),
+			x: self.x * rhs.w.into(),
+			y: self.y * rhs.h.into(),
 		}
 	}
 }

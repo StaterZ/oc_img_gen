@@ -20,12 +20,8 @@
 				}
 			},
 			"args": [
-				"encode",
-				"-i=data/bad-apple.mp4",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt",
-				"--mode=single",
-				"--filter=monochrome",
-				"-f=1"
+				"play",
+				"-i=data/potomy.szt",
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -46,12 +42,8 @@
 				}
 			},
 			"args": [
-				"encode",
-				"-i=data/bad-apple.mp4",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt",
-				"--mode=single",
-				"--filter=monochrome",
-				"-f=1"
+				"play",
+				"-i=data/potomy.szt",
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -61,12 +53,8 @@
 			"request": "launch",
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
-				"encode",
-				"-i=data/bad-apple.mp4",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt",
-				"--mode=single",
-				"--filter=monochrome",
-				"-f=1"
+				"play",
+				"-i=data/potomy.szt",
 			],
 			"cwd": "${workspaceFolder}",
 		}

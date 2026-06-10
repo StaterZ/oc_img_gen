@@ -51,6 +51,34 @@ pub struct Cli {
 	pub matrix_screen_size: Option<Size<usize>>,
 }
 
+fn remove_title_bar(window: &Window) {
+	use windows::Win32::Foundation::HWND;
+	use windows::Win32::UI::WindowsAndMessaging::{
+		GetWindowLongW, SetWindowLongW, SetWindowPos,
+		GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOZORDER,
+		WS_CAPTION, WS_THICKFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX, WS_SYSMENU, HWND_TOP
+	};
+
+	unsafe {
+		let hwnd = HWND(window.get_window_handle() as *mut std::ffi::c_void);
+
+		let style = GetWindowLongW(hwnd, GWL_STYLE);
+		let remove = (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU).0 as i32;
+		SetWindowLongW(hwnd, GWL_STYLE, style & !remove);
+
+		let size = window.get_size();
+		println!("{:?}", size);
+		SetWindowPos(
+			hwnd,
+			HWND_TOP,
+			0, 0,
+			size.0 as i32,
+			size.1 as i32,
+			SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED,
+		).unwrap();
+	}
+}
+
 pub fn play(args: Cli) -> anyhow::Result<()> {
 	let file = std::fs::read(&args.in_path)?;
 	let file = MediaFile::from_bytes((file.as_slice(), 0))?.1;
@@ -76,15 +104,19 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 			let mut window = Window::new(
 				&format!("Playing: {}", desc.name),
-				size_pixels.x,
-				size_pixels.y,
+				size_pixels.w,
+				size_pixels.h,
 				WindowOptions {
-					borderless: true,
+					resize: false,
 					//topmost: true,
 					scale,
 					..Default::default()
 				},
 			).expect("Failed to open window");
+
+			if file.header.num_streams > 1 {
+				remove_title_bar(&window);
+			}
 
 			if let Some(pos) = pos {
 				let gap_size = args.matrix_gap_size
@@ -149,7 +181,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let channels = config.channels() as usize;
 	let mut voice_phases = vec![0.0; voices_out.output_buffer().len()];
 	let stream = device.build_output_stream(
-		&config.into(),
+		config.into(),
 		move |data: &mut [f32], _| {
 			for frame in data.chunks_exact_mut(channels) {
 				let mut sample = 0.0;
@@ -178,8 +210,8 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 			video_stream.window
 				.update_with_buffer(
 					&video_stream.image.buffer(),
-					video_stream.image.size().x,
-					video_stream.image.size().y
+					video_stream.image.size().w,
+					video_stream.image.size().h
 				).expect("Failed to update window");
 		}
 	}

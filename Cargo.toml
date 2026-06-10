@@ -50,7 +50,11 @@ realfft = "3"
 
 #player
 minifb = { version = "0.28.0", git = "https://github.com/emoon/rust_minifb", branch = "master" }
-cpal = { version = "0.17.3" }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+]}
+cpal = { version = "0.18.1" }
 triple_buffer = { version = "9.0.0" }
 rand = "0.10.1"
 

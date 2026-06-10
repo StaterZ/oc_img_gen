@@ -32,7 +32,7 @@ impl Machine {
 	}
 
 	pub fn compute_max_resolution(&self, ratio: Frac<usize>) -> Size<usize> {
-		Self::compute_max_resolution_impl(ratio, self.max_screen_size.area(), self.max_screen_size.x)
+		Self::compute_max_resolution_impl(ratio, self.max_screen_size.area(), self.max_screen_size.w)
 	}
 
 	fn compute_max_resolution_impl(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {

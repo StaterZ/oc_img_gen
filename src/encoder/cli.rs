@@ -156,8 +156,8 @@ fn create_matrix_streams(
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 
-	let stream_descs_data = (0..matrix_size.y)
-		.flat_map(move |y| (0..matrix_size.x)
+	let stream_descs_data = (0..matrix_size.h)
+		.flat_map(move |y| (0..matrix_size.w)
 			.map(move |x| VideoDescData {
 				name: format!("{},{}", x, y),
 				frame_rate,

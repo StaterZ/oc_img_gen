@@ -17,7 +17,7 @@ impl<T: GoodNum> Rect<T> {
 	}
 
 	pub fn contains(&self, point: Point<T>) -> bool {
-		(self.pos.x..self.pos.x + self.size.x).contains(&point.x) &&
-		(self.pos.y..self.pos.y + self.size.y).contains(&point.y)
+		(self.pos.x..self.pos.x + self.size.w).contains(&point.x) &&
+		(self.pos.y..self.pos.y + self.size.h).contains(&point.y)
 	}
 }

@@ -25,7 +25,7 @@ fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {
 			.iter()
 			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
 			.collect_vec(),
-		img.size().x,
-		img.size().y,
+		img.size().w,
+		img.size().h,
 	).unwrap()).unwrap();
 }

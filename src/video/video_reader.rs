@@ -109,11 +109,11 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 
 		let scaler = Scaler::get(
 			reader_data.decoder.format(),
-			content_size.x as u32,
-			content_size.y as u32,
+			content_size.w as u32,
+			content_size.h as u32,
 			ffmpeg_next::util::format::Pixel::RGB24,
-			fit_size.x as u32,
-			fit_size.y as u32,
+			fit_size.w as u32,
+			fit_size.h as u32,
 			ffmpeg_next::software::scaling::Flags::BILINEAR,
 		).unwrap();
 
