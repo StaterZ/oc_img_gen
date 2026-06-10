@@ -84,6 +84,11 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let file = MediaFile::from_bytes((file.as_slice(), 0))?.1;
 	anyhow::ensure!(file.header.version == FORMAT_VERSION);
 	
+	let num_video_streams = file.stream_descs
+		.iter()
+		.filter(|desc| desc.content.is_video())
+		.count();
+
 	let video_streams = file.stream_descs
 		.iter()
 		.enumerate()
@@ -114,7 +119,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				},
 			).expect("Failed to open window");
 
-			if file.header.num_streams > 1 {
+			if num_video_streams > 1 {
 				remove_title_bar(&window);
 			}
 
