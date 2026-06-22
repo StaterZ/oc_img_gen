@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::{Path, PathBuf}, time::Duration};
 use deku::prelude::*;
 use num_traits::ConstZero;
 use triple_buffer::TripleBuffer;
@@ -8,16 +8,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use clap::Parser;
 
 use crate::{
-	FORMAT_VERSION,
-	math::*,
-	encoder::media_container::{MediaFile, PacketContent},
-	audio::{packet::Sample, VoiceStateFlt},
-	video::{
-		Image,
-		braille::{self, Braille},
-		cmd::packet::{Command, CommandKind, Frame},
-		oc_color::{RGB8, formatters::{Formatter, HybridFormatter}},
-	},
+	FORMAT_VERSION, audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::{
+		Image, ImageIterator, braille::{self, Braille}, cmd::packet::{Command, CommandKind, Frame}, oc_color::{RGB8, formatters::{Formatter, HybridFormatter}}
+	}
 };
 
 #[derive(Parser, Debug)]
@@ -35,6 +28,13 @@ pub struct Cli {
 		help = "visualize difference from last frame",
 	)]
 	pub diff: bool,
+
+	#[arg(
+		short = 'e',
+		long = "export",
+		help = "write frames to file",
+	)]
+	pub export: bool,
 	
 	#[arg(
 		long = "matrix-gap-size",
@@ -70,7 +70,7 @@ fn remove_title_bar(window: &Window) {
 		println!("{:?}", size);
 		SetWindowPos(
 			hwnd,
-			HWND_TOP,
+			Some(HWND_TOP),
 			0, 0,
 			size.0 as i32,
 			size.1 as i32,
@@ -84,6 +84,11 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let file = MediaFile::from_bytes((file.as_slice(), 0))?.1;
 	anyhow::ensure!(file.header.version == FORMAT_VERSION);
 	
+	if file.header.num_streams == 0 {
+		println!("No streams");
+		return Ok(());
+	}
+
 	let num_video_streams = file.stream_descs
 		.iter()
 		.filter(|desc| desc.content.is_video())
@@ -137,11 +142,12 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				window.set_position(pos.x, pos.y);
 			}
 
+			let init_color = 0xff00ff;
 			VideoStream {
 				id: index as u8,
 				window,
-				image: Image::new(size_pixels, 0xff00ff),
-				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(0xff00ff), RGB8::new(0xff00ff))),
+				image: Image::new(size_pixels, init_color),
+				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(init_color), RGB8::new(init_color))),
 				next_frame_index: 0,
 			}
 		})
@@ -178,7 +184,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	};
 
 	// ── Audio ─────────────────────────────────────────────────
-	let host   = cpal::default_host();
+	let host = cpal::default_host();
 	let device = host.default_output_device().expect("No audio output device");
 	let config = device.default_output_config().expect("No default output config");
 
@@ -214,7 +220,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 			video_stream.window
 				.update_with_buffer(
-					&video_stream.image.buffer(),
+					video_stream.image.buffer(),
 					video_stream.image.size().w,
 					video_stream.image.size().h
 				).expect("Failed to update window");
@@ -256,12 +262,16 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 
 	let elapsed = state.timer.elapsed();
 	let present_time = Frac::from(elapsed.as_secs()) + Frac::new(elapsed.subsec_nanos(), NANOS_PER_SEC).cast();
-	
-	let vis_desc = &state.file.stream_descs[0];
 	let num_packets = state.file.stream_descs.iter().map(|desc| desc.num_packets as usize).sum();
+	
+	let length = &state.file.stream_descs
+		.iter()
+		.map(|desc| (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into())
+		.max()
+		.unwrap_or(Duration::ZERO);
 	println!("t:{}/{}, p:{}/{}",
 		humantime::Duration::from(clean_duration(elapsed)),
-		humantime::Duration::from(clean_duration((Frac::from(vis_desc.num_packets) * vis_desc.rate.cast::<u32>()).into())),
+		humantime::Duration::from(clean_duration(*length)),
 		state.next_packet_index,
 		num_packets
 	);
@@ -288,6 +298,18 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 					}
 				}
 				stream.draw_packet(&mut state.gpu, args, frame)?;
+
+				if args.export {
+					let path = format!("{}_{}_{}.png",
+						stem(&args.in_path).unwrap(),
+						desc.name,
+						stream.next_frame_index - 1,
+					);
+					println!("{}", path);
+					write_image(path, stream.image
+						.iter()
+						.map(|p| RGB8::new(*p)))?;
+				}
 			},
 			PacketContent::Audio(sample) if Some(packet.stream_id) == state.audio_stream.as_ref().map(|audio_stream| audio_stream.id) => {
 				if let Some(stream) = &mut state.audio_stream {
@@ -400,4 +422,24 @@ impl AudioStream {
 		}
 		Ok(())
 	}
+}
+
+fn write_image(path: impl AsRef<Path>, img: ImageIterator<impl Iterator<Item = RGB8>>) -> anyhow::Result<()> {
+	let img = img
+		.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
+		.collect();
+	Ok(lodepng::encode24_file(
+		path,
+		img.buffer(),
+		img.size().w,
+		img.size().h,
+	)?)
+}
+
+fn stem(path: &Path) -> Option<&str> {
+	let path_str = path.to_str()?;
+	Some(match path.extension() {
+		Some(ext) => &path_str[..path_str.len() - ext.len() - 1],
+		None => path_str,
+	})
 }

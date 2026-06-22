@@ -255,16 +255,16 @@ impl<'a> VideoEncoder<'a> {
 
 			let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
 			gpu_chart.x_axis_data.push(timestamp.clone());
-			gpu_chart.series_list[0].data.push(gpu_budget.into_flt());
-			gpu_chart.series_list[1].data.push(gpu_cost.into_flt());
-			gpu_chart.series_list[2].data.push(stats.get_set_color_cost(&self.machine).into_flt());
-			gpu_chart.series_list[3].data.push(stats.get_set_cost(&self.machine).into_flt());
-			gpu_chart.series_list[4].data.push(stats.get_bitblt_cost(&self.machine).into_flt());
+			gpu_chart.series_list[0].data.push(Some(gpu_budget.into_flt()));
+			gpu_chart.series_list[1].data.push(Some(gpu_cost.into_flt()));
+			gpu_chart.series_list[2].data.push(Some(stats.get_set_color_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[3].data.push(Some(stats.get_set_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[4].data.push(Some(stats.get_bitblt_cost(&self.machine).into_flt()));
 
 			let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
 			cpu_chart.x_axis_data.push(timestamp.clone());
-			cpu_chart.series_list[0].data.push(cpu_budget.into_flt());
-			cpu_chart.series_list[1].data.push(cpu_cost.into_flt());
+			cpu_chart.series_list[0].data.push(Some(cpu_budget.into_flt()));
+			cpu_chart.series_list[1].data.push(Some(cpu_cost.into_flt()));
 		}
 
 		let frame = if self.budget == None || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {

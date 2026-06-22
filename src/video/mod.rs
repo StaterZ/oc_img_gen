@@ -7,25 +7,3 @@ pub mod braille;
 pub mod cmd;
 mod image;
 mod image_iter;
-
-#[cfg(feature = "debug-mode")]
-use std::path::Path;
-#[cfg(feature = "debug-mode")]
-use itertools::Itertools;
-
-#[cfg(feature = "debug-mode")]
-use crate::video::oc_color::RGB8;
-
-
-#[cfg(feature = "debug-mode")]
-fn write_image(path: impl AsRef<Path>, img: &Image<RGB8>) {
-	std::fs::write(path, lodepng::encode24(
-		&img
-			.buffer()
-			.iter()
-			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
-			.collect_vec(),
-		img.size().w,
-		img.size().h,
-	).unwrap()).unwrap();
-}

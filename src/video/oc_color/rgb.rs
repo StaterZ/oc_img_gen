@@ -158,7 +158,9 @@ impl RGB8 {
 	}
 
 	pub const fn value(&self) -> u32 {
-		(self.r as u32) << Self::R_SHIFT | (self.g as u32) << Self::G_SHIFT | (self.b as u32) << Self::B_SHIFT
+		(self.r as u32) << Self::R_SHIFT |
+		(self.g as u32) << Self::G_SHIFT |
+		(self.b as u32) << Self::B_SHIFT
 	}
 
 	#[inline]

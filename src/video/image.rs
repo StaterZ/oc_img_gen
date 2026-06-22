@@ -146,7 +146,6 @@ impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
 	}
 }
 
-#[cfg(feature = "debug-mode")]
 impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
 	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
 		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
@@ -159,7 +158,7 @@ impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
 		}
 	}
 }
-#[cfg(feature = "debug-mode")]
+
 impl From<Image<RGB8>> for lodepng::Bitmap<lodepng::RGB<u8>> {
 	fn from(value: Image<RGB8>) -> lodepng::Bitmap<lodepng::RGB<u8>> {
 		Self {
