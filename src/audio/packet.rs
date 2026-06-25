@@ -34,12 +34,12 @@ pub struct Descriptor {
 
 pub struct AudioEncoder {
 	pub desc: StreamDescriptor<Descriptor>,
-	stream_id: u8,
+	stream_id: u16,
 	pub samples: VecDeque<Sample>,
 }
 
 impl AudioEncoder {
-	pub fn new(desc: StreamDescriptor<Descriptor>, stream_id: u8) -> Self {
+	pub fn new(desc: StreamDescriptor<Descriptor>, stream_id: u16) -> Self {
 		Self {
 			desc,
 			stream_id,

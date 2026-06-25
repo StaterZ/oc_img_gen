@@ -18,8 +18,8 @@ impl Muxer {
 		}
 	}
 
-	pub fn create_stream(&mut self, desc: Descriptor<DescriptorContent>) -> u8 {
-		let stream_id = self.output.stream_descs.len() as u8;
+	pub fn create_stream(&mut self, desc: Descriptor<DescriptorContent>) -> u16 {
+		let stream_id = self.output.stream_descs.len() as u16;
 		self.output.stream_descs.push(desc);
 		stream_id
 	}

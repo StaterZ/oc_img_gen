@@ -53,7 +53,7 @@ impl DescriptorContent {
 #[derive(DekuWrite, DekuRead)]
 #[deku(ctx = "stream_descs: &[Descriptor<DescriptorContent>]")]
 pub struct Packet {
-	#[deku(endian = "little")] pub stream_id: u8,
+	#[deku(endian = "little")] pub stream_id: u16,
 	#[deku(ctx = "&stream_descs[*stream_id as usize]")] pub content: PacketContent,
 }
 

@@ -144,7 +144,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 			let init_color = 0xff00ff;
 			VideoStream {
-				id: index as u8,
+				id: index as u16,
 				window,
 				image: Image::new(size_pixels, init_color),
 				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(init_color), RGB8::new(init_color))),
@@ -159,7 +159,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		.filter(|(_, desc)| desc.content.is_audio())
 		.next()
 		.map(|(id, _)| AudioStream {
-			id: id as u8,
+			id: id as u16,
 			next_frame_index: 0,
 		});
 
@@ -338,7 +338,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 }
 
 struct VideoStream {
-	id: u8,
+	id: u16,
 	window: Window,
 	image: Image<u32>,
 	diff_image: Image<Braille<RGB8>>,
@@ -431,7 +431,7 @@ impl VideoStream {
 }
 
 struct AudioStream {
-	id: u8,
+	id: u16,
 	next_frame_index: u64,
 }
 impl AudioStream {

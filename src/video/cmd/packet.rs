@@ -95,7 +95,7 @@ pub struct Descriptor {
 
 pub struct VideoEncoder<'a> {
 	pub desc: StreamDescriptor<Descriptor>,
-	stream_id: u8,
+	stream_id: u16,
 	source_area: Rect<usize>,
 	frames: VecDeque<Frame>,
 	prev_frame: Option<TermFrame>,
@@ -110,7 +110,7 @@ pub struct VideoEncoder<'a> {
 impl<'a> VideoEncoder<'a> {
 	pub fn new(
 		desc: StreamDescriptor<Descriptor>,
-		stream_id: u8,
+		stream_id: u16,
 		source_area: Rect<usize>,
 		filter: Option<VideoFilter>,
 		budget: Option<Budget>,
