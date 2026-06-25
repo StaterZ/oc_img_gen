@@ -1,5 +1,5 @@
 use std::{fmt::Display, ops::*, str::FromStr, time::Duration,};
-use deku::{no_std_io, prelude::*};
+use deku::prelude::*;
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
 use num::{Num, NumCast, Signed, ToPrimitive};
@@ -205,7 +205,7 @@ impl<T: GoodInt + Display> Display for Frac<T> {
 
 impl<T: GoodInt + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
 	#[doc = "Write type to bytes"]
-	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
+	fn to_writer<W: deku::no_std_io::Write + deku::no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.numerator.to_writer(writer, ctx)?;
 		self.denominator.to_writer(writer, ctx)?;
 		Ok(())
@@ -213,7 +213,7 @@ impl<T: GoodInt + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
 }
 
 impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Frac<T> {
-	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
+	fn from_reader_with_ctx<R: deku::no_std_io::Read + deku::no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
 		Ok(Self {
 			numerator: T::from_reader_with_ctx(reader, ctx)?,
 			denominator: T::from_reader_with_ctx(reader, ctx)?,
@@ -239,12 +239,13 @@ impl From<ffmpeg_next::Rational> for Frac<i32> {
 	}
 }
 
-impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration {
+impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration where u128: From<T> {
 	fn from(value: Frac<T>) -> Self {
-		const NANOS_PER_SEC: usize = 1_000_000_000;
+		const NANOS_PER_SEC: u128 = 1_000_000_000;
+		let ns = ((value % T::one()).cast::<u128>() * <Frac<u128> as From<u128>>::from(NANOS_PER_SEC)).into_int_trunc() as u32;
 		Self::new(
 			value.into_int_trunc().into(),
-			((value % T::one()) * T::from(NANOS_PER_SEC).unwrap()).into_int_trunc().into()
+			ns,
 		)
 	}
 }

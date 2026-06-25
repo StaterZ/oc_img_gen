@@ -8,6 +8,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 #![allow(incomplete_features)]
+#![allow(unused_features)]
 
 use std::io::Write;
 use indicatif::ProgressStyle;

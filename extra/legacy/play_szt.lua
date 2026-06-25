@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.3"
+local version = "2.2"
 
 local linear_stream = {}
 do
@@ -136,7 +136,7 @@ end
 
 local szt = {
 	magic = "sztb",
-	version = 6,
+	version = 5,
 }
 
 local args, ops = shell.parse(...)
@@ -144,6 +144,7 @@ ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
+ops.color_check = ops["color-check"]
 
 local video = {}
 do
@@ -189,22 +190,16 @@ do
 		0xff0000, 0xff0040, 0xff0080, 0xff00c0, 0xff00ff,  0xff2400, 0xff2440, 0xff2480, 0xff24c0, 0xff24ff,  0xff4900, 0xff4940, 0xff4980, 0xff49c0, 0xff49ff,  0xff6d00, 0xff6d40, 0xff6d80, 0xff6dc0, 0xff6dff,  0xff9200, 0xff9240, 0xff9280, 0xff92c0, 0xff92ff,  0xffb600, 0xffb640, 0xffb680, 0xffb6c0, 0xffb6ff,  0xffdb00, 0xffdb40, 0xffdb80, 0xffdbc0, 0xffdbff,  0xffff00, 0xffff40, 0xffff80, 0xffffc0, 0xffffff,
 	}
 	
-	local concat_buffer = {}
+	local chars = {}
 	local function gv_raw(file, len) return file:read(len) end
-	local function gv_braille(file, len, is_rle)
-		if is_rle then
-			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file)):rep(read_u8(file))
-			end
-		else
-			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file))
-			end
+	local function gv_braille(file, len)
+		for i = 1, len do
+			chars[i] = unicode.char(0x2800 + read_u8(file))
 		end
-		for j = len + 1, #concat_buffer do
-			concat_buffer[j] = nil
+		for j = len + 1, #chars do
+			chars[j] = nil
 		end
-		return table.concat(concat_buffer)
+		return table.concat(chars)
 	end
 
 	local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
@@ -222,6 +217,12 @@ do
 			get_value = function(file, len)
 				file:read(len) --more efficient than seek
 				gpu.setBackground(math.random(0xffffff))
+				return (" "):rep(len)
+			end
+		elseif ops.color_check then
+			get_value = function(file, len, i)
+				file:read(len) --more efficient than seek
+				gpu.setBackground((i==0 and 0x010101 or i==1 and 0x000100 or 0x010000)*math.max(1, math.ceil(math.ceil(len*8/0x40)/8*0xff)))
 				return (" "):rep(len)
 			end
 		end
@@ -243,16 +244,11 @@ do
 				gpu.setForeground(lut[read_u8(file) + 1])
 				i = i + 1
 			end
-			local is_rle = len >= 0x40
-			if is_rle then
-				len = len - 0x40
-			end
 
 			len = len + 1
 			x = read_u8(file)
 			y = read_u8(file)
 			gpu.set(x + pos_x, y + pos_y, get_value(file, len, i-q))
-			len = is_rle and len*2 or len
 			i = i + 3 + len
 			command_count = command_count + 1
 		end
@@ -669,6 +665,7 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
+	print("   --color-check", "debug the colors")
 	return
 end
 if ops.v or ops.version then

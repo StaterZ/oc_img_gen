@@ -10,7 +10,7 @@
 				//"--features=debug-mode",
 				"--",
 				"play",
-				"-i=data/bad-apple.szt",
+				"-i=data/kill_v_maim.szt",
 				"--matrix-screen-size=4x4"
 			],
 			"problemMatcher": [

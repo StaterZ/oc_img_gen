@@ -9,7 +9,7 @@ use clap::Parser;
 
 use crate::{
 	FORMAT_VERSION, audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::{
-		Image, ImageIterator, braille::{self, Braille}, cmd::packet::{Command, CommandKind, Frame}, oc_color::{RGB8, formatters::{Formatter, HybridFormatter}}
+		Image, ImageIterator, braille::{self, Braille}, cmd::packet::{Command, CommandData, CommandKind, Frame}, oc_color::{RGB8, formatters::{Formatter, HybridFormatter}}
 	}
 };
 
@@ -269,6 +269,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 		.map(|desc| (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into())
 		.max()
 		.unwrap_or(Duration::ZERO);
+	
 	println!("t:{}/{}, p:{}/{}",
 		humantime::Duration::from(clean_duration(elapsed)),
 		humantime::Duration::from(clean_duration(*length)),
@@ -360,35 +361,58 @@ impl VideoStream {
 						gpu.foreground_color = gpu.formatter.inflate(foreground);
 					}
 					
-					//let rng_color = rand::random_range(0x000000..=0xffffff);
-					for	(char_offset, braille) in command.braille.iter().enumerate() {
-						let braille = Braille::with_index(
-							*braille,
-							gpu.background_color,
-							gpu.foreground_color,
-						);
-						let pos = command.pos.cast::<usize>() + Point::new(char_offset, 0);
-						if args.diff && self.next_frame_index > 1 && self.diff_image[pos] == braille {
-							// if !(1..command.braille.len()).contains(&char_offset) {
-							// 	let x = self.diff_image[pos];
-							// }
-							//debug_assert_range!(1..command.braille.len(), char_offset);
-							self.draw_braille(pos, &Braille::with_index(0, 0x008000, 0x00ff00));
-							continue;
-						}
-						
-						self.diff_image[pos] = braille;
-						// self.draw_braille(pos, &Braille::with_index(0, rng_color, rng_color));
-						// continue;
-						
-						self.draw_braille(pos, &braille.map(|c| c.value()));
-					}
+					let pos = command.pos.cast::<usize>();
+					match command.data {
+						CommandData::Raw(braille) => self.draw_braille_line(
+							pos,
+							braille
+								.iter()
+								.map(|i| Braille::with_index(
+									*i,
+									gpu.background_color,
+									gpu.foreground_color,
+								)),
+							args,
+						),
+						CommandData::Rle(runs) => self.draw_braille_line(
+							pos,
+							runs
+								.iter()
+								.map(|run| run.map::<_, u8>(|i| Braille::with_index(
+									i,
+									gpu.background_color,
+									gpu.foreground_color,
+								)))
+								.flatten(),
+							args,
+						),
+					};
 				}
 			},
 		}
 		Ok(())
 	}
 
+	fn draw_braille_line(&mut self, pos: Point<usize>, braille: impl Iterator<Item = Braille<RGB8>>, args: &Cli) {
+		for (char_offset, braille) in braille.enumerate() {
+			let pos = pos + Point::new(char_offset, 0);
+			if args.diff && self.next_frame_index > 1 && self.diff_image[pos] == braille {
+				// if !(1..command.braille.len()).contains(&char_offset) {
+				// 	let x = self.diff_image[pos];
+				// }
+				//debug_assert_range!(1..command.braille.len(), char_offset);
+				self.draw_braille(pos, &Braille::with_index(0, 0x008000, 0x00ff00));
+				continue;
+			}
+			
+			self.diff_image[pos] = braille;
+			// self.draw_braille(pos, &Braille::with_index(0, rng_color, rng_color));
+			// continue;
+			
+			self.draw_braille(pos, &braille.map(|c| c.value()));
+		};
+	}
+	
 	fn draw_braille(&mut self, pos: Point<usize>, braille: &Braille<u32>) {
 		for (y, row) in braille
 			.raster()

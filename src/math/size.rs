@@ -1,5 +1,5 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
-use deku::{no_std_io, prelude::*};
+use deku::prelude::*;
 use num::NumCast;
 use num_traits::{ConstZero, ConstOne, Zero, One};
 use szu::math::{GoodInt, GoodNum};
@@ -126,7 +126,7 @@ impl<T: GoodNum + Display> Display for Size<T> {
 }
 
 impl<Ctx: Copy, T: GoodNum + DekuWriter<Ctx>> DekuWriter<Ctx> for Size<T> {
-	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
+	fn to_writer<W: deku::no_std_io::Write + deku::no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
 		self.w.to_writer(writer, ctx)?;
 		self.h.to_writer(writer, ctx)?;
 		Ok(())
@@ -134,7 +134,7 @@ impl<Ctx: Copy, T: GoodNum + DekuWriter<Ctx>> DekuWriter<Ctx> for Size<T> {
 }
 
 impl<'a, Ctx: Copy, T: GoodNum + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Size<T> {
-	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
+	fn from_reader_with_ctx<R: deku::no_std_io::Read + deku::no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
 		Ok(Self {
 			w: T::from_reader_with_ctx(reader, ctx)?,
 			h: T::from_reader_with_ctx(reader, ctx)?,

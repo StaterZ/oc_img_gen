@@ -21,7 +21,7 @@
 			},
 			"args": [
 				"play",
-				"-i=data/potomy.szt",
+				"-i=data/kill_v_maim.szt",
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -43,7 +43,7 @@
 			},
 			"args": [
 				"play",
-				"-i=data/potomy.szt",
+				"-i=data/kill_v_maim.szt",
 			],
 			"cwd": "${workspaceFolder}"
 		},
@@ -54,7 +54,7 @@
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
 			"args": [
 				"play",
-				"-i=data/potomy.szt",
+				"-i=data/kill_v_maim.szt",
 			],
 			"cwd": "${workspaceFolder}",
 		}

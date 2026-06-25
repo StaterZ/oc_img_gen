@@ -48,7 +48,7 @@ impl Muxer {
 			self.output.stream_descs[packet.stream_id as usize].num_packets += 1;
 			self.output.packets.push(packet);
 		}
-		self.output.header.num_streams = self.output.stream_descs.len() as u8;
+		self.output.header.num_streams = self.output.stream_descs.len() as u16;
 		self.output
 	}
 }

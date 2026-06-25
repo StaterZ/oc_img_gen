@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
 use num_traits::ConstZero;
+use szu::iter::RleRun;
 
 use crate::math::*;
 use crate::encoder::{
@@ -36,21 +37,46 @@ pub enum CommandKind {
 pub struct CommandFlags {
 	#[deku(bits = 1)] pub has_background: bool,
 	#[deku(bits = 1)] pub has_foreground: bool,
-	#[deku(bits = 6)] pub len: u8,
+	#[deku(bits = 1)] pub is_rle: bool,
+	#[deku(bits = 5)] pub len: u8,
 }
 
 #[derive(Debug, DekuWrite, DekuRead)]
 pub struct Command {
+	#[deku(update = "CommandFlags {
+		has_background: self.background.is_some(),
+		has_foreground: self.foreground.is_some(),
+		is_rle: matches!(self.data, CommandData::Rle(_)),
+		len: self.data.len() as u8,
+	}")]
 	pub flags: CommandFlags,
 	#[deku(cond = "flags.has_background")] pub background: Option<PackedColor>,
 	#[deku(cond = "flags.has_foreground")] pub foreground: Option<PackedColor>,
 	pub pos: Point<u8>,
-	#[deku(count = "flags.len + 1")]
-	pub braille: Vec<u8>,
+	#[deku(ctx = "&flags")]
+	pub data: CommandData,
+}
+
+#[derive(Debug, DekuWrite, DekuRead)]
+#[deku(ctx = "flags: &CommandFlags", id = "flags.is_rle")]
+pub enum CommandData {
+	#[deku(id = false)]
+	Raw(#[deku(count = "flags.len + 1")] Vec<u8>),
+	#[deku(id = true)]
+	Rle(#[deku(count = "flags.len + 1")] Vec<RleRun<u8, u8>>),
+}
+
+impl CommandData {
+	pub fn len(&self) -> usize {
+		match self {
+			CommandData::Raw(items) => items.len(),
+			CommandData::Rle(runs) => runs.len(),
+		}
+	}
 }
 
 impl Command {
-	pub const MAX_COMMAND_BYTES: usize = 1 << (8 - 2);
+	pub const MAX_BRAILLE_COUNT: usize = 1 << (8 - 3);
 }
 
 #[derive(DekuWrite, DekuRead)]
@@ -228,7 +254,7 @@ impl<'a> VideoEncoder<'a> {
 
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u64>, formatter: &impl Formatter) {
 		let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
-		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref(), Command::MAX_COMMAND_BYTES, acceptable_loss, formatter); //todo: acceptable_loss treated as loss here
+		batcher::draw(&mut renderer, &frame, self.prev_frame.as_ref(), Command::MAX_BRAILLE_COUNT, acceptable_loss, formatter); //todo: acceptable_loss treated as loss here
 		let renderer = renderer.into_inner();
 		let mut stats = renderer.get_stats();
 		let gpu_cost = match self.budget {

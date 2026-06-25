@@ -27,7 +27,7 @@ deku_string = { version = "0.4.1-0", git = "https://github.com/eirtools/deku_str
 lazy_static = "1.5.0"
 num-traits = "0.2.19"
 enum-as-inner = "0.7.0"
-phf = { version = "0.13.1", features = ["macros"] }
+phf = { version = "0.14.0", features = ["macros"] }
 lapjv = "0.3.0"
 num = "0.4.3"
 rayon = { version = "1.12.0", optional = true }
@@ -37,7 +37,7 @@ palette = "0.7.6"
 #error handling
 anyhow = "1.0.102"
 thiserror = "2.0.18"
-all_asserts = "2.3.3"
+all_asserts = "2.3.4"
 
 #loading
 ffmpeg-next = { version = "8.1.0", features = ["software-resampling"] }
