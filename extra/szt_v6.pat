@@ -96,7 +96,7 @@ struct Desc {
 struct Header {
 	char magic[4];
 	u16 version;
-	u16 num_streams;
+	u8 num_streams;
 	
 	std::assert(magic == "sztb", "bad magic");
 	std::assert(version == 6, "bad version");

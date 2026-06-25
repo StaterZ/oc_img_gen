@@ -68,7 +68,7 @@ pub enum PacketContent {
 #[deku(endian = "little", magic = b"sztb")]
 pub struct Header {
 	pub version: u16,
-	pub num_streams: u16,
+	pub num_streams: u8,
 }
 
 #[derive(DekuWrite, DekuRead)]
