@@ -71,7 +71,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.filter,
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
-				Frac::from(0),
+				args.acceptable_loss.unwrap_or(Frac::from(0)),
 			)
 		},
 		VideoMode::Matrix => {
@@ -100,7 +100,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.filter,
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
-				Frac::from(0)
+				args.acceptable_loss.unwrap_or(Frac::from(0)),
 			)
 		},
 		VideoMode::Custom => create_streams_custom(
@@ -399,6 +399,13 @@ struct VideoOpts {
 		conflicts_with = "streams_config",
 	)]
 	pub budget: Option<Budget>,
+	
+	
+	#[arg(
+		long = "loss",
+		help = "selects the 'bitrate' limit for each frame. default: 0",
+	)]
+	pub acceptable_loss: Option<Frac<u64>>,
 	
 	#[arg(
 		long = "streams-config",
