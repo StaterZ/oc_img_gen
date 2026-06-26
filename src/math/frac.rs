@@ -261,7 +261,7 @@ impl<T: GoodInt + FromStr> FromStr for Frac<T> {
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		match s.split('/').collect_vec().as_slice() {
-			[numerator] => Ok(Frac::from(numerator.parse::<T>()?)),
+			[numerator] => Ok(<Frac<_> as From<_>>::from(numerator.parse::<T>()?)),
 			[numerator, denominator] => Ok(Frac::new(
 				T::from_str(numerator)?,
 				T::from_str(denominator)?,
