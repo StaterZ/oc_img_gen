@@ -276,11 +276,12 @@ impl<'a> VideoEncoder<'a> {
 				},
 				None => Frac::ZERO,
 			};
-			let cpu_cost = Frac::new(stats.num_set_pixels, 15000);
+			let cpu_cost = Frac::new(stats.num_set_pixels, 120000);
 
 			let tick_rate = 20;
-			let gpu_budget = (self.machine.call_budget * tick_rate) * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
-			let cpu_budget = self.machine.cpu_speed * self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+			let time_since_emit = self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
+			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit;
+			let cpu_budget = self.machine.cpu_speed * time_since_emit;
 
 			#[cfg(feature = "charts")] {
 				let timestamp = format!("{:.2}s", (self.desc.rate.cast::<usize>() * self.frames.len()).into_flt::<f32>());

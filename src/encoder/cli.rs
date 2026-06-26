@@ -64,9 +64,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 			});
 
 			create_main_stream(
-				args.frame_rate,
+				args.frame_rate.map(|x| x.inverse()),
 				args.fill_color,
-				args.cmds_per_sec,
 				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
 				args.budget,
@@ -90,9 +89,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				.unwrap_or(Size::ZERO);
 			
 			create_matrix_streams(
-				args.frame_rate,
+				args.frame_rate.map(|x| x.inverse()),
 				args.fill_color,
-				args.cmds_per_sec,
 				stream_size.try_cast().expect("stream size too large"),
 				args.matrix_size.unwrap(),
 				gap_size,
@@ -118,7 +116,6 @@ pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize
 fn create_main_stream(
 	frame_rate: Option<Frac<u16>>,
 	fill_color: RGB8,
-	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
 	budget: Option<Budget>,
@@ -138,14 +135,12 @@ fn create_main_stream(
 		stream_descs_data,
 		container_size: stream_size.cast() * video::braille::SIZE,
 		fill_color,
-		cmds_per_sec,
 	}
 }
 
 fn create_matrix_streams(
 	frame_rate: Option<Frac<u16>>,
 	fill_color: RGB8,
-	cmds_per_sec: Option<usize>,
 	stream_size: Size<u8>,
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
@@ -176,7 +171,6 @@ fn create_matrix_streams(
 		stream_descs_data,
 		container_size,
 		fill_color,
-		cmds_per_sec,
 	}
 }
 
@@ -315,14 +309,6 @@ struct VideoOpts {
 		conflicts_with = "streams_config",
 	)]
 	pub fill_color: RGB8,
-
-	#[arg(
-		long = "cps",
-		help = "how many commands to allow per second",
-		requires = "mode",
-		conflicts_with = "streams_config",
-	)]
-	pub cmds_per_sec: Option<usize>,
 
 	#[arg(
 		long = "stream-size",

@@ -54,12 +54,12 @@ impl TermPixel {
 			let self_sym_val = (char::from(self.sym) as u32 - BASE) as u8;
 			let other_sym_val = (char::from(other.sym) as u32 - BASE) as u8;
 			let score =
-				(!self_sym_val & !other_sym_val).count_ones() * bg_bg_delta +
-				(!self_sym_val & other_sym_val).count_ones() * bg_fg_delta +
-				(self_sym_val & !other_sym_val).count_ones() * fg_bg_delta +
-				(self_sym_val & other_sym_val).count_ones() * fg_fg_delta;
-			const PERCEPTUAL_DELTA_MAX: u32 = 650250000;
-			Frac::new(score, PERCEPTUAL_DELTA_MAX).cast::<u64>()
+				(!self_sym_val & !other_sym_val).count_ones() as u64 * bg_bg_delta as u64 +
+				(!self_sym_val & other_sym_val).count_ones() as u64 * bg_fg_delta as u64 +
+				(self_sym_val & !other_sym_val).count_ones() as u64 * fg_bg_delta as u64 +
+				(self_sym_val & other_sym_val).count_ones() as u64 * fg_fg_delta as u64;
+			const PERCEPTUAL_DELTA_MAX: u64 = (255*255)*(2126+7152+0722)*(2*4);
+			Frac::new(score, PERCEPTUAL_DELTA_MAX)
 		} else {
 			Frac::one() //TODO: should we handle loss for text?
 		}
