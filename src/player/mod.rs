@@ -1,5 +1,6 @@
 use std::{path::{Path, PathBuf}, time::Duration};
 use deku::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
 use num_traits::ConstZero;
 use triple_buffer::TripleBuffer;
 use itertools::Itertools;
@@ -49,6 +50,12 @@ pub struct Cli {
 		conflicts_with = "matrix_gap_size",
 	)]
 	pub matrix_screen_size: Option<Size<usize>>,
+}
+
+fn progress_style() -> ProgressStyle {
+	ProgressStyle::with_template("[{bar}] {msg} {pos}/{len}")
+		.unwrap()
+		.progress_chars("█▉▊▋▌▍▎▏ ")
 }
 
 fn remove_title_bar(window: &Window) {
@@ -165,11 +172,16 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 	let voices = TripleBuffer::new(&vec![VoiceStateFlt::default(); audio_stream.as_ref().map_or(0, |audio_stream| file.stream_descs[audio_stream.id as usize].content.as_audio().unwrap().num_voices as usize)]);
 	let (voices_in, mut voices_out) = voices.split();
+
+	let progress = ProgressBar::new(file.packets.len() as u64)
+		.with_style(progress_style());
+
 	let mut render_state = RenderState {
 		file: &file,
 		timer: std::time::Instant::now(),
 		next_packet_index: 0,
 		is_done: false,
+		progress,
 
 		video_streams,
 		audio_stream,
@@ -234,6 +246,7 @@ struct RenderState<'a> {
 	timer: std::time::Instant,
 	next_packet_index: usize,
 	is_done: bool,
+	progress: ProgressBar,
 	
 	video_streams: Vec<VideoStream>,
 	audio_stream: Option<AudioStream>,
@@ -262,20 +275,27 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 
 	let elapsed = state.timer.elapsed();
 	let present_time = Frac::from(elapsed.as_secs()) + Frac::new(elapsed.subsec_nanos(), NANOS_PER_SEC).cast();
-	let num_packets = state.file.stream_descs.iter().map(|desc| desc.num_packets as usize).sum();
-	
+
 	let length = &state.file.stream_descs
 		.iter()
 		.map(|desc| (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into())
 		.max()
 		.unwrap_or(Duration::ZERO);
-	
-	println!("t:{}/{}, p:{}/{}",
+
+	#[cfg(not(feature = "log"))]
+	state.progress.set_message(format!("{}/{}",
 		humantime::Duration::from(clean_duration(elapsed)),
-		humantime::Duration::from(clean_duration(*length)),
-		state.next_packet_index,
-		num_packets
-	);
+		humantime::Duration::from(clean_duration(*length))
+	));
+
+	#[cfg(feature = "log")] {
+		println!("t:{}/{}, p:{}/{}",
+			humantime::Duration::from(clean_duration(elapsed)),
+			humantime::Duration::from(clean_duration(*length)),
+			state.next_packet_index,
+			state.file.packets.len()
+		);
+	}
 
 	for packet in state.file.packets
 		.iter()
@@ -292,6 +312,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 
 				if Frac::from(stream.next_frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
 				stream.next_frame_index += 1;
+				state.progress.inc(1);
 
 				if args.diff && frame.commands_len > 0 {
 					for pixel in stream.image.buffer_mut() {
@@ -318,6 +339,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 
 					if Frac::from(stream.next_frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
 					stream.next_frame_index += 1;
+				state.progress.inc(1);
 
 					stream.play_packet(&mut state.sound_card, sample)?;
 				}
@@ -327,7 +349,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 		state.next_packet_index += 1;
 	}
 
-	if state.next_packet_index + 1 >= num_packets {
+	if state.next_packet_index + 1 >= state.file.packets.len() {
 		state.is_done = true;
 		for voice in state.sound_card.voices.input_buffer_publisher().iter_mut() {
 			voice.frequency = 0.0;
