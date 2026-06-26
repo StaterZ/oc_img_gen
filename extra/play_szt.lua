@@ -232,7 +232,6 @@ do
 		local len, x, y
 		while i < commands_len do
 			len = read_u8(file)
-			local q = i
 			if len >= 0x80 then
 				len = len - 0x80
 				gpu.setBackground(lut[read_u8(file) + 1])
@@ -251,7 +250,7 @@ do
 			len = len + 1
 			x = read_u8(file)
 			y = read_u8(file)
-			gpu.set(x + pos_x, y + pos_y, get_value(file, len, i-q))
+			gpu.set(x + pos_x, y + pos_y, get_value(file, len, is_rle))
 			len = is_rle and len*2 or len
 			i = i + 3 + len
 			command_count = command_count + 1
