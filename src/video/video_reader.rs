@@ -30,7 +30,6 @@ pub struct VideoConfig {
 	pub stream_descs_data: Vec<VideoDescData>,
 	pub container_size: Size<usize>,
 	pub fill_color: RGB8,
-	pub cmds_per_sec: Option<usize>,
 }
 
 pub struct VideoDescData {
@@ -50,7 +49,6 @@ pub struct VideoReader<'a, 'b> {
 	scaler_buffer: VideoFrame,
 	container_size: Size<usize>,
 	fill_color: RGB8,
-	cmds_per_sec: Option<usize>,
 	in_frame_rate: Frac<i64>,
 	formatter: oc_color::formatters::HybridFormatter,
 	pub encoders: Vec<packet::VideoEncoder<'b>>,
@@ -167,7 +165,6 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 			scaler_buffer: VideoFrame::empty(),
 			container_size: config.container_size,
 			fill_color: config.fill_color,
-			cmds_per_sec: config.cmds_per_sec,
 			in_frame_rate,
 			formatter: oc_color::formatters::HybridFormatter::new(),
 			encoders: streams,
