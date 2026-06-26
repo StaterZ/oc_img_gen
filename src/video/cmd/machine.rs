@@ -30,6 +30,27 @@ impl Machine {
 	pub fn bitblt_cost(&self, size: Size<usize>) -> Frac<usize> {
 		self.bitblt_cost * size.area() / self.max_screen_size.area()
 	}
+
+	pub fn compute_max_resolution(&self, ratio: Frac<usize>) -> Size<usize> {
+		Self::compute_max_resolution_impl(ratio, self.max_screen_size.area(), self.max_screen_size.w)
+	}
+
+	fn compute_max_resolution_impl(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {
+		debug_assert!(ratio.numerator > 0 && ratio.denominator > 0, "Invalid ratio");
+		debug_assert!(max_pixels > 0, "max_pixels must be positive");
+
+		// Start by assuming width is limited by pixel count
+		// width * height <= max_pixels
+		// height = width / ratio
+		// so: width^2 / ratio <= max_pixels
+		// => width <= sqrt(max_pixels * ratio)
+		let width_limit = (ratio * max_pixels).sqrt();
+
+		let width = width_limit.min(max_width.into());
+		let height = width / ratio;
+
+		Size::new(width.into_int_trunc(), height.into_int_trunc())
+	}
 }
 
 impl From<Tier> for Machine {

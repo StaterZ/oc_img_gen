@@ -1,5 +1,6 @@
 use std::mem::MaybeUninit;
 use num_traits::ConstZero;
+use itertools::Itertools;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use szu::{math::int_div_round, iter::MultiZipExt};
@@ -15,8 +16,8 @@ use super::{
 };
 
 pub const SIZE: Size<usize> = Size::new(2, 4);
-pub const WIDTH: usize = SIZE.x;
-pub const HEIGHT: usize = SIZE.y;
+pub const WIDTH: usize = SIZE.w;
+pub const HEIGHT: usize = SIZE.h;
 pub const BITS: usize = WIDTH * HEIGHT;
 
 #[derive(Debug, Clone, Copy, Eq)]
@@ -236,7 +237,7 @@ impl<T: PartialEq> PartialEq for Braille<T> {
 
 #[cfg(feature = "rayon")]
 pub fn as_braille(input: &Image<RGB8>) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<RGB8>>> {
-	let row_len = input.size().x as usize;
+	let row_len = input.size().w as usize;
 	ParallelImageIterator {
 		size: input.size() / SIZE,
 		iter: input
@@ -255,7 +256,7 @@ pub fn as_braille(input: &Image<RGB8>) -> ParallelImageIterator<impl ParallelIte
 }
 #[cfg(not(feature = "rayon"))]
 pub fn as_braille(input: &Image<RGB8>) -> ImageIterator<impl Iterator<Item = Braille<RGB8>>> {
-	let row_len = input.size().x as usize;
+	let row_len = input.size().w as usize;
 	ImageIterator {
 		size: input.size() / SIZE,
 		iter: input
@@ -275,7 +276,7 @@ pub fn as_braille(input: &Image<RGB8>) -> ImageIterator<impl Iterator<Item = Bra
 
 pub fn raster<T: Copy>(input: &Image<Braille<T>>) -> Image<T> {
 	let buffer = input.buffer()
-		.chunks_exact(input.size().x)
+		.chunks_exact(input.size().w)
 		.flat_map(|row| row
 			.into_iter()
 			.map(|c| c

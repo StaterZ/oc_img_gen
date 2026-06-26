@@ -1,17 +1,14 @@
 #![feature(iter_array_chunks)]
-#![feature(anonymous_lifetime_in_impl_trait)]
-#![feature(const_for)]
-#![feature(const_range_bounds)]
 #![feature(adt_const_params)]
 #![feature(duration_constants)]
 #![feature(const_trait_impl)]
-#![feature(exact_length_collection)]
 #![feature(exact_size_is_empty)]
-#![feature(stmt_expr_attributes)]
 #![feature(specialization)]
+#![feature(try_blocks)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 #![allow(incomplete_features)]
+#![allow(unused_features)]
 
 use std::io::Write;
 use indicatif::ProgressStyle;
@@ -26,7 +23,7 @@ mod encoder;
 mod player;
 
 const EXT: &str = "szt";
-const FORMAT_VERSION: u16 = 5;
+const FORMAT_VERSION: u16 = 6;
 
 #[derive(Parser, Debug)]
 #[command(author, version)]

@@ -1,5 +1,5 @@
 use std::{path::{Path, PathBuf}, time::Duration};
-use clap::{ArgAction, Args, Parser};
+use clap::{Args, Parser, ValueHint};
 use num_traits::{ConstOne, ConstZero};
 
 use crate::{
@@ -55,79 +55,64 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 
 fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
 	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
-		StreamMode::Single => {
+		VideoMode::Single => {
 			let stream_size = args.stream_size.unwrap_or_else(|| {
 				let source_size = Size::<u32>::new(stream.width(), stream.height());
-				let max_screen_size = compute_machine_max_resolution(source_size.cast::<usize>().ratio() / video::braille::SIZE.ratio(), machine);
+				let max_screen_size = machine.compute_max_resolution(source_size.cast::<usize>().ratio() / video::braille::SIZE.ratio());
 				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
 				max_screen_size
-			}).try_cast().expect("stream size too large");
+			});
 
 			create_main_stream(
 				args.frame_rate,
 				args.fill_color,
 				args.cmds_per_sec,
-				stream_size,
+				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
 				args.budget,
-				args.acceptable_loss.unwrap_or(Frac::from(0)),
+				Frac::from(0),
 			)
 		},
-		StreamMode::Matrix => create_matrix_streams(
-			args.frame_rate,
-			args.fill_color,
-			args.cmds_per_sec,
-			args.stream_size.unwrap_or_else(|| {
-				let size = compute_machine_max_resolution(Frac::ONE / video::braille::SIZE.ratio(), machine);
+		VideoMode::Matrix => {
+			let stream_size = args.stream_size.unwrap_or_else(|| {
+				let size = machine.compute_max_resolution(Frac::ONE / video::braille::SIZE.ratio());
 				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
-			}).try_cast().expect("stream size too large"),
-			args.matrix_size.unwrap(),
-			args.matrix_gap_size
+			});
+			
+			let gap_size = args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
-						let gap = compute_gap_size(args.stream_size.unwrap() * video::braille::SIZE, matrix_screen_size);
+						let gap = compute_gap_size(stream_size * video::braille::SIZE, matrix_screen_size);
 						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
-				.unwrap_or(Size::ZERO),
-			args.filter,
-			args.budget,
-			args.acceptable_loss.unwrap_or(Frac::from(0))
-		),
-		StreamMode::Custom => create_streams_custom(
+				.unwrap_or(Size::ZERO);
+			
+			create_matrix_streams(
+				args.frame_rate,
+				args.fill_color,
+				args.cmds_per_sec,
+				stream_size.try_cast().expect("stream size too large"),
+				args.matrix_size.unwrap(),
+				gap_size,
+				args.filter,
+				args.budget,
+				Frac::from(0)
+			)
+		},
+		VideoMode::Custom => create_streams_custom(
 			args.streams_config.as_ref().unwrap()
 		),
 	}
 }
 
-fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
+pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
 	const FIXED_POINT: usize = 2;
 	const PIXEL_GAP: usize = 9; //it's '(2 + 0.25) * 2' but we use x2 fixed point to remove the floats
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
 	(stream_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
-}
-
-pub fn compute_machine_max_resolution(ratio: Frac<usize>, machine: &Machine) -> Size<usize> {
-	compute_max_resolution(ratio, machine.max_screen_size.area(), machine.max_screen_size.x)
-}
-
-pub fn compute_max_resolution(ratio: Frac<usize>, max_pixels: usize, max_width: usize) -> Size<usize> {
-	debug_assert!(ratio.numerator > 0 && ratio.denominator > 0, "Invalid ratio");
-	debug_assert!(max_pixels > 0, "max_pixels must be positive");
-
-	// Start by assuming width is limited by pixel count
-	// width * height <= max_pixels
-	// height = width / ratio
-	// so: width^2 / ratio <= max_pixels
-	// => width <= sqrt(max_pixels * ratio)
-	let width_limit = (ratio * max_pixels).sqrt();
-
-	let width = width_limit.min(max_width.into());
-	let height = width / ratio;
-
-	Size::new(width.into_int_trunc(), height.into_int_trunc())
 }
 
 fn create_main_stream(
@@ -171,8 +156,8 @@ fn create_matrix_streams(
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
 
-	let stream_descs_data = (0..matrix_size.y)
-		.flat_map(move |y| (0..matrix_size.x)
+	let stream_descs_data = (0..matrix_size.h)
+		.flat_map(move |y| (0..matrix_size.w)
 			.map(move |x| VideoDescData {
 				name: format!("{},{}", x, y),
 				frame_rate,
@@ -200,7 +185,7 @@ fn create_streams_custom(_config_path: &Path) -> VideoConfig {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
-pub enum StreamMode {
+pub enum VideoMode {
 	Single,
 	Matrix,
 	Custom,
@@ -226,8 +211,8 @@ pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
-		guard: args.guard.unwrap_or(1),
-		normalize: args.normalize,
+		guard: args.guard,
+		normalize: true,
 		num_voices: args.num_voices,
 	}
 }
@@ -239,6 +224,7 @@ pub struct Cli {
 		short = 'i',
 		long = "in",
 		help = "Path to image or video to encode",
+		value_hint = ValueHint::FilePath,
 	)]
 	pub in_path: PathBuf,
 
@@ -246,6 +232,7 @@ pub struct Cli {
 		short = 'o',
 		long = "out",
 		help = "Path to where to the output SZT file, saves at in_path with .szt extension if omitted",
+		value_hint = ValueHint::FilePath,
 	)]
 	pub out_path: Option<PathBuf>,
 
@@ -302,20 +289,21 @@ struct VideoOpts {
 		short = 'm',
 		long = "mode",
 		help = "How to arrange and produce the streams",
-		requires_if("Single", "stream_size"),
-		requires_if("Single", "filter"),
-		requires_if("Matrix", "stream_size"),
-		requires_if("Matrix", "filter"),
-		requires_if("Matrix", "matrix_size"),
-		requires_if("Matrix", "matrix_screen_size"),
-		requires_if("Custom", "streams_config"),
+		requires_ifs([
+			("matrix", "matrix_size"),
+			("matrix", "matrix_gap_size"),
+			("matrix", "matrix_screen_size"),
+			("custom", "streams_config"),
+		]),
 	)]
-	pub mode: Option<StreamMode>,
+	pub mode: Option<VideoMode>,
 
 	#[arg(
 		short = 'f',
 		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub frame_rate: Option<Frac<u16>>,
 	
@@ -323,114 +311,83 @@ struct VideoOpts {
 		long = "fill-color",
 		help = "color of the padding around the video",
 		default_value_t = RGB8::new(0x000000),
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub fill_color: RGB8,
 
 	#[arg(
 		long = "cps",
 		help = "how many commands to allow per second",
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub cmds_per_sec: Option<usize>,
 
 	#[arg(
 		long = "stream-size",
 		help = "The size of the streams",
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub stream_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "matrix-size",
 		help = "How many grid cells (streams) to create",
+		requires = "mode",
+		required_if_eq("mode", "Matrix"),
+		conflicts_with = "streams_config",
 	)]
 	pub matrix_size: Option<Size<usize>>,
 
 	#[arg(
 		long = "matrix-gap-size",
-		help = "sub-pixels to skip between matrix cells, sets to 0 to omitted",
+		help = "sub-pixels to skip between matrix cells, defaults to 0 to omitted",
+		requires = "mode",
+		required_if_eq("mode", "Matrix"),
+		conflicts_with = "streams_config",
+		conflicts_with = "matrix_screen_size",
 	)]
 	pub matrix_gap_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "matrix-screen-size",
 		help = "screen size of matrix segments, this is used to derive the matrix gap size",
+		requires = "mode",
+		required_if_eq("mode", "Matrix"),
+		conflicts_with = "streams_config",
+		conflicts_with = "matrix_gap_size",
 	)]
 	pub matrix_screen_size: Option<Size<usize>>,
 	
 	#[arg(
-		long = "streams-config",
-		help = "path to json streams config file",
-	)]
-	pub streams_config: Option<PathBuf>,
-
-	#[arg(
 		long = "filter",
 		help = "what to pass the pixels through before encoding",
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub filter: Option<VideoFilter>,
 
 	#[arg(
 		long = "budget",
 		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
+		requires = "mode",
+		conflicts_with = "streams_config",
 	)]
 	pub budget: Option<Budget>,
-
+	
 	#[arg(
-		long = "loss",
-		help = "selects the 'bitrate' limit for each frame. default: 0",
+		long = "streams-config",
+		help = "path to json streams config file",
+		requires = "mode",
 	)]
-	pub acceptable_loss: Option<Frac<u64>>,
+	pub streams_config: Option<PathBuf>,
 }
 
 impl VideoOpts {
 	fn validate(&self) -> bool {
-		let mut is_valid = true;
-		match self.mode {
-			None => {
-				eprintln!("--mode is required");
-				is_valid = false;
-			}
-			Some(mode) => match mode {
-				StreamMode::Single => {
-					if self.matrix_size.is_some() {
-						eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
-						is_valid = false;
-					}
-					if self.streams_config.is_some() {
-						eprintln!("--streams-config is only valid when --mode is 'Custom'");
-						is_valid = false;
-					}
-				}
-				StreamMode::Matrix => {
-					if self.matrix_size.is_none() {
-						eprintln!("--matrix-size is required when --mode is 'Matrix'");
-						is_valid = false;
-					}
-					if self.streams_config.is_some() {
-						eprintln!("--streams-config is only valid when --mode is 'Custom'");
-						is_valid = false;
-					}
-				}
-				StreamMode::Custom => {
-					if self.stream_size.is_some() {
-						eprintln!("--stream-size is only valid when --mode is 'Single' or 'Matrix'");
-						is_valid = false;
-					}
-					if self.matrix_size.is_some() {
-						eprintln!("--matrix-size is only valid when --mode is 'Matrix'");
-						is_valid = false;
-					}
-					if self.streams_config.is_none() {
-						eprintln!("--streams-config is required when --mode is 'Custom'");
-						is_valid = false;
-					}
-					if self.filter.is_some() {
-						eprintln!("--filter is only valid when --mode is 'Single' or 'Matrix'");
-						is_valid = false;
-					}
-				}
-			}
-		}
-		is_valid
+		true
 	}
 }
 
@@ -458,9 +415,10 @@ pub struct AudioOpts {
 
 	#[arg(
 		long = "guard",
-		help = "Bins around a selected peak will be removed (defaults to 1)",
+		default_value_t = 1,
+		help = "Bins around a selected peak will be removed",
 	)]
-	pub guard: Option<isize>,
+	pub guard: isize,
 
 	#[arg(
 		long = "voices",
@@ -468,15 +426,6 @@ pub struct AudioOpts {
 		help = "How many voices to use (8 channels per sound card)",
 	)]
 	pub num_voices: usize,
-
-	#[arg(
-		short = 'n',
-		long = "normalize",
-		default_value_t = true,
-		action = ArgAction::SetTrue,
-		help = "Normalize output overall loudness",
-	)]
-	pub normalize: bool,
 }
 impl AudioOpts {
 	fn validate(&self) -> bool {

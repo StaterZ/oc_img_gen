@@ -29,7 +29,7 @@ impl<'a, T: Formatter> CodeRenderer<'a, T> {
 
 impl<'a, T: Formatter> BasicRenderer for CodeRenderer<'a, T> {
 	fn set_resolution(&mut self, value: Size<usize>) {
-		self.code += &format!("{}.setResolution({},{})\n", self.gpu_ident, value.x, value.y);
+		self.code += &format!("{}.setResolution({},{})\n", self.gpu_ident, value.w, value.h);
 	}
 
 	fn set_background(&mut self, value: PackedColor) {

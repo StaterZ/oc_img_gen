@@ -18,9 +18,6 @@ pub mod muxer;
 pub mod reader;
 //mod ffmpeg_tracing;
 
-#[cfg(feature = "debug-mode")]
-mod test;
-
 pub struct EncoderConfig {
 	pub in_path: PathBuf,
 	pub out_path: PathBuf,

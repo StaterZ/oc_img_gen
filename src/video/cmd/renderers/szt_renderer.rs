@@ -1,20 +1,21 @@
 use all_asserts::*;
 use deku::prelude::*;
-use szu::iter::SplitByBytes;
+use itertools::Itertools;
+use szu::iter::{RleExt, RleRun, SplitByBytes};
 
-use crate::{math::{Point, Size}};
+use crate::math::{Point, Size};
 use super::{
 	BasicRenderer,
-	super::{packet, super::oc_color::PackedColor, packet::Command, renderers::cached_renderer::RenderState},
+	super::{packet::{Command, CommandData, CommandFlags, CommandKind, Frame}, super::oc_color::PackedColor, renderers::cached_renderer::RenderState},
 };
 
-pub struct SztRenderer<const KIND: packet::CommandKind> {
+pub struct SztRenderer<const KIND: CommandKind> {
 	blob: Vec<u8>,
 	bg_needs_emit: bool,
 	fg_needs_emit: bool,
 }
 
-impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
+impl<const KIND: CommandKind> SztRenderer<KIND> {
 	pub fn new() -> Self {
 		Self {
 			blob: Vec::new(),
@@ -23,8 +24,8 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 		}
 	}
 	
-	pub fn build(self) -> packet::Frame {
-		let mut frame = packet::Frame {
+	pub fn build(self) -> Frame {
+		let mut frame = Frame {
 			command_kind: KIND,
 			commands_len: 0,
 			commands: self.blob,
@@ -34,7 +35,7 @@ impl<const KIND: packet::CommandKind> SztRenderer<KIND> {
 	}
 }
 
-impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
+impl<const KIND: CommandKind> BasicRenderer for SztRenderer<KIND> {
 	fn set_resolution(&mut self, _value: Size<usize>) {
 		//panic!("tried to set resoultion on SZT renderer");
 	}
@@ -60,50 +61,57 @@ impl<const KIND: packet::CommandKind> BasicRenderer for SztRenderer<KIND> {
 		}
 
 		let mut pos = *pos;
-		let mut encode_chunk = |chunk: &[u8], chunk_uni_len: usize| {
-			debug_assert_range!(1..=Command::MAX_COMMAND_BYTES, chunk.len());
-			{
-				let bg_flag = (self.bg_needs_emit as u8) << 7;
-				let fg_flag = (self.fg_needs_emit as u8) << 6;
-				let len = (chunk.len() - 1) as u8;
-				self.blob.push(bg_flag | fg_flag | len);
-			}
 
-			if self.bg_needs_emit {
-				if let Some(bg) = state.background {
-					self.blob.push(bg.into());
-				}
-				self.bg_needs_emit = false;
-			}
-			if self.fg_needs_emit {
-				if let Some(fg) = state.foreground {
-					self.blob.push(fg.into());
-				}
-				self.fg_needs_emit = false;
-			}
+		let mut encode_chunk = |data: CommandData, chunk_uni_len: usize| {
+			let data_len = match &data {
+				CommandData::Raw(v) => v.len(),
+				CommandData::Rle(v) => v.len(),
+			};
+			debug_assert_range!(1..=Command::MAX_BRAILLE_COUNT, data_len);
 
-			// debug_assert_lt!(pos.x, state.resolution.unwrap().x);
-			// debug_assert_lt!(pos.y, state.resolution.unwrap().y);
-			self.blob.push(pos.x as u8);
-			self.blob.push(pos.y as u8);
+			self.blob.extend_from_slice(Command {
+				flags: CommandFlags {
+					has_background: self.bg_needs_emit,
+					has_foreground: self.fg_needs_emit,
+					is_rle: matches!(data, CommandData::Rle(_)),
+					len: (data_len - 1) as u8,
+				},
+				background: self.bg_needs_emit.then_some(state.background).flatten(),
+				foreground: self.fg_needs_emit.then_some(state.foreground).flatten(),
+				pos: pos.cast::<u8>(),
+				data,
+			}.to_bytes().unwrap().as_slice());
 			pos.x += chunk_uni_len;
-			self.blob.extend_from_slice(chunk);
+			self.fg_needs_emit = false;
+			self.bg_needs_emit = false;
 		};
 
 		match KIND {
-			packet::CommandKind::Text => {
-				for chunk in SplitByBytes::new(value, Command::MAX_COMMAND_BYTES) {
-					encode_chunk(chunk.as_bytes(), chunk.len());
+			CommandKind::Text => {
+				for chunk in SplitByBytes::new(value, Command::MAX_BRAILLE_COUNT) {
+					encode_chunk(CommandData::Raw(chunk.as_bytes().to_vec()), chunk.len());
 				}
 			},
-			packet::CommandKind::Braille => {
-				let mut iter = value.chars().map(to_braille).array_chunks::<{ Command::MAX_COMMAND_BYTES }>();
-				while let Some(chunk) = iter.next() {
-					encode_chunk(&chunk, Command::MAX_COMMAND_BYTES);
-				}
-				let rem = iter.into_remainder();
-				if !rem.is_empty() {
-					encode_chunk(rem.as_slice(), rem.len());
+			CommandKind::Braille => {
+				let raw = value.chars().map(to_braille).collect_vec();
+
+				let rle_runs = raw
+					.iter()
+					.copied()
+					.peekable()
+					.rle::<u8>()
+					.collect_vec();
+
+				// RLE wins if total runs < total raw bytes (assuming equal wire size per element).
+				if rle_runs.len() * size_of::<RleRun<u8, u8>>() < raw.len() * size_of::<u8>() && false {
+					for rle_chunk in rle_runs.chunks(Command::MAX_BRAILLE_COUNT) {
+						let chunk_uni_len = rle_chunk.iter().map(|r| r.len as usize).sum();
+						encode_chunk(CommandData::Rle(rle_chunk.to_vec()), chunk_uni_len);
+					}
+				} else {
+					for raw_chunk in raw.chunks(Command::MAX_BRAILLE_COUNT) {
+						encode_chunk(CommandData::Raw(raw_chunk.to_vec()), raw_chunk.len());
+					}
 				}
 			},
 		}

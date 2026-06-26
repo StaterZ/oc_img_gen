@@ -1,5 +1,5 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
-use deku::{no_std_io, prelude::*};
+use deku::prelude::*;
 use num::NumCast;
 use num_traits::{ConstZero, ConstOne, Zero, One};
 use szu::math::{GoodInt, GoodNum};
@@ -17,35 +17,35 @@ pub trait SizeTrait<T: GoodNum> {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Size<T: GoodNum> {
-	pub x: T,
-	pub y: T,
+	pub w: T,
+	pub h: T,
 }
 
 impl<T: GoodNum> Size<T> {
-	pub const fn new(x: T, y: T) -> Self {
-		Self { x, y }
+	pub const fn new(w: T, h: T) -> Self {
+		Self { w, h }
 	}
 	pub const fn one(v: T) -> Self {
 		Self {
-			x: v,
-			y: v,
+			w: v,
+			h: v,
 		}
 	}
 
 	pub fn area(&self) -> T {
-		self.x * self.y
+		self.w * self.h
 	}
 
 	pub fn cast<U: GoodNum>(self) -> Size::<U> {
 		Size {
-			x: NumCast::from(self.x).unwrap(),
-			y: NumCast::from(self.y).unwrap(),
+			w: NumCast::from(self.w).unwrap(),
+			h: NumCast::from(self.h).unwrap(),
 		}
 	}
 	pub fn try_cast<U: GoodNum>(self) -> Option<Size<U>> {
 		Some(Size {
-			x: NumCast::from(self.x)?,
-			y: NumCast::from(self.y)?,
+			w: NumCast::from(self.w)?,
+			h: NumCast::from(self.h)?,
 		})
 	}
 
@@ -61,19 +61,19 @@ impl<T: GoodInt> SizeTrait<T> for Size<T> {
 	type RatioOutput = Frac<T>;
 
 	fn ratio(&self) -> Self::RatioOutput {
-		Frac::new(self.x, self.y)
+		Frac::new(self.w, self.h)
 	}
 	
 	fn contain(&self, content: Self) -> Self {
 		if content.ratio() > self.ratio() {
 			Self {
-				x: self.x,
-				y: (Frac::<T>::from(self.x) / content.ratio()).into_int_round(),
+				w: self.w,
+				h: (<Frac::<T> as From<T>>::from(self.w) / content.ratio()).into_int_round(),
 			}
 		} else {
 			Self {
-				x: (Frac::<T>::from(self.y) * content.ratio()).into_int_round(),
-				y: self.y,
+				w: (<Frac::<T> as From<T>>::from(self.h) * content.ratio()).into_int_round(),
+				h: self.h,
 			}
 		}
 	}
@@ -121,23 +121,23 @@ impl<T: GoodInt> SizeTrait<T> for Size<T> {
 
 impl<T: GoodNum + Display> Display for Size<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}x{}", self.x, self.y)
+		write!(f, "{}x{}", self.w, self.h)
 	}
 }
 
 impl<Ctx: Copy, T: GoodNum + DekuWriter<Ctx>> DekuWriter<Ctx> for Size<T> {
-	fn to_writer<W: no_std_io::Write + no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
-		self.x.to_writer(writer, ctx)?;
-		self.y.to_writer(writer, ctx)?;
+	fn to_writer<W: deku::no_std_io::Write + deku::no_std_io::Seek>(&self, writer: &mut Writer<W>, ctx: Ctx) -> Result<(), DekuError> {
+		self.w.to_writer(writer, ctx)?;
+		self.h.to_writer(writer, ctx)?;
 		Ok(())
 	}
 }
 
 impl<'a, Ctx: Copy, T: GoodNum + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Size<T> {
-	fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
+	fn from_reader_with_ctx<R: deku::no_std_io::Read + deku::no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
 		Ok(Self {
-			x: T::from_reader_with_ctx(reader, ctx)?,
-			y: T::from_reader_with_ctx(reader, ctx)?,
+			w: T::from_reader_with_ctx(reader, ctx)?,
+			h: T::from_reader_with_ctx(reader, ctx)?,
 		})
 	}
 }
@@ -158,8 +158,8 @@ impl<T: GoodNum + FromStr> FromStr for Size<T> {
 		}
 
 		Ok(Self {
-			x: parts[0].parse::<T>().map_err(SizeParseErr::ParseError)?,
-			y: parts[1].parse::<T>().map_err(SizeParseErr::ParseError)?
+			w: parts[0].parse::<T>().map_err(SizeParseErr::ParseError)?,
+			h: parts[1].parse::<T>().map_err(SizeParseErr::ParseError)?
 		})
 	}
 }
@@ -193,8 +193,8 @@ impl<T: GoodNum> Add for Size<T> {
 
 	fn add(self, rhs: Self) -> Self::Output {
 		Self {
-			x: self.x + rhs.x,
-			y: self.y + rhs.y,
+			w: self.w + rhs.w,
+			h: self.h + rhs.h,
 		}
 	}
 }
@@ -203,8 +203,8 @@ impl<T: GoodNum> Add<T> for Size<T> {
 
 	fn add(self, rhs: T) -> Self::Output {
 		Self {
-			x: self.x + rhs,
-			y: self.y + rhs,
+			w: self.w + rhs,
+			h: self.h + rhs,
 		}
 	}
 }
@@ -214,8 +214,8 @@ impl<T: GoodNum> Sub for Size<T> {
 
 	fn sub(self, rhs: Self) -> Self::Output {
 		Self::Output {
-			x: self.x - rhs.x,
-			y: self.y - rhs.y,
+			x: self.w - rhs.w,
+			y: self.h - rhs.h,
 		}
 	}
 }
@@ -224,8 +224,8 @@ impl<T: GoodNum> Sub<T> for Size<T> {
 
 	fn sub(self, rhs: T) -> Self::Output {
 		Self {
-			x: self.x - rhs,
-			y: self.y - rhs,
+			w: self.w - rhs,
+			h: self.h - rhs,
 		}
 	}
 }
@@ -235,8 +235,8 @@ impl<T: GoodNum> Mul for Size<T> {
 
 	fn mul(self, rhs: Self) -> Self::Output {
 		Self {
-			x: self.x * rhs.x,
-			y: self.y * rhs.y,
+			w: self.w * rhs.w,
+			h: self.h * rhs.h,
 		}
 	}
 }
@@ -245,8 +245,8 @@ impl<T: GoodNum> Mul<T> for Size<T> {
 
 	fn mul(self, rhs: T) -> Self::Output {
 		Self {
-			x: self.x * rhs,
-			y: self.y * rhs,
+			w: self.w * rhs,
+			h: self.h * rhs,
 		}
 	}
 }
@@ -256,8 +256,8 @@ impl<T: GoodNum> Div for Size<T> {
 
 	fn div(self, rhs: Self) -> Self::Output {
 		Self {
-			x: self.x / rhs.x,
-			y: self.y / rhs.y,
+			w: self.w / rhs.w,
+			h: self.h / rhs.h,
 		}
 	}
 }
@@ -266,8 +266,8 @@ impl<T: GoodNum> Div<T> for Size<T> {
 
 	fn div(self, rhs: T) -> Self::Output {
 		Self {
-			x: self.x / rhs,
-			y: self.y / rhs,
+			w: self.w / rhs,
+			h: self.h / rhs,
 		}
 	}
 }

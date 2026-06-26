@@ -280,9 +280,9 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_b
 		}
 	}
 
-	for y in 0..frame.size().y {
+	for y in 0..frame.size().h {
 		let mut work_batch = None::<WorkBatch>;
-		for x in 0..frame.size().x {
+		for x in 0..frame.size().w {
 			let pos = Point::new(x, y);
 			let char = &frame[pos];
 
@@ -393,8 +393,8 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_b
 				output.push(work_batch.last_with_change);
 			}
 			if !is_same_as_prev_frame {
-				debug_assert_lt!(x, frame.size().x);
-				debug_assert_lt!(y, frame.size().y);
+				debug_assert_lt!(x, frame.size().w);
+				debug_assert_lt!(y, frame.size().h);
 				work_batch = Some(WorkBatch::new(Batch {
 					kind: char_batch_kind,
 					pos: Point { x, y },

@@ -109,11 +109,11 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 
 		let scaler = Scaler::get(
 			reader_data.decoder.format(),
-			content_size.x as u32,
-			content_size.y as u32,
+			content_size.w as u32,
+			content_size.h as u32,
 			ffmpeg_next::util::format::Pixel::RGB24,
-			fit_size.x as u32,
-			fit_size.y as u32,
+			fit_size.w as u32,
+			fit_size.h as u32,
 			ffmpeg_next::software::scaling::Flags::BILINEAR,
 		).unwrap();
 
@@ -227,7 +227,7 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 		});
 		
 		let img = crate::stage("Frame  | Preamble  | Into Image", || Image::from(frame));
-		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color));
+		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color, Point::one(Frac::half())));
 		
 		let emit_streams_len = emit_streams.len();
 		let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_streams_len as u64)

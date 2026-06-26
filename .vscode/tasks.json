@@ -9,10 +9,9 @@
 				"--features=rayon",
 				//"--features=debug-mode",
 				"--",
-				"encode",
-				"-i=data/bad-apple.mp4",
-				"--mode=single",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/testy.szt"
+				"play",
+				"-i=data/kill_v_maim.szt",
+				"--matrix-screen-size=4x4"
 			],
 			"problemMatcher": [
 				"$rustc"
