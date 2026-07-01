@@ -103,7 +103,7 @@ impl<const KIND: CommandKind> BasicRenderer for SztRenderer<KIND> {
 					.collect_vec();
 
 				// RLE wins if total runs < total raw bytes (assuming equal wire size per element).
-				if rle_runs.len() * size_of::<RleRun<u8, u8>>() < raw.len() * size_of::<u8>() && false {
+				if rle_runs.len() * size_of::<RleRun<u8, u8>>() < raw.len() * size_of::<u8>() {
 					for rle_chunk in rle_runs.chunks(Command::MAX_BRAILLE_COUNT) {
 						let chunk_uni_len = rle_chunk.iter().map(|r| r.len as usize).sum();
 						encode_chunk(CommandData::Rle(rle_chunk.to_vec()), chunk_uni_len);
