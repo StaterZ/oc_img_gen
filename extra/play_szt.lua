@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.3"
+local version = "2.5"
 
 local linear_stream = {}
 do
@@ -144,6 +144,7 @@ ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
+ops.volume = ops.volume or 1
 
 local video = {}
 do
@@ -242,9 +243,9 @@ do
 				gpu.setForeground(lut[read_u8(file) + 1])
 				i = i + 1
 			end
-			local is_rle = len >= 0x40
+			local is_rle = len >= 0x20
 			if is_rle then
-				len = len - 0x40
+				len = len - 0x20
 			end
 
 			len = len + 1
@@ -392,7 +393,7 @@ do --audio engine
 			local engine_index = math.floor((voice - 1) / num_channels)
 			local engine = sound_engines[engine_index + 1]
 			local channel = voice - engine_index * num_channels
-			engine.setVolume(channel, read_u8(file) / 0xff)
+			engine.setVolume(channel, read_u8(file) / 0xff * ops.volume)
 			engine.setFrequency(channel, read_u16(file) / 0xffff * 20000)
 		end
 		
