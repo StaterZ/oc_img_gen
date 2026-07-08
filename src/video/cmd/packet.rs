@@ -119,17 +119,17 @@ impl<'a> VideoEncoder<'a> {
 	) -> Self {
 		#[cfg(feature = "charts")] let chart = {
 			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
-				charts_rs::Series::new("budget".to_string(), Vec::new()),
-				charts_rs::Series::new("cost".to_string(), Vec::new()),
-				charts_rs::Series::new("color".to_string(), Vec::new()),
 				charts_rs::Series::new("set".to_string(), Vec::new()),
+				charts_rs::Series::new("color".to_string(), Vec::new()),
 				charts_rs::Series::new("bitblt".to_string(), Vec::new()),
+				charts_rs::Series::new("cost".to_string(), Vec::new()),
+				charts_rs::Series::new("budget".to_string(), Vec::new()),
 			], Vec::new(), charts_rs::THEME_GRAFANA);
 			gpu_chart.series_symbol = Some(charts_rs::Symbol::None);
 
 			let mut cpu_chart = charts_rs::LineChart::new_with_theme(vec![
-				charts_rs::Series::new("budget".to_string(), Vec::new()),
 				charts_rs::Series::new("cost".to_string(), Vec::new()),
+				charts_rs::Series::new("budget".to_string(), Vec::new()),
 			], Vec::new(), charts_rs::THEME_GRAFANA);
 			cpu_chart.series_symbol = Some(charts_rs::Symbol::None);
 			
@@ -281,16 +281,16 @@ impl<'a> VideoEncoder<'a> {
 
 			let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
 			gpu_chart.x_axis_data.push(timestamp.clone());
-			gpu_chart.series_list[0].data.push(Some(gpu_budget.into_flt()));
-			gpu_chart.series_list[1].data.push(Some(gpu_cost.into_flt()));
-			gpu_chart.series_list[2].data.push(Some(stats.get_set_color_cost(&self.machine).into_flt()));
-			gpu_chart.series_list[3].data.push(Some(stats.get_set_cost(&self.machine).into_flt()));
-			gpu_chart.series_list[4].data.push(Some(stats.get_bitblt_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[0].data.push(Some(stats.get_set_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[1].data.push(Some(stats.get_set_color_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[2].data.push(Some(stats.get_bitblt_cost(&self.machine).into_flt()));
+			gpu_chart.series_list[3].data.push(Some(gpu_cost.into_flt()));
+			gpu_chart.series_list[4].data.push(Some(gpu_budget.into_flt()));
 
 			let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
 			cpu_chart.x_axis_data.push(timestamp.clone());
-			cpu_chart.series_list[0].data.push(Some(cpu_budget.into_flt()));
-			cpu_chart.series_list[1].data.push(Some(cpu_cost.into_flt()));
+			cpu_chart.series_list[0].data.push(Some(cpu_cost.into_flt()));
+			cpu_chart.series_list[1].data.push(Some(cpu_budget.into_flt()));
 		}
 
 		let frame = if self.budget == None || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
