@@ -29,14 +29,14 @@ const FORMAT_VERSION: u16 = 6;
 #[command(author, version)]
 #[command(propagate_version = true)]
 pub struct Cli {
-    #[command(subcommand)]
-    command: CliCommand,
+	#[command(subcommand)]
+	command: CliCommand,
 }
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
-    Encode(encoder::cli::Cli),
-    Play(player::Cli),
+	Encode(encoder::cli::Cli),
+	Play(player::Cli),
 }
 
 fn main() -> anyhow::Result<()> {

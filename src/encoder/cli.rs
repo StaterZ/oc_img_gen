@@ -59,7 +59,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 			let stream_size = args.stream_size.unwrap_or_else(|| {
 				let source_size = Size::<u32>::new(stream.width(), stream.height());
 				let max_screen_size = machine.compute_max_resolution(source_size.cast::<usize>().ratio() / video::braille::SIZE.ratio());
-				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
+				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
 				max_screen_size
 			});
 
@@ -76,7 +76,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 		VideoMode::Matrix => {
 			let stream_size = args.stream_size.unwrap_or_else(|| {
 				let size = machine.compute_max_resolution(Frac::ONE / video::braille::SIZE.ratio());
-				println!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
+				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
 			});
 			
@@ -238,8 +238,8 @@ pub struct Cli {
 
 
 	#[arg(
-		short = 'b',
-		long = "begin",
+		short = 's',
+		long = "start",
 		help = "What frame to start from, starts at input start if omitted",
 		value_parser = humantime::parse_duration,
 	)]

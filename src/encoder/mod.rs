@@ -77,12 +77,12 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 		.as_mut_slice()); //TODO: PERF
 	
 	if cfg!(feature = "log") {
-		println!();
+		eprintln!();
 	}
 	crate::stage("Postamble  | Writing...  ", || std::fs::write(&config.out_path, media_file.to_bytes().unwrap())
 		.map_err(AppError::WriteFailed))?;
 
-	println!("All Done! saved to: {}", config.out_path.display());
+	eprintln!("All Done! saved to: {}", config.out_path.display());
 	Ok(())
 }
 
