@@ -171,3 +171,20 @@ impl From<Image<RGB8>> for lodepng::Bitmap<lodepng::RGB<u8>> {
 		}
 	}
 }
+
+// impl Image<RGB8> {
+// 	pub fn debug_export(&self, mut path: PathBuf) -> anyhow::Result<()> {
+// 		path.set_extension("png");
+// 		println!("Export: {}", path.display());
+// 		let img = self
+// 			.iter()
+// 			.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
+// 			.collect();
+// 		Ok(lodepng::encode24_file(
+// 			path,
+// 			img.buffer(),
+// 			img.size().w,
+// 			img.size().h,
+// 		)?)
+// 	}
+// }
