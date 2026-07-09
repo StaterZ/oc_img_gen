@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use szu::{math::int_div_round, iter::MultiZipExt};
 
 use crate::math::*;
+use crate::encoder::cli::BrailleStrategy;
 #[cfg(not(feature = "rayon"))]
 use super::image_iter::ImageIterator;
 #[cfg(feature = "rayon")]
@@ -106,7 +107,8 @@ impl Braille<RGB8> {
 	pub fn from_pixels_old(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
 		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
 
-		(0u8..(1 << (BITS - 1))).map(move |group| {
+		(0u8..(1 << (BITS - 1)))
+			.map(move |group| {
 				let (bg, fg) = {
 					let mut bg_sum = RGB::<u32>::ZERO;
 					let mut fg_sum = RGB::<u32>::ZERO;
@@ -136,11 +138,11 @@ impl Braille<RGB8> {
 					fg: fg.unwrap_or_else(|| bg.unwrap()),
 				}
 			})
-		.max_by_key(|candidate| candidate.compute_score(pixels))
-		.unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
+			.max_by_key(|candidate| candidate.compute_score(pixels))
+			.unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
 	}
 
-	pub fn from_pixels(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
+	pub fn from_pixels_centroid_cohesion(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
 		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
 
 		#[inline]
@@ -222,6 +224,84 @@ impl Braille<RGB8> {
 
 		unsafe { best.assume_init() }
 	}
+
+	pub fn from_pixels_polar_pair(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
+
+		let [bg, fg] = pixels
+			.iter()
+			.array_combinations_with_replacement::<2>()
+			.max_by_key(|[bg, fg]| bg.perceptual_delta(**fg))
+			.unwrap(); //unwrap is safe since iterator is Self::BITS long, that's always >0
+		let (bg, fg) = (*bg, *fg);
+		
+		let id = (0..BITS).map(|i| {
+			let pixel = pixels[i];
+			(((pixel.perceptual_delta(fg) < pixel.perceptual_delta(bg)) as usize) << i) as u8
+		}).fold(0u8, |acc, item| acc | item);
+
+		Self {
+			id,
+			bg,
+			fg,
+		}
+	}
+
+	pub fn from_pixels_axis_split(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
+
+		// Find min/max per channel across all 8 pixels.
+		let (mut min_r, mut max_r) = (u8::MAX, u8::MIN);
+		let (mut min_g, mut max_g) = (u8::MAX, u8::MIN);
+		let (mut min_b, mut max_b) = (u8::MAX, u8::MIN);
+		for p in pixels {
+			min_r = min_r.min(p.r); max_r = max_r.max(p.r);
+			min_g = min_g.min(p.g); max_g = max_g.max(p.g);
+			min_b = min_b.min(p.b); max_b = max_b.max(p.b);
+		}
+
+		let range_r = max_r as i32 - min_r as i32;
+		let range_g = max_g as i32 - min_g as i32;
+		let range_b = max_b as i32 - min_b as i32;
+
+		// Pick the channel with the greatest spread — that's our split axis.
+		let channel = |p: &RGB8| -> u8 {
+			if range_r >= range_g && range_r >= range_b {
+				p.r
+			} else if range_g >= range_b {
+				p.g
+			} else {
+				p.b
+			}
+		};
+
+		// Sort pixel indices along that axis, split at the median.
+		let mut idx: [usize; BITS] = std::array::from_fn(|i| i);
+		idx.sort_by_key(|&i| channel(&pixels[i]));
+		let (low, high) = idx.split_at(BITS / 2);
+
+		// Average each half in its own bucket to seed bg/fg.
+		let avg = |group: &[usize]| -> RGB8 {
+			let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+			for &i in group {
+				r += pixels[i].r as u32;
+				g += pixels[i].g as u32;
+				b += pixels[i].b as u32;
+			}
+			let n = group.len() as u32;
+			RGB8 { r: (r / n) as u8, g: (g / n) as u8, b: (b / n) as u8 }
+		};
+
+		let (bg, fg) = (avg(low), avg(high));
+
+		// Same final assignment rule as polar_pair: nearest perceptual match wins the bit.
+		let id = (0..BITS).map(|i| {
+			let pixel = pixels[i];
+			(((pixel.perceptual_delta(fg) < pixel.perceptual_delta(bg)) as usize) << i) as u8
+		}).fold(0u8, |acc, item| acc | item);
+
+		Self { id, bg, fg }
+	}
 }
 
 impl<T: PartialEq> PartialEq for Braille<T> {
@@ -236,7 +316,7 @@ impl<T: PartialEq> PartialEq for Braille<T> {
 }
 
 #[cfg(feature = "rayon")]
-pub fn as_braille(input: &Image<RGB8>) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<RGB8>>> {
+pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<RGB8>>> {
 	let row_len = input.size().w as usize;
 	ParallelImageIterator {
 		size: input.size() / SIZE,
@@ -251,11 +331,15 @@ pub fn as_braille(input: &Image<RGB8>) -> ParallelImageIterator<impl ParallelIte
 					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
 				})
 			})
-			.map(|cluster| Braille::from_pixels(&cluster)),
+			.map(match strategy {
+				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
+				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
+				BrailleStrategy::AxisSplit => |cluster| Braille::from_pixels_axis_split(&cluster),
+			}),
 	}
 }
 #[cfg(not(feature = "rayon"))]
-pub fn as_braille(input: &Image<RGB8>) -> ImageIterator<impl Iterator<Item = Braille<RGB8>>> {
+pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ImageIterator<impl Iterator<Item = Braille<RGB8>>> {
 	let row_len = input.size().w as usize;
 	ImageIterator {
 		size: input.size() / SIZE,
@@ -270,7 +354,11 @@ pub fn as_braille(input: &Image<RGB8>) -> ImageIterator<impl Iterator<Item = Bra
 					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
 				})
 			})
-			.map(|cluster| Braille::from_pixels(&cluster)),
+			.map(match strategy {
+				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
+				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
+				BrailleStrategy::AxisSplit => |cluster| Braille::from_pixels_axis_split(&cluster),
+			}),
 	}
 }
 

@@ -68,6 +68,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.fill_color,
 				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
+				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 			)
@@ -95,6 +96,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.matrix_size.unwrap(),
 				gap_size,
 				args.filter,
+				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 			)
@@ -118,6 +120,7 @@ fn create_main_stream(
 	fill_color: RGB8,
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
+	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u64>,
 ) -> VideoConfig {
@@ -127,6 +130,7 @@ fn create_main_stream(
 		size: stream_size,
 		source_area: None,
 		filter,
+		braille_strategy,
 		budget,
 		acceptable_loss,
 	}];
@@ -145,6 +149,7 @@ fn create_matrix_streams(
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
 	filter: Option<VideoFilter>,
+	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u64>,
 ) -> VideoConfig {
@@ -162,6 +167,7 @@ fn create_matrix_streams(
 					size: stream_input_size,
 				}),
 				filter,
+				braille_strategy,
 				budget,
 				acceptable_loss,
 			}))
@@ -197,6 +203,13 @@ pub enum VideoFilter {
 pub enum Budget {
 	Direct,
 	Buffered,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum BrailleStrategy {
+	CentroidCohesion,
+	PolarPair,
+	AxisSplit,
 }
 
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
@@ -354,6 +367,16 @@ struct VideoOpts {
 		conflicts_with = "streams_config",
 	)]
 	pub filter: Option<VideoFilter>,
+
+	#[arg(
+		value_enum,
+		short = 'b',
+		long = "braille",
+		help = "What brailling strategy to use",
+		requires = "mode",
+		//default_value_t = Some(BrailleStrategy::Soft), //TODO: Problems?
+	)]
+	braille_strategy: Option<BrailleStrategy>,
 
 	#[arg(
 		long = "budget",
