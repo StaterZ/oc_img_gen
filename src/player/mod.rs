@@ -67,14 +67,14 @@ fn remove_title_bar(window: &Window) {
 	};
 
 	unsafe {
-		let hwnd = HWND(window.get_window_handle() as *mut std::ffi::c_void);
+		let hwnd = HWND(window.get_window_handle());
 
 		let style = GetWindowLongW(hwnd, GWL_STYLE);
 		let remove = (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU).0 as i32;
 		SetWindowLongW(hwnd, GWL_STYLE, style & !remove);
 
 		let size = window.get_size();
-		println!("{:?}", size);
+		eprintln!("{:?}", size);
 		SetWindowPos(
 			hwnd,
 			Some(HWND_TOP),
@@ -92,7 +92,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	anyhow::ensure!(file.header.version == FORMAT_VERSION);
 	
 	if file.header.num_streams == 0 {
-		println!("No streams");
+		eprintln!("No streams");
 		return Ok(());
 	}
 
@@ -289,7 +289,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	));
 
 	#[cfg(feature = "log")] {
-		println!("t:{}/{}, p:{}/{}",
+		eprintln!("t:{}/{}, p:{}/{}",
 			humantime::Duration::from(clean_duration(elapsed)),
 			humantime::Duration::from(clean_duration(*length)),
 			state.next_packet_index,
@@ -327,7 +327,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 						desc.name,
 						stream.next_frame_index - 1,
 					);
-					println!("{}", path);
+					eprintln!("{}", path);
 					write_image(path, stream.image
 						.iter()
 						.map(|p| RGB8::new(*p)))?;
@@ -428,9 +428,7 @@ impl VideoStream {
 			}
 			
 			self.diff_image[pos] = braille;
-			// self.draw_braille(pos, &Braille::with_index(0, rng_color, rng_color));
-			// continue;
-			
+
 			self.draw_braille(pos, &braille.map(|c| c.value()));
 		};
 	}
