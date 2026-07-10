@@ -61,8 +61,8 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 		let mut start_ts = stream.start_time();
 		if start_ts == AV_NOPTS_VALUE { start_ts = 0; }
 		let mut duration_ts = stream.duration();
-		if duration_ts == AV_NOPTS_VALUE { duration_ts = ictx.duration(); }
-		if duration_ts == AV_NOPTS_VALUE { duration_ts = 1; }
+		if duration_ts == AV_NOPTS_VALUE || duration_ts <= 0 { duration_ts = ictx.duration(); }
+		if duration_ts == AV_NOPTS_VALUE || duration_ts <= 0 { duration_ts = 1; }
 		let end_ts = start_ts + duration_ts;
 		
 		let ns_to_ts = |ns: u128| (Frac::new(ns, std::time::Duration::SECOND.as_nanos()) / time_base.try_cast::<u128>().unwrap()).into_int_round() as i64;
