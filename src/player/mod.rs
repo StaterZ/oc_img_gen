@@ -14,6 +14,29 @@ use crate::{
 	}
 };
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum CliScale {
+	X1,
+	X2,
+	X4,
+	X8,
+	X16,
+	X32,
+}
+
+impl From<CliScale> for Scale {
+	fn from(value: CliScale) -> Self {
+		match value {
+			CliScale::X1 => Scale::X1,
+			CliScale::X2 => Scale::X2,
+			CliScale::X4 => Scale::X4,
+			CliScale::X8 => Scale::X8,
+			CliScale::X16 => Scale::X16,
+			CliScale::X32 => Scale::X32,
+		}
+	}
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version)]
 pub struct Cli {
@@ -25,10 +48,18 @@ pub struct Cli {
 	pub in_path: PathBuf,
 
 	#[arg(
+		short = 'd',
 		long = "diff",
 		help = "visualize difference from last frame",
 	)]
 	pub diff: bool,
+
+	#[arg(
+		short = 'r',
+		long = "raw",
+		help = "visualize underlying braille symbols",
+	)]
+	pub show_raw: bool,
 
 	#[arg(
 		short = 'e',
@@ -50,6 +81,13 @@ pub struct Cli {
 		conflicts_with = "matrix_gap_size",
 	)]
 	pub matrix_screen_size: Option<Size<usize>>,
+	
+	#[arg(
+		short = 's',
+		long = "scale",
+		help = "scale of screens",
+	)]
+	pub scale: Option<CliScale>,
 }
 
 fn progress_style() -> ProgressStyle {
@@ -117,7 +155,10 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				)
 			};
 
-			let scale = if pos.is_none() { Scale::FitScreen } else { Scale::X1 };
+			let scale = args.scale.map_or_else(
+				|| if pos.is_none() { Scale::FitScreen } else { Scale::X1 },
+				|scale| scale.into(),
+			);
 
 			let mut window = Window::new(
 				&format!("Playing: {}", desc.name),
@@ -376,13 +417,15 @@ impl VideoStream {
 					let (next_parse_state, command) = Command::from_bytes(parse_state)?;
 					parse_state = next_parse_state;
 
-					if let Some(background) = command.background {
-						gpu.background_color = gpu.formatter.inflate(background);
+					if !args.show_raw {
+						if let Some(background) = command.background {
+							gpu.background_color = gpu.formatter.inflate(background);
+						}
+						if let Some(foreground) = command.foreground {
+							gpu.foreground_color = gpu.formatter.inflate(foreground);
+						}
 					}
-					if let Some(foreground) = command.foreground {
-						gpu.foreground_color = gpu.formatter.inflate(foreground);
-					}
-					
+
 					let pos = command.pos.cast::<usize>();
 					match command.data {
 						CommandData::Raw(braille) => self.draw_braille_line(

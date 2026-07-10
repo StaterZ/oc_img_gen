@@ -421,6 +421,7 @@ pub struct AudioOpts {
 	pub guard: isize,
 
 	#[arg(
+		short = 'v',
 		long = "voices",
 		default_value_t = 8,
 		help = "How many voices to use (8 channels per sound card)",
