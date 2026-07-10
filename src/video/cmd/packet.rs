@@ -314,8 +314,11 @@ impl<'a> VideoEncoder<'a> {
 			}
 
 			loss += loss_step;
-			if self.budget == None || loss > acceptable_loss || gpu_cost <= gpu_budget && cpu_cost <= cpu_budget {
-				if self.budget.is_some() && loss == 0.into() {
+			let has_budget = self.budget.is_some();
+			let can_afford = gpu_cost <= gpu_budget && cpu_cost <= cpu_budget;
+			let is_loss_acceptable = loss <= acceptable_loss;
+			if !has_budget || can_afford || !is_loss_acceptable {
+				if has_budget && !can_afford && !is_loss_acceptable {
 					break Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
 						commands_len: 0,
 						command_kind: CMD_KIND,
