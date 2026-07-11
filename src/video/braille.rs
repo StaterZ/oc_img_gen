@@ -230,7 +230,7 @@ impl Braille<RGB8> {
 
 		let [bg, fg] = pixels
 			.iter()
-			.array_combinations_with_replacement::<2>()
+			.array_combinations::<2>()
 			.max_by_key(|[bg, fg]| bg.perceptual_delta(**fg))
 			.unwrap(); //unwrap is safe since iterator is Self::BITS long, that's always >0
 		let (bg, fg) = (*bg, *fg);
