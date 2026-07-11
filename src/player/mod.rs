@@ -88,6 +88,14 @@ pub struct Cli {
 		help = "scale of screens",
 	)]
 	pub scale: Option<CliScale>,
+
+	#[arg(
+		short = 'S',
+		long = "vst",
+		help = "how many seconds of smoothing to apply to each voice to reduce popping",
+		default_value_t = humantime::Duration::from(Duration::MILLISECOND),
+	)]
+	pub voice_smooth_time: humantime::Duration,
 }
 
 fn progress_style() -> ProgressStyle {
@@ -243,20 +251,34 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 	let sample_rate = config.sample_rate() as f32;
 	let channels = config.channels() as usize;
-	let mut voice_phases = vec![0.0; voices_out.output_buffer().len()];
+
+	let mut voice_states: Vec<VoiceState> = voices_out
+		.output_buffer()
+		.iter()
+		.map(|v| VoiceState { phase: 0.0, cur_volume: 0.0, cur_freq: v.frequency })
+		.collect();
+
+	let smooth_coefficient = (-1.0 / (sample_rate * args.voice_smooth_time.as_secs_f32())).exp();
+
 	let stream = device.build_output_stream(
 		config.into(),
 		move |data: &mut [f32], _| {
 			for frame in data.chunks_exact_mut(channels) {
+				let voices = voices_out.read();
 				let mut sample = 0.0;
-				for (voice, phase) in voices_out.read().iter().zip_eq(voice_phases.iter_mut()) {
-					sample += (*phase * std::f32::consts::TAU).sin() * voice.volume;
-					*phase += voice.frequency / sample_rate;
-					*phase = phase.fract();
+
+				for (voice, state) in voices.iter().zip_eq(voice_states.iter_mut()) {
+					// Exponentially approach target volume/frequency each sample,
+					state.cur_volume = voice.volume + (state.cur_volume - voice.volume) * smooth_coefficient;
+					state.cur_freq = voice.frequency + (state.cur_freq - voice.frequency) * smooth_coefficient;
+
+					sample += (state.phase * std::f32::consts::TAU).sin() * state.cur_volume;
+
+					state.phase += state.cur_freq / sample_rate;
+					state.phase = state.phase.fract();
 				}
-				for channel_sample in frame {
-					*channel_sample = sample;
-				}
+
+				frame.fill(sample);
 			}
 		},
 		|err| eprintln!("Audio error: {err}"),
@@ -302,6 +324,12 @@ struct Gpu {
 }
 struct SoundCard {
 	voices: triple_buffer::Input<Vec<VoiceStateFlt>>
+}
+
+struct VoiceState {
+	phase: f32,
+	cur_volume: f32,
+	cur_freq: f32,
 }
 
 const MILIS_PER_SEC: u32 = 1_000;
