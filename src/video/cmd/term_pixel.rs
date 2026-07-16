@@ -45,10 +45,15 @@ impl TermPixel {
 
 	pub fn compute_loss(&self, other: &Self, formatter: &impl Formatter) -> Frac<u64> {
 		if ('⠀'..='⣿').contains(&char::from(self.sym)) {
-			let bg_bg_delta = formatter.inflate(self.bg).perceptual_delta(formatter.inflate(other.bg));
-			let bg_fg_delta = formatter.inflate(self.bg).perceptual_delta(formatter.inflate(other.fg));
-			let fg_bg_delta = formatter.inflate(self.fg).perceptual_delta(formatter.inflate(other.bg));
-			let fg_fg_delta = formatter.inflate(self.fg).perceptual_delta(formatter.inflate(other.fg));
+			let self_bg = formatter.inflate(self.bg);
+			let self_fg = formatter.inflate(self.fg);
+			let other_bg = formatter.inflate(other.bg);
+			let other_fg = formatter.inflate(other.fg);
+
+			let bg_bg_delta = self_bg.perceptual_delta(other_bg);
+			let bg_fg_delta = self_bg.perceptual_delta(other_fg);
+			let fg_bg_delta = self_fg.perceptual_delta(other_bg);
+			let fg_fg_delta = self_fg.perceptual_delta(other_fg);
 
 			const BASE: u32 = '⠀' as u32;
 			let self_sym_val = (char::from(self.sym) as u32 - BASE) as u8;
