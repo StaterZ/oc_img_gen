@@ -6,10 +6,10 @@ edition = "2024"
 
 [dependencies]
 #custom
-szu = { version = "0.2.2", path = "../szu" }
+szu = { version = "0.2.2", git = "https://github.com/StaterZ/szu-rs", branch = "master" }
 
 #cli & user feedback
-clap = { version = "4.6.1", features= ["derive"] }
+clap = { version = "4.6.2", features= ["derive"] }
 color-print = "0.3.7"
 humantime = "2.4.0"
 stopwatch = "0.0.7"
