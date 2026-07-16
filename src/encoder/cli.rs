@@ -122,7 +122,7 @@ fn create_main_stream(
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
-	acceptable_loss: Frac<u64>,
+	acceptable_loss: Frac<u32>,
 ) -> VideoConfig {
 	let stream_descs_data = vec![VideoDescData {
 		name: "main".to_string(),
@@ -151,7 +151,7 @@ fn create_matrix_streams(
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
-	acceptable_loss: Frac<u64>,
+	acceptable_loss: Frac<u32>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
@@ -391,7 +391,7 @@ struct VideoOpts {
 		long = "loss",
 		help = "selects the 'bitrate' limit for each frame. default: 0",
 	)]
-	pub acceptable_loss: Option<Frac<u64>>,
+	pub acceptable_loss: Option<Frac<u32>>,
 	
 	#[arg(
 		long = "streams-config",

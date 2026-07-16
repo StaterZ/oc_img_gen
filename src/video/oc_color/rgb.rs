@@ -8,6 +8,7 @@ use std::{
 //use all_asserts::*;
 use num::{Num, One};
 use num_traits::{ConstOne, ConstZero, Signed, Zero};
+use palette::{IntoColor, Lab, Srgb, color_difference::ImprovedCiede2000};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RGB<T: Num> {
@@ -22,7 +23,7 @@ pub enum FromStrRadixErr<T: Num> {
 	MissingPart,
 	#[error("too many parts")]
 	TooManyParts,
-    #[error(transparent)]
+	#[error(transparent)]
 	Inner(T::FromStrRadixErr),
 }
 
@@ -163,20 +164,33 @@ impl RGB8 {
 		(self.b as u32) << Self::B_SHIFT
 	}
 
-	#[inline]
-	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)
-		RGB::<i32>::from(self).perceptual_delta(other.into())
+	pub const PERCEPTUAL_DELTA_MAX: u32 = (40.686831874610654f32 * 1000.0).round() as u32;
+	pub fn perceptual_delta(self, other: Self) -> u32 {
+		let a: Lab = Srgb::from(self).into_format::<f32>().into_color();
+		let b: Lab = Srgb::from(other).into_format::<f32>().into_color();
+
+		let delta_e = a.improved_difference(b);
+
+		(delta_e * 1000.0).round() as u32
 	}
 }
 
-impl RGB<i32> {
-	#[inline]
-	pub fn perceptual_delta(self, other: Self) -> u32 { //u32/i32 is big enough for entire range: log2((255*255) * 9999 * 3)
-		let d = self - other;
-		//let d: RGB<u32> = self.abs_diff(other).into();
-		let d2 = d * d;
-		(2126 * d2.r + 7152 * d2.g + 0722 * d2.b) as u32
-		//(d2.r + d2.g + d2.b) as u32
+impl From<palette::rgb::Rgb<palette::encoding::Srgb, u8>> for RGB8 {
+	fn from(value: palette::rgb::Rgb<palette::encoding::Srgb, u8>) -> Self {
+		Self {
+			r: value.red,
+			g: value.green,
+			b: value.blue,
+		}
+	}
+}
+impl From<RGB8> for palette::rgb::Rgb<palette::encoding::Srgb, u8> {
+	fn from(value: RGB8) -> Self {
+		Self::new(
+			value.r,
+			value.g,
+			value.b,
+		)
 	}
 }
 

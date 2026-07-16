@@ -237,7 +237,7 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) {
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) {
 	let batches = generate_batches(frame, prev_frame, max_batch_size, loss, formatter);
 	
 	let mut accelerator = Accelerator::new();
@@ -262,7 +262,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u64>, formatter: &impl Formatter) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
