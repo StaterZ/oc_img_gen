@@ -105,7 +105,7 @@ pub struct VideoEncoder<'a> {
 	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
 	machine: &'a Machine,
-	acceptable_loss: Frac<u64>,
+	acceptable_loss: Frac<u32>,
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
@@ -118,7 +118,7 @@ impl<'a> VideoEncoder<'a> {
 		braille_strategy: BrailleStrategy,
 		budget: Option<Budget>,
 		machine: &'a Machine,
-		acceptable_loss: Frac<u64>,
+		acceptable_loss: Frac<u32>,
 	) -> Self {
 		#[cfg(feature = "charts")] let chart = {
 			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
@@ -265,8 +265,8 @@ impl<'a> VideoEncoder<'a> {
 		}
 	}
 
-	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u64>, formatter: &impl Formatter) {
-		let loss_step = Frac::new(1, 100);
+	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u32>, formatter: &impl Formatter) {
+		let loss_step = Frac::new(1, 1000);
 		let mut loss = 0.into();
 
 		self.num_frames_since_emit += 1;

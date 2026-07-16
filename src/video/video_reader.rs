@@ -40,7 +40,7 @@ pub struct VideoDescData {
 	pub filter: Option<VideoFilter>,
 	pub braille_strategy: BrailleStrategy,
 	pub budget: Option<Budget>,
-	pub acceptable_loss: Frac<u64>,
+	pub acceptable_loss: Frac<u32>,
 }
 
 pub struct VideoReader<'a, 'b> {
