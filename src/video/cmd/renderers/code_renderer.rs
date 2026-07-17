@@ -1,3 +1,5 @@
+use palette::{Srgb, FromColor};
+
 use crate::math::*;
 use super::{
 	BasicRenderer,
@@ -33,11 +35,13 @@ impl<'a, T: Formatter> BasicRenderer for CodeRenderer<'a, T> {
 	}
 
 	fn set_background(&mut self, value: PackedColor) {
-		self.code += &format!("{}.setBackground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
+		let (r, g, b) = Srgb::from_color(self.formatter.inflate(value)).into_format::<u8>().into_components();
+		self.code += &format!("{}.setBackground(0x{:02x}{:02x}{:02x})\n", self.gpu_ident, r, g, b);
 	}
 
 	fn set_foreground(&mut self, value: PackedColor) {
-		self.code += &format!("{}.setForeground(0x{})\n", self.gpu_ident, self.formatter.inflate(value));
+		let (r, g, b) = Srgb::from_color(self.formatter.inflate(value)).into_format::<u8>().into_components();
+		self.code += &format!("{}.setForeground(0x{:02x}{:02x}{:02x})\n", self.gpu_ident, r, g, b);
 	}
 
 	fn set(&mut self, _state: &RenderState, pos: &Point<usize>, value: &str) {

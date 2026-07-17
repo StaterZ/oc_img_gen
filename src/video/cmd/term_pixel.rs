@@ -1,6 +1,7 @@
 use num::One;
+use palette::color_difference::ImprovedCiede2000;
 
-use crate::{math::*, video::oc_color::RGB8};
+use crate::{math::*, video::rgb};
 
 use super::{
 	super::{braille::{self, Braille}, oc_color::{PackedColor, formatters::Formatter}},
@@ -50,20 +51,21 @@ impl TermPixel {
 			let other_bg = formatter.inflate(other.bg);
 			let other_fg = formatter.inflate(other.fg);
 
-			let bg_bg_delta = self_bg.perceptual_delta(other_bg);
-			let bg_fg_delta = self_bg.perceptual_delta(other_fg);
-			let fg_bg_delta = self_fg.perceptual_delta(other_bg);
-			let fg_fg_delta = self_fg.perceptual_delta(other_fg);
+			let bg_bg_delta = self_bg.improved_difference(other_bg);
+			let bg_fg_delta = self_bg.improved_difference(other_fg);
+			let fg_bg_delta = self_fg.improved_difference(other_bg);
+			let fg_fg_delta = self_fg.improved_difference(other_fg);
 
 			const BASE: u32 = '⠀' as u32;
 			let self_sym_val = (char::from(self.sym) as u32 - BASE) as u8;
 			let other_sym_val = (char::from(other.sym) as u32 - BASE) as u8;
+			const SCALAR: f32 = 1000.0;
 			let score =
-				(!self_sym_val & !other_sym_val).count_ones() * bg_bg_delta +
-				(!self_sym_val & other_sym_val).count_ones() * bg_fg_delta +
-				(self_sym_val & !other_sym_val).count_ones() * fg_bg_delta +
-				(self_sym_val & other_sym_val).count_ones() * fg_fg_delta;
-			Frac::new(score, RGB8::PERCEPTUAL_DELTA_MAX * braille::BITS as u32)
+				(!self_sym_val & !other_sym_val).count_ones() * (bg_bg_delta * SCALAR) as u32 +
+				(!self_sym_val & other_sym_val).count_ones() * (bg_fg_delta * SCALAR) as u32 +
+				(self_sym_val & !other_sym_val).count_ones() * (fg_bg_delta * SCALAR) as u32 +
+				(self_sym_val & other_sym_val).count_ones() * (fg_fg_delta * SCALAR) as u32;
+			Frac::new(score, (rgb::IMPROVED_DIFFERENCE_MAX * SCALAR) as u32 * braille::BITS as u32)
 		} else {
 			Frac::one() //TODO: should we handle loss for text?
 		}

@@ -1,28 +1,29 @@
 use std::fmt::Display;
 use all_asserts::*;
+use ordered_float::OrderedFloat;
+use palette::{Lab, color_difference::ImprovedCiede2000};
 
-use super::RGB8;
-
+#[derive(Debug, Clone)]
 pub struct Palette {
-	pub dynamic_palette: [RGB8; Self::SIZE],
+	pub colors: [Lab; Self::SIZE],
 }
 
 impl Palette {
 	pub const SIZE: usize = 16;
 
-	pub fn new(dynamic_palette: [RGB8; Self::SIZE]) -> Self {
-		Self { dynamic_palette }
+	pub const fn new(colors: [Lab; Self::SIZE]) -> Self {
+		Self { colors }
 	}
 	
-	pub fn inflate(&self, color: PaletteColor) -> RGB8 {
-		self.dynamic_palette[color.into_inner() as usize]
+	pub fn inflate(&self, color: PaletteColor) -> Lab {
+		self.colors[color.into_inner() as usize]
 	}
 	
-	pub fn deflate(&self, color: RGB8) -> PaletteColor {
-		PaletteColor::new(self.dynamic_palette
+	pub fn deflate(&self, color: Lab) -> PaletteColor {
+		PaletteColor::new(self.colors
 			.iter()
 			.enumerate()
-			.min_by_key(|(_i, item)| item.perceptual_delta(color))
+			.min_by_key(|(_i, item)| OrderedFloat(item.improved_difference(color)))
 			.unwrap().0 as u8
 		) //unwarp is safe here since array size is comptime fixed as .len()>0
 	}

@@ -12,6 +12,7 @@ use ffmpeg_next::{
 	format::context::Input as FfmpegInput,
 };
 use num_traits::ConstZero;
+use palette::Srgb;
 
 use crate::{
 	encoder::{
@@ -21,7 +22,7 @@ use crate::{
 
 use super::{
 	cmd::packet::{self, Descriptor},
-	oc_color::{self, RGB8},
+	oc_color::self,
 	braille,
 	Image,
 };
@@ -29,7 +30,7 @@ use super::{
 pub struct VideoConfig {
 	pub stream_descs_data: Vec<VideoDescData>,
 	pub container_size: Size<usize>,
-	pub fill_color: RGB8,
+	pub fill_color: Srgb<u8>,
 }
 
 pub struct VideoDescData {
@@ -48,7 +49,7 @@ pub struct VideoReader<'a, 'b> {
 	scaler: Scaler,
 	scaler_buffer: VideoFrame,
 	container_size: Size<usize>,
-	fill_color: RGB8,
+	fill_color: Srgb<u8>,
 	in_frame_rate: Frac<i64>,
 	formatter: oc_color::formatters::HybridFormatter,
 	pub encoders: Vec<packet::VideoEncoder<'b>>,

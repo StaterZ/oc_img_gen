@@ -1,16 +1,18 @@
 use std::fmt::Display;
 use std::mem::MaybeUninit;
+use image::imageops::ColorMap;
 use lazy_static::lazy_static;
 use all_asserts::*;
-use szu::math::int_div_round;
+use ordered_float::OrderedFloat;
+use palette::{Lab, Srgb, FromColor, color_difference::ImprovedCiede2000};
 
-use super::super::{RGB8, PackedColor};
+use super::super::PackedColor;
 use super::super::palette::{Palette, PaletteOr};
 use super::Formatter;
 
 lazy_static! {
-	static ref STATIC_PALETTE: [RGB8; StaticColor::PALETTE_SIZE] = {
-		let mut result =  [MaybeUninit::<RGB8>::uninit(); StaticColor::PALETTE_SIZE];
+	static ref STATIC_PALETTE: [Lab; StaticColor::PALETTE_SIZE] = {
+		let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); StaticColor::PALETTE_SIZE];
 		let mut i = 0;
 		for i_r in 0..StaticColor::NUM_REDS {
 			let r = ((i_r * 0x100) / (StaticColor::NUM_REDS - 1)).min(0xff) as u8;
@@ -18,28 +20,25 @@ lazy_static! {
 				let g = ((i_g * 0x100) / (StaticColor::NUM_GREENS - 1)).min(0xff) as u8;
 				for i_b in 0..StaticColor::NUM_BLUES {
 					let b = ((i_b * 0x100) / (StaticColor::NUM_BLUES - 1)).min(0xff) as u8;
-					result[i] = MaybeUninit::new(RGB8 { r, g, b });
+					result[i] = MaybeUninit::new(Srgb::<u8>::new(r, g, b));
 					//eprintln!("{:02X}: {}", i, unsafe { result[i].assume_init() });
 					i = i + 1;
 				}
 			}
 		}
-		unsafe { std::mem::transmute(result) }
-	};
+		
+		unsafe { std::mem::transmute::<_, [Srgb<u8>; StaticColor::PALETTE_SIZE]>(result) }
+	}.map(|c| Lab::from_color(c.into_format::<f32>()));
 
-	static ref DYNAMIC_PALETTE_DEFAULT: [RGB8; Palette::SIZE] = {
-		let mut result =  [MaybeUninit::<RGB8>::uninit(); Palette::SIZE];
+	static ref DYNAMIC_PALETTE_DEFAULT: Palette = Palette::new({
+		let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); Palette::SIZE];
 		for (i, item) in result.iter_mut().enumerate() {
 			let shade = ((i + 1) * 0xFF / (Palette::SIZE + 1)) as u8;
-			*item = MaybeUninit::new(RGB8 {
-				r: shade,
-				g: shade,
-				b: shade,
-			});
+			*item = MaybeUninit::new(Srgb::<u8>::new(shade, shade, shade));
 			//eprintln!("{:02X}: {}", i, unsafe { item.assume_init() });
 		}
-		unsafe { std::mem::transmute(result) }
-	};
+		unsafe { std::mem::transmute::<_, [Srgb<u8>; Palette::SIZE]>(result) }
+	}.map(|c| Lab::from_color(c.into_format::<f32>())));
 }
 
 pub struct HybridFormatter {
@@ -47,13 +46,15 @@ pub struct HybridFormatter {
 }
 
 impl HybridFormatter {
+	pub const PALETTE_SIZE: usize = 16;
+
 	pub fn new() -> Self {
 		Self {
-			palette: Palette::new(*DYNAMIC_PALETTE_DEFAULT),
+			palette: DYNAMIC_PALETTE_DEFAULT.clone(),
 		}
 	}
 
-	fn inflate_impl(&self, color: PaletteOr<StaticColor>) -> RGB8 {
+	fn inflate_impl(&self, color: PaletteOr<StaticColor>) -> Lab {
 		match color {
 			PaletteOr::Palette(color) => self.palette.inflate(color),
 			PaletteOr::NonPalette(color) => color.inflate(),
@@ -62,11 +63,11 @@ impl HybridFormatter {
 }
 
 impl Formatter for HybridFormatter {
-	fn inflate(&self, color: PackedColor) -> RGB8 {
+	fn inflate(&self, color: PackedColor) -> Lab {
 		self.inflate_impl(color.unpack())
 	}
 
-	fn deflate(&self, color: PaletteOr<RGB8>) -> PackedColor {
+	fn deflate(&self, color: PaletteOr<Lab>) -> PackedColor {
 		PackedColor::new(match color {
 			PaletteOr::Palette(color) => PaletteOr::Palette(color),
 			PaletteOr::NonPalette(color) => {
@@ -76,11 +77,31 @@ impl Formatter for HybridFormatter {
 				std::cmp::min_by_key(
 					PaletteOr::Palette(palette_color),
 					PaletteOr::NonPalette(static_color),
-					|quantized_color| color
-						.perceptual_delta(self
-							.inflate_impl(*quantized_color)))
+					|quantized_color| OrderedFloat(color
+						.improved_difference(self
+							.inflate_impl(*quantized_color))))
 			},
 		})
+	}
+}
+
+impl ColorMap for HybridFormatter {
+	type Color = Lab;
+
+	fn index_of(&self, color: &Self::Color) -> usize {
+		self.deflate(PaletteOr::NonPalette(*color)).0 as usize
+	}
+
+	fn lookup(&self, index: usize) -> Option<Self::Color> {
+		Some(self.inflate(PackedColor(index as u8)))
+	}
+	/// Determine if this implementation of `ColorMap` overrides the default `lookup`.
+	fn has_lookup(&self) -> bool {
+		true
+	}
+
+	fn map_color(&self, color: &mut Self::Color) {
+		*color = self.inflate(self.deflate(PaletteOr::NonPalette(*color)))
 	}
 }
 
@@ -103,16 +124,17 @@ impl StaticColor {
 		self.0
 	}
 	
-	pub fn inflate(self) -> RGB8 {
+	pub fn inflate(self) -> Lab {
 		STATIC_PALETTE[self.into_inner() as usize]
 	}
 
-	pub fn deflate(color: RGB8) -> StaticColor {
-		let i_r = int_div_round(color.r as usize * (StaticColor::NUM_REDS - 1), 0xFF) as u8;
-		let i_g = int_div_round(color.g as usize * (StaticColor::NUM_GREENS - 1), 0xFF) as u8;
-		let i_b = int_div_round(color.b as usize * (StaticColor::NUM_BLUES - 1), 0xFF) as u8;
-
-		StaticColor::new(i_r * (StaticColor::NUM_GREENS * StaticColor::NUM_BLUES) as u8 + i_g * StaticColor::NUM_BLUES as u8 + i_b)
+	pub fn deflate(color: Lab) -> StaticColor {
+		StaticColor::new(STATIC_PALETTE
+			.iter()
+			.enumerate()
+			.min_by_key(|(_i, item)| OrderedFloat(item.improved_difference(color)))
+			.unwrap().0 as u8
+		) //unwarp is safe here since array size is comptime fixed as .len()>0
 	}
 }
 

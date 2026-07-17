@@ -1,7 +1,12 @@
 use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
 use num_traits::ConstZero;
+use ordered_float::OrderedFloat;
+use palette::color_difference::ImprovedCiede2000;
+use palette::rgb::channels::Argb;
+use palette::{Hsv, Lab, Srgb, FromColor};
 use szu::iter::RleRun;
+use lazy_static::lazy_static;
 
 use crate::encoder::cli::BrailleStrategy;
 use crate::math::*;
@@ -14,10 +19,11 @@ use crate::encoder::{
 	},
 	muxer::PacketWriter,
 };
+use crate::video::rgb;
 use super::{
 	super::{
 		braille,
-		oc_color::{formatters::{HybridFormatter, Formatter}, PackedColor, RGB8, PaletteOr},
+		oc_color::{formatters::{HybridFormatter, Formatter}, PackedColor, PaletteOr},
 		Image,
 	},
 	batcher,
@@ -109,6 +115,18 @@ pub struct VideoEncoder<'a> {
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
+lazy_static! {
+	static ref VGA_PALETTE: [Lab; 1 << 3] = [
+		0x000000,
+		0xff0000,
+		0x00ff00,
+		0xffff00,
+		0x0000ff,
+		0xff00ff,
+		0x00ffff,
+		0xffffff,
+	].map(|c| Lab::from_color(Srgb::<u8>::from_u32::<Argb>(c).into_format::<f32>()));
+}
 impl<'a> VideoEncoder<'a> {
 	pub fn new(
 		desc: StreamDescriptor<Descriptor>,
@@ -162,11 +180,25 @@ impl<'a> VideoEncoder<'a> {
 		}
 	}
 	
-	pub fn process(&mut self, img: &Image<RGB8>, formatter: &HybridFormatter) {
+	pub fn process(&mut self, img: &Image<Srgb<u8>>, formatter: &HybridFormatter) {
 		let img = crate::stage("Stream | Preamble  | Crop", || img.crop(&self.source_area));
 		debug_assert_eq!(img.size(), self.desc.content.size.cast::<usize>() * braille::SIZE);
 
-		let img = if let Some(filter) = self.filter { Self::apply_filter(filter, img) } else { img };
+		let img = if let Some(filter) = self.filter {
+			Self::apply_filter(filter, img)
+		} else {
+			crate::stage("Stream | Process   | ToLab", || img
+				.into_iter()
+				.map(|p| Lab::from_color(p.into_format::<f32>()))
+				.collect())
+		};
+
+		// let mut img = image::RgbImage::new::from_vec(
+		// 	img.size().w as u32,
+		// 	img.size().h as u32,
+		// 	img.into_buffer(),
+		// );
+		// image::imageops::colorops::dither(&mut img, formatter);
 
 		const UBER_MODE: bool = true;
 		let img = if UBER_MODE {
@@ -195,72 +227,27 @@ impl<'a> VideoEncoder<'a> {
 		crate::stage("Stream | Postamble | Cmd Gen", || self.push_frame::<{ CommandKind::Braille }>(img, self.acceptable_loss, formatter));
 	}
 
-	fn apply_filter(filter: VideoFilter, img: Image<RGB8>) -> Image<RGB8> {
+	fn apply_filter(filter: VideoFilter, img: Image<Srgb<u8>>) -> Image<Lab> {
 		match filter {
 			VideoFilter::Monochrome => crate::stage("Stream | Process   | Monochrome", || img.into_iter().map(|p| {
-				if p.perceptual_delta(RGB8::WHITE) < p.perceptual_delta(RGB8::BLACK) { RGB8::WHITE } else { RGB8::BLACK }
+				let p = Lab::from_color(p.into_format::<f32>());
+				if p.improved_difference(*rgb::WHITE_LAB) < p.improved_difference(*rgb::BLACK_LAB) { *rgb::WHITE_LAB } else { *rgb::BLACK_LAB }
 			}).collect()),
 			VideoFilter::Grayscale => crate::stage("Stream | Process   | Grayscale", || img.into_iter().map(|p| {
-				fn srgb_to_linear(u: f64) -> f64 {
-					if u <= 0.04045 {
-						u / 12.92
-					} else {
-						((u + 0.055) / 1.055).powf(2.4)
-					}
-				}
-
-				fn linear_to_srgb(v: f64) -> f64 {
-					if v <= 0.0031308 {
-						12.92 * v
-					} else {
-						1.055 * v.powf(1.0 / 2.4) - 0.055
-					}
-				}
-			
-				let r_lin = srgb_to_linear(p.r as f64 / 255.0);
-				let g_lin = srgb_to_linear(p.g as f64 / 255.0);
-				let b_lin = srgb_to_linear(p.b as f64 / 255.0);
-
-				// Rec. 709 luminance
-				let y_lin = 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin;
-
-				// Convert back to sRGB
-				let y_srgb = linear_to_srgb(y_lin);
-
-				let luminance = (y_srgb * 255.0).round().clamp(0.0, 255.0) as u8;
-				RGB8 {
-					r: luminance,
-					g: luminance,
-					b: luminance,
-				}
+				let p = Lab::from_color(p.into_format::<f32>());
+				Lab::new(p.l, 0.0, 0.0)
 			}).collect()),
 			VideoFilter::Vga => crate::stage("Stream | Process   | VGA", || img.into_iter().map(|p| {
-				const PALETTE: [RGB8; 8] = [
-					RGB8::new(0x000000),
-					RGB8::new(0xff0000),
-					RGB8::new(0x00ff00),
-					RGB8::new(0xffff00),
-					RGB8::new(0x0000ff),
-					RGB8::new(0xff00ff),
-					RGB8::new(0x00ffff),
-					RGB8::new(0xffffff),
-				];
-				use palette::*;
-				let srgb = Srgb::new(p.r, p.g, p.b).into_format::<f32>();
-				let mut hsv = Hsv::from_color(srgb);
+				let mut hsv = Hsv::from_color(p.into_format::<f32>());
 				hsv.saturation = 1.0;
-				let srgb = Srgb::from_color(hsv).into_format::<u8>();
-				let p = RGB8 { r: srgb.red, g: srgb.green, b: srgb.blue };
-				*PALETTE.iter().min_by_key(|c| p.perceptual_delta(**c)).unwrap() //SAFETY: unwrap safe due to PALETTE.len > 0
+				let p = Lab::from_color(hsv);
+				*VGA_PALETTE.iter().min_by_key(|c| OrderedFloat(p.improved_difference(**c))).unwrap() //SAFETY: unwrap safe due to VGA_PALETTE.len > 0
 			}).collect()),
 			VideoFilter::Hsv => crate::stage("Stream | Process   | VGA", || img.into_iter().map(|p| {
-				use palette::*;
-				let srgb = Srgb::new(p.r, p.g, p.b).into_format::<f32>();
-				let mut hsv = Hsv::from_color(srgb);
+				let mut hsv = Hsv::from_color(p.into_format::<f32>());
 				hsv.saturation = (hsv.saturation * 6.0).round() / 6.0;
 				hsv.value = (hsv.value * 4.0).round() / 4.0;
-				let srgb = Srgb::from_color(hsv).into_format::<u8>();
-				RGB8 { r: srgb.red, g: srgb.green, b: srgb.blue }
+				Lab::from_color(hsv)
 			}).collect()),
 		}
 	}

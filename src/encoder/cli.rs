@@ -1,11 +1,12 @@
-use std::{path::{Path, PathBuf}, time::Duration};
+use std::{fmt::Display, num::ParseIntError, ops::Deref, path::{Path, PathBuf}, str::FromStr, time::Duration};
 use clap::{Args, Parser, ValueHint};
 use num_traits::{ConstOne, ConstZero};
+use palette::{Srgb, rgb::channels::Argb};
 
 use crate::{
 	EXT, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
-	}, math::{Frac, Point, Rect, Size, SizeTrait}, video::{self, cmd::machine::{Machine, Tier}, oc_color::RGB8}
+	}, math::{Frac, Point, Rect, Size, SizeTrait}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
 pub fn process_args(args: Cli) -> EncoderConfig {
@@ -65,7 +66,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 
 			create_main_stream(
 				args.frame_rate.map(|x| x.inverse()),
-				args.fill_color,
+				*args.fill_color,
 				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
@@ -91,7 +92,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 			
 			create_matrix_streams(
 				args.frame_rate.map(|x| x.inverse()),
-				args.fill_color,
+				*args.fill_color,
 				stream_size.try_cast().expect("stream size too large"),
 				args.matrix_size.unwrap(),
 				gap_size,
@@ -117,7 +118,7 @@ pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize
 
 fn create_main_stream(
 	frame_rate: Option<Frac<u16>>,
-	fill_color: RGB8,
+	fill_color: Srgb::<u8>,
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
@@ -144,7 +145,7 @@ fn create_main_stream(
 
 fn create_matrix_streams(
 	frame_rate: Option<Frac<u16>>,
-	fill_color: RGB8,
+	fill_color: Srgb::<u8>,
 	stream_size: Size<u8>,
 	matrix_size: Size<usize>,
 	matrix_gap_size: Size<usize>,
@@ -209,7 +210,6 @@ pub enum Budget {
 pub enum BrailleStrategy {
 	CentroidCohesion,
 	PolarPair,
-	AxisSplit,
 }
 
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
@@ -317,11 +317,11 @@ struct VideoOpts {
 	#[arg(
 		long = "fill-color",
 		help = "color of the padding around the video",
-		default_value_t = RGB8::new(0x000000),
+		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
 		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
-	pub fill_color: RGB8,
+	pub fill_color: CliSrgb8,
 
 	#[arg(
 		long = "stream-size",
@@ -404,6 +404,52 @@ struct VideoOpts {
 impl VideoOpts {
 	fn validate(&self) -> bool {
 		true
+	}
+}
+
+#[derive(Debug, Clone)]
+struct CliSrgb8(Srgb<u8>);
+
+#[derive(thiserror::Error, Debug)]
+pub enum ParseColorError {
+	#[error("Color must be 6 hex digits, {0} supplied")]
+	BadCharacterCount(usize),
+	#[error("{0}")]
+	ParseIntError(#[from] ParseIntError),
+}
+
+impl FromStr for CliSrgb8 {
+	type Err = ParseColorError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let hex = s.trim();
+		if hex.len() != 6 {
+			return Err(ParseColorError::BadCharacterCount(hex.len()));
+		}
+		let r = u8::from_str_radix(&hex[0..2], 16)?;
+		let g = u8::from_str_radix(&hex[2..4], 16)?;
+		let b = u8::from_str_radix(&hex[4..6], 16)?;
+		Ok(CliSrgb8(Srgb::new(r, g, b)))
+	}
+}
+
+impl Display for CliSrgb8 {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:02X}{:02X}{:02X}", self.red, self.green, self.blue)
+	}
+}
+
+impl Deref for CliSrgb8 {
+	type Target = Srgb::<u8>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl From<Srgb<u8>> for CliSrgb8 {
+	fn from(value: Srgb<u8>) -> Self {
+		Self(value)
 	}
 }
 

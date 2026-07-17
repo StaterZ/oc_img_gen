@@ -1,20 +1,19 @@
 use std::mem::MaybeUninit;
-use num_traits::ConstZero;
 use itertools::Itertools;
+use palette::{Lab, color_difference::ImprovedCiede2000};
+use ordered_float::OrderedFloat;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-use szu::{math::int_div_round, iter::MultiZipExt};
+use szu::iter::MultiZipExt;
 
 use crate::math::*;
 use crate::encoder::cli::BrailleStrategy;
+use crate::video::rgb;
 #[cfg(not(feature = "rayon"))]
 use super::image_iter::ImageIterator;
 #[cfg(feature = "rayon")]
 use super::image_iter::ParallelImageIterator;
-use super::{
-	image::Image,
-	oc_color::{RGB, RGB8},
-};
+use super::image::Image;
 
 pub const SIZE: Size<usize> = Size::new(2, 4);
 pub const WIDTH: usize = SIZE.w;
@@ -82,94 +81,68 @@ impl<T: Copy> Braille<T> {
 	}
 }
 
-impl Braille<RGB8> {
+impl Braille<Lab> {
 	#[inline(always)]
-	fn compute_sharpness(&self) -> u32 {
-		if self.id == 0x00 || self.id == 0xff { 0 } else { self.bg.perceptual_delta(self.fg) }
+	fn compute_sharpness(&self) -> f32 {
+		if self.id == 0x00 || self.id == 0xff { 0.0 } else { self.bg.improved_difference(self.fg) }
 	}
 	
 	#[inline(always)]
-	fn compute_irregularity(&self, pixels: &[RGB8; BITS]) -> u32 {
+	fn compute_irregularity(&self, pixels: &[Lab; BITS]) -> f32 {
 		(0..BITS).map(|i| {
 			let pixel = pixels[i];
 			let palette_color = if ((self.id as usize >> i) & 1) != 0 { self.fg } else { self.bg };
-			pixel.perceptual_delta(palette_color)
+			pixel.improved_difference(palette_color)
 		}).sum()
 	}
 
 	#[inline(always)]
-	fn compute_score(&self, pixels: &[RGB8; BITS]) -> i32 {
+	fn compute_score(&self, pixels: &[Lab; BITS]) -> i32 {
 		let sharpness = self.compute_sharpness();
 		let irregular = self.compute_irregularity(pixels);
 		sharpness as i32 - irregular as i32
 	}
 
-	pub fn from_pixels_old(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
-		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
-
-		(0u8..(1 << (BITS - 1)))
-			.map(move |group| {
-				let (bg, fg) = {
-					let mut bg_sum = RGB::<u32>::ZERO;
-					let mut fg_sum = RGB::<u32>::ZERO;
-					for i in 0..BITS {
-						let bin_sum = if (group >> i) & 1 == 0 {
-							&mut bg_sum
-						} else {
-							&mut fg_sum
-						};
-						*bin_sum += pixels[i].into();
-					}
-
-					fn div_rgb(lhs: RGB<u32>, rhs: u32) -> Option<RGB8> {
-						(rhs != 0).then(|| RGB {
-							r: int_div_round(lhs.r, rhs) as u8,
-							g: int_div_round(lhs.g, rhs) as u8,
-							b: int_div_round(lhs.b, rhs) as u8,
-						})
-					}
-					
-					(div_rgb(bg_sum, group.count_zeros()), div_rgb(fg_sum, group.count_ones()))
-				};
-
-				Self {
-					id: group,
-					bg: bg.unwrap_or_else(|| fg.unwrap()),
-					fg: fg.unwrap_or_else(|| bg.unwrap()),
-				}
-			})
-			.max_by_key(|candidate| candidate.compute_score(pixels))
-			.unwrap() //unwrap is safe since iterator is Self::BITS long, that's always >0
-	}
-
-	pub fn from_pixels_centroid_cohesion(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
-		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
-
-		#[inline]
-		fn div_rgb(lhs: &RGB<u32>, rhs: u32) -> Option<RGB8> {
-			(rhs != 0).then(|| RGB {
-				r: int_div_round(lhs.r, rhs) as u8,
-				g: int_div_round(lhs.g, rhs) as u8,
-				b: int_div_round(lhs.b, rhs) as u8,
-			})
-		}
-
-		// Precompute per-bit sums as RGB<u32> so we can add/subtract quickly.
-		let pixels32: [RGB<u32>; BITS] = std::array::from_fn(|i| pixels[i].into());
+	pub fn from_pixels_centroid_cohesion(pixels: &[[Lab; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[Lab; BITS] = unsafe { std::mem::transmute(pixels) };
 
 		const NUM_GROUPS: usize = 1 << (BITS - 1);
 
+		fn average_lab<I>(colors: I) -> Option<Lab>
+		where
+			I: IntoIterator<Item = Lab>,
+		{
+			let mut sum_l = 0.0;
+			let mut sum_a = 0.0;
+			let mut sum_b = 0.0;
+			let mut count = 0u32;
+
+			for c in colors {
+				sum_l += c.l;
+				sum_a += c.a;
+				sum_b += c.b;
+				count += 1;
+			}
+
+			if count == 0 {
+				return None;
+			}
+
+			let n = count as f32;
+			Some(Lab::new(sum_l / n, sum_a / n, sum_b / n))
+		}
+
 		// Start with group == 0 (all bits 0 => all pixels in bg)
 		// bg_sum = sum of all pixel_sums, fg_sum = ZERO
-		let mut bg_sum = pixels32.iter().copied().sum();
-		let mut fg_sum = RGB::<u32>::ZERO;
-		let mut bg_count: u32 = BITS as u32;
-		let mut fg_count: u32 = 0;
+		let mut bg_sum = pixels.iter().copied().fold(*rgb::ZERO_LAB, |acc, p| acc + p);
+		let mut fg_sum = *rgb::ZERO_LAB;
+		let mut bg_count: usize = BITS as usize;
+		let mut fg_count: usize = 0;
 
 		// Gray-code generation helpers:
 		// Gray(i) = i ^ (i >> 1). We iterate i from 0..GROUPS and compute gray.
 		// flipped bit index = trailing_zeros(prev_gray ^ gray).
-		let mut best = MaybeUninit::<Braille<RGB8>>::uninit();
+		let mut best = MaybeUninit::<Braille<Lab>>::uninit();
 		let mut best_score = i32::MIN;
 
 		let mut prev_gray: usize = 0;
@@ -183,14 +156,14 @@ impl Braille<RGB8> {
 				// if bit in gray is 1, we moved that pixel from bg -> fg, else fg -> bg
 				if ((gray >> flipped_bit) & 1) != 0 {
 					// 0->1: move pixel_sums[flipped_bit] from bg_sum to fg_sum
-					bg_sum -= pixels32[flipped_bit];
-					fg_sum += pixels32[flipped_bit];
+					bg_sum -= pixels[flipped_bit];
+					fg_sum += pixels[flipped_bit];
 					bg_count -= 1;
 					fg_count += 1;
 				} else {
 					// 1->0: move pixel_sums[flipped_bit] from fg_sum to bg_sum
-					fg_sum -= pixels32[flipped_bit];
-					bg_sum += pixels32[flipped_bit];
+					fg_sum -= pixels[flipped_bit];
+					bg_sum += pixels[flipped_bit];
 					fg_count -= 1;
 					bg_count += 1;
 				}
@@ -199,10 +172,11 @@ impl Braille<RGB8> {
 			// Candidate id is the lower (BITS-1) bits of gray; keep type compatibility with original
 			let id = (gray as u8) & ((1u8 << (BITS - 1)) - 1); // matches original group->id mapping
 
-			// compute bg/fg averages (O(1)).
-			// If either count==0, we fall back to other color per original logic.
-			let bg_opt = div_rgb(&bg_sum, bg_count);
-			let fg_opt = div_rgb(&fg_sum, fg_count);
+			fn safe_div(lhs: &Lab, rhs: usize) -> Option<Lab> {
+				(rhs != 0).then_some(*lhs / rhs as f32)
+			}
+			let bg_opt = safe_div(&bg_sum, bg_count);
+			let fg_opt = safe_div(&fg_sum, fg_count);
 
 			let (bg, fg) = match (bg_opt, fg_opt) {
 				(Some(b), Some(f)) => (b, f),
@@ -225,19 +199,19 @@ impl Braille<RGB8> {
 		unsafe { best.assume_init() }
 	}
 
-	pub fn from_pixels_polar_pair(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
-		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
+	pub fn from_pixels_polar_pair(pixels: &[[Lab; WIDTH]; HEIGHT]) -> Self {
+		let pixels: &[Lab; BITS] = unsafe { std::mem::transmute(pixels) };
 
 		let [bg, fg] = pixels
 			.iter()
 			.array_combinations::<2>()
-			.max_by_key(|[bg, fg]| bg.perceptual_delta(**fg))
+			.max_by_key(|[bg, fg]| OrderedFloat(bg.improved_difference(**fg)))
 			.unwrap(); //unwrap is safe since iterator is Self::BITS long, that's always >0
 		let (bg, fg) = (*bg, *fg);
 		
 		let id = (0..BITS).map(|i| {
 			let pixel = pixels[i];
-			(((pixel.perceptual_delta(fg) < pixel.perceptual_delta(bg)) as usize) << i) as u8
+			(((pixel.improved_difference(fg) < pixel.improved_difference(bg)) as usize) << i) as u8
 		}).fold(0u8, |acc, item| acc | item);
 
 		Self {
@@ -245,62 +219,6 @@ impl Braille<RGB8> {
 			bg,
 			fg,
 		}
-	}
-
-	pub fn from_pixels_axis_split(pixels: &[[RGB8; WIDTH]; HEIGHT]) -> Self {
-		let pixels: &[RGB8; BITS] = unsafe { std::mem::transmute(pixels) };
-
-		// Find min/max per channel across all 8 pixels.
-		let (mut min_r, mut max_r) = (u8::MAX, u8::MIN);
-		let (mut min_g, mut max_g) = (u8::MAX, u8::MIN);
-		let (mut min_b, mut max_b) = (u8::MAX, u8::MIN);
-		for p in pixels {
-			min_r = min_r.min(p.r); max_r = max_r.max(p.r);
-			min_g = min_g.min(p.g); max_g = max_g.max(p.g);
-			min_b = min_b.min(p.b); max_b = max_b.max(p.b);
-		}
-
-		let range_r = max_r as i32 - min_r as i32;
-		let range_g = max_g as i32 - min_g as i32;
-		let range_b = max_b as i32 - min_b as i32;
-
-		// Pick the channel with the greatest spread — that's our split axis.
-		let channel = |p: &RGB8| -> u8 {
-			if range_r >= range_g && range_r >= range_b {
-				p.r
-			} else if range_g >= range_b {
-				p.g
-			} else {
-				p.b
-			}
-		};
-
-		// Sort pixel indices along that axis, split at the median.
-		let mut idx: [usize; BITS] = std::array::from_fn(|i| i);
-		idx.sort_by_key(|&i| channel(&pixels[i]));
-		let (low, high) = idx.split_at(BITS / 2);
-
-		// Average each half in its own bucket to seed bg/fg.
-		let avg = |group: &[usize]| -> RGB8 {
-			let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
-			for &i in group {
-				r += pixels[i].r as u32;
-				g += pixels[i].g as u32;
-				b += pixels[i].b as u32;
-			}
-			let n = group.len() as u32;
-			RGB8 { r: (r / n) as u8, g: (g / n) as u8, b: (b / n) as u8 }
-		};
-
-		let (bg, fg) = (avg(low), avg(high));
-
-		// Same final assignment rule as polar_pair: nearest perceptual match wins the bit.
-		let id = (0..BITS).map(|i| {
-			let pixel = pixels[i];
-			(((pixel.perceptual_delta(fg) < pixel.perceptual_delta(bg)) as usize) << i) as u8
-		}).fold(0u8, |acc, item| acc | item);
-
-		Self { id, bg, fg }
 	}
 }
 
@@ -316,7 +234,7 @@ impl<T: PartialEq> PartialEq for Braille<T> {
 }
 
 #[cfg(feature = "rayon")]
-pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<RGB8>>> {
+pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<Lab>>> {
 	let row_len = input.size().w as usize;
 	ParallelImageIterator {
 		size: input.size() / SIZE,
@@ -334,12 +252,11 @@ pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ParallelIma
 			.map(match strategy {
 				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
 				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
-				BrailleStrategy::AxisSplit => |cluster| Braille::from_pixels_axis_split(&cluster),
 			}),
 	}
 }
 #[cfg(not(feature = "rayon"))]
-pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ImageIterator<impl Iterator<Item = Braille<RGB8>>> {
+pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ImageIterator<impl Iterator<Item = Braille<Lab>>> {
 	let row_len = input.size().w as usize;
 	ImageIterator {
 		size: input.size() / SIZE,
@@ -357,7 +274,6 @@ pub fn as_braille(input: &Image<RGB8>, strategy: BrailleStrategy) -> ImageIterat
 			.map(match strategy {
 				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
 				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
-				BrailleStrategy::AxisSplit => |cluster| Braille::from_pixels_axis_split(&cluster),
 			}),
 	}
 }

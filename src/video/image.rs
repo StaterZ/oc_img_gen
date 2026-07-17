@@ -3,12 +3,10 @@ use std::ops::{Index, IndexMut};
 use itertools::Itertools;
 use all_asserts::*;
 use num_traits::ConstZero;
+use palette::Srgb;
 
 use crate::math::*;
-use super::{
-	oc_color::RGB8,
-	ImageIterator,
-};
+use super::ImageIterator;
 
 #[derive(Clone)]
 pub struct Image<T> {
@@ -38,6 +36,11 @@ impl<T> Image<T> {
 	#[inline]
 	pub fn buffer_mut(&mut self) -> &mut [T] {
 		&mut self.buffer
+	}
+
+	#[inline]
+	pub fn into_buffer(self) -> Vec<T> {
+		self.buffer
 	}
 
 	pub fn iter(&self) -> ImageIterator<impl Iterator<Item = &T>> {
@@ -127,7 +130,7 @@ impl<I: Iterator> From<ImageIterator<I>> for Image<I::Item> {
 	}
 }
 
-impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
+impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<Srgb<u8>> {
 	fn from(value: &'a ffmpeg_next::frame::Video) -> Self {
 		let width = value.width() as usize;
 		let height = value.height() as usize;
@@ -140,31 +143,31 @@ impl<'a> From<&'a ffmpeg_next::frame::Video> for Image<RGB8> {
 				.flat_map(|row| row[..width * POD_SIZE]
 					.into_iter()
 					.array_chunks::<POD_SIZE>()
-					.map(|p| RGB8 { r: *p[0], g: *p[1], b: *p[2] }))
+					.map(|p| Srgb::<u8>::new(*p[0], *p[1], *p[2])))
 				.collect(),
 		}
 	}
 }
 
-impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<RGB8> {
+impl From<lodepng::Bitmap<lodepng::RGB<u8>>> for Image<Srgb<u8>> {
 	fn from(value: lodepng::Bitmap<lodepng::RGB<u8>>) -> Self {
 		debug_assert_eq!(value.width * value.height, value.buffer.len()); //Just to be sure
 		Self {
 			size: Size::new(value.width, value.height),
 			buffer: value.buffer
 				.into_iter()
-				.map(|p| RGB8 { r: p.r, g: p.g, b: p.b })
+				.map(|p| Srgb::<u8>::new(p.r,p.g, p.b))
 				.collect(),
 		}
 	}
 }
 
-impl From<Image<RGB8>> for lodepng::Bitmap<lodepng::RGB<u8>> {
-	fn from(value: Image<RGB8>) -> lodepng::Bitmap<lodepng::RGB<u8>> {
+impl From<Image<Srgb<u8>>> for lodepng::Bitmap<lodepng::RGB<u8>> {
+	fn from(value: Image<Srgb<u8>>) -> lodepng::Bitmap<lodepng::RGB<u8>> {
 		Self {
 			buffer: value.buffer
 				.iter()
-				.map(|p| lodepng::RGB { r: p.r, g: p.g, b: p.b })
+				.map(|p| lodepng::RGB { r: p.red, g: p.green, b: p.blue })
 				.collect(),
 			width: value.size.w,
 			height: value.size.h,
@@ -172,7 +175,7 @@ impl From<Image<RGB8>> for lodepng::Bitmap<lodepng::RGB<u8>> {
 	}
 }
 
-// impl Image<RGB8> {
+// impl Image<Srgb<u8>> {
 // 	pub fn debug_export(&self, mut path: PathBuf) -> anyhow::Result<()> {
 // 		path.set_extension("png");
 // 		println!("Export: {}", path.display());
