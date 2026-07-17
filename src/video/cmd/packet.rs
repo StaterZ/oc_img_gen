@@ -266,7 +266,7 @@ impl<'a> VideoEncoder<'a> {
 	}
 
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u32>, formatter: &impl Formatter) {
-		let loss_step = Frac::new(1, 1000);
+		let loss_step = Frac::new(1, 100);
 		let mut loss = 0.into();
 
 		self.num_frames_since_emit += 1;
