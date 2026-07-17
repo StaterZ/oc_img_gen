@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.5"
+local version = "2.6"
 
 local linear_stream = {}
 do
@@ -114,9 +114,15 @@ local function read_u64(file)
 	return string.unpack("<I8", file:read(8))
 end
 
+
+local next_check_time = 0
 local function check_interrupted()
+	local now = os.clock()
+	if now < next_check_time then return false end
+	next_check_time = now + 1
+
 	while true do
-		local e = event.pull(0)
+		local e = computer.pullSignal(0)
 		if e == nil then
 			break
 		elseif e == "interrupted" then
