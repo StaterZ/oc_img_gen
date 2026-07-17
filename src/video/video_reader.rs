@@ -129,9 +129,9 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 					let size = szu::int_div_ceil!(fit_size, braille::SIZE).try_cast().unwrap();
 					eprintln!("auto-size-fit: {} (smallest possible resolution for stream that fits largest possible source resolution)", size);
 					(Rect {
-						pos: Point::ZERO,
-						size: size.cast() * braille::SIZE,
-					}, size)
+						pos: (config.container_size - fit_size) / 2,
+						size: size * braille::SIZE,
+					}, size.cast())
 				};
 				
 				let desc = StreamDescriptor::<Descriptor> {
