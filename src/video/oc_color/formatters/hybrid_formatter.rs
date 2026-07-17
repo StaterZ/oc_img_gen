@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::mem::MaybeUninit;
+use image::Rgb;
 use image::imageops::ColorMap;
 use lazy_static::lazy_static;
 use all_asserts::*;
@@ -86,14 +87,17 @@ impl Formatter for HybridFormatter {
 }
 
 impl ColorMap for HybridFormatter {
-	type Color = Lab;
+	type Color = Rgb<u8>;
 
 	fn index_of(&self, color: &Self::Color) -> usize {
-		self.deflate(PaletteOr::NonPalette(*color)).0 as usize
+		let color = Lab::from_color(Srgb::new(color[0], color[1], color[2]).into_format::<f32>());
+		self.deflate(PaletteOr::NonPalette(color)).0 as usize
 	}
 
 	fn lookup(&self, index: usize) -> Option<Self::Color> {
-		Some(self.inflate(PackedColor(index as u8)))
+		let color = self.inflate(PackedColor(index as u8));
+		let (r, g, b) = Srgb::from_color(color).into_format::<u8>().into_components();
+		Some(Rgb([r, g, b]))
 	}
 	/// Determine if this implementation of `ColorMap` overrides the default `lookup`.
 	fn has_lookup(&self) -> bool {
@@ -101,7 +105,10 @@ impl ColorMap for HybridFormatter {
 	}
 
 	fn map_color(&self, color: &mut Self::Color) {
-		*color = self.inflate(self.deflate(PaletteOr::NonPalette(*color)))
+		let mut color_lab = Lab::from_color(Srgb::new(color[0], color[1], color[2]).into_format::<f32>());
+		color_lab = self.inflate(self.deflate(PaletteOr::NonPalette(color_lab)));
+		let (r, g, b) = Srgb::from_color(color_lab).into_format::<u8>().into_components();
+		*color = Rgb([r, g, b]);
 	}
 }
 

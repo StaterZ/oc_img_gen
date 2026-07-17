@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, marker::ConstParamTy};
 use deku::prelude::*;
+use image::Rgb;
 use num_traits::ConstZero;
 use ordered_float::OrderedFloat;
 use palette::color_difference::ImprovedCiede2000;
@@ -193,12 +194,25 @@ impl<'a> VideoEncoder<'a> {
 				.collect())
 		};
 
-		// let mut img = image::RgbImage::new::from_vec(
-		// 	img.size().w as u32,
-		// 	img.size().h as u32,
-		// 	img.into_buffer(),
-		// );
-		// image::imageops::colorops::dither(&mut img, formatter);
+		let img = crate::stage("Stream | Process   | Dither", || {
+			let mut dither_buf = image::ImageBuffer::from_par_fn(
+				img.size().w as u32,
+				img.size().h as u32,
+				|x, y| {
+					let p = img[Point::new(x as usize, y as usize)];
+					let p = Srgb::from_color(p).into_format::<u8>();
+					Rgb([p.red, p.green, p.blue])
+				},
+			);
+			image::imageops::colorops::dither(&mut dither_buf, formatter);
+			Image::with_buffer(img.size(), dither_buf
+				.pixels()
+				.map(|p| {
+					let p = Srgb::new(p[0], p[1], p[2]);
+					Lab::from_color(p.into_format::<f32>())
+				})
+				.collect())
+		});
 
 		const UBER_MODE: bool = true;
 		let img = if UBER_MODE {
