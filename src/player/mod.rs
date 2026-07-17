@@ -2,6 +2,7 @@ use std::{path::{Path, PathBuf}, time::Duration};
 use deku::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use num_traits::ConstZero;
+use palette::{Srgb, FromColor, rgb::channels::Argb};
 use triple_buffer::TripleBuffer;
 use itertools::Itertools;
 use minifb::{Key, Scale, Window, WindowOptions};
@@ -10,7 +11,7 @@ use clap::Parser;
 
 use crate::{
 	FORMAT_VERSION, audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::{
-		Image, ImageIterator, braille::{self, Braille}, cmd::packet::{Command, CommandData, CommandKind, Frame}, oc_color::{RGB8, formatters::{Formatter, HybridFormatter}}
+		Image, ImageIterator, braille::{self, Braille}, cmd::packet::{Command, CommandData, CommandKind, Frame}, oc_color::formatters::{Formatter, HybridFormatter}, rgb
 	}
 };
 
@@ -199,11 +200,12 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 			}
 
 			let init_color = 0xff00ff;
+			let init_color_srgb = Srgb::<u8>::from_u32::<Argb>(init_color);
 			VideoStream {
 				id: index as u8,
 				window,
 				image: Image::new(size_pixels, init_color),
-				diff_image: Image::new(size, Braille::with_index(0, RGB8::new(init_color), RGB8::new(init_color))),
+				diff_image: Image::new(size, Braille::with_index(0, init_color_srgb, init_color_srgb)),
 				next_frame_index: 0,
 			}
 		})
@@ -236,8 +238,8 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		audio_stream,
 		gpu: Gpu {
 			formatter: HybridFormatter::new(),
-			background_color: RGB8::BLACK,
-			foreground_color: RGB8::WHITE,
+			background_color: *rgb::BLACK,
+			foreground_color: *rgb::WHITE,
 		},
 		sound_card: SoundCard {
 			voices: voices_in,
@@ -319,8 +321,8 @@ struct RenderState<'a> {
 
 struct Gpu {
 	formatter: HybridFormatter,
-	background_color: RGB8,
-	foreground_color: RGB8,
+	background_color: Srgb<u8>,
+	foreground_color: Srgb<u8>,
 }
 struct SoundCard {
 	voices: triple_buffer::Input<Vec<VoiceStateFlt>>
@@ -399,7 +401,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 					eprintln!("{}", path);
 					write_image(path, stream.image
 						.iter()
-						.map(|p| RGB8::new(*p)))?;
+						.map(|p| Srgb::<u8>::from_u32::<Argb>(*p)))?;
 				}
 			},
 			PacketContent::Audio(sample) if Some(packet.stream_id) == state.audio_stream.as_ref().map(|audio_stream| audio_stream.id) => {
@@ -432,7 +434,7 @@ struct VideoStream {
 	id: u8,
 	window: Window,
 	image: Image<u32>,
-	diff_image: Image<Braille<RGB8>>,
+	diff_image: Image<Braille<Srgb<u8>>>,
 	next_frame_index: u64,
 }
 impl VideoStream {
@@ -447,10 +449,10 @@ impl VideoStream {
 
 					if !args.show_raw {
 						if let Some(background) = command.background {
-							gpu.background_color = gpu.formatter.inflate(background);
+							gpu.background_color = Srgb::from_color(gpu.formatter.inflate(background)).into_format();
 						}
 						if let Some(foreground) = command.foreground {
-							gpu.foreground_color = gpu.formatter.inflate(foreground);
+							gpu.foreground_color = Srgb::from_color(gpu.formatter.inflate(foreground)).into_format();
 						}
 					}
 
@@ -486,7 +488,7 @@ impl VideoStream {
 		Ok(())
 	}
 
-	fn draw_braille_line(&mut self, pos: Point<usize>, braille: impl Iterator<Item = Braille<RGB8>>, args: &Cli) {
+	fn draw_braille_line(&mut self, pos: Point<usize>, braille: impl Iterator<Item = Braille<Srgb<u8>>>, args: &Cli) {
 		for (char_offset, braille) in braille.enumerate() {
 			let pos = pos + Point::new(char_offset, 0);
 			if args.diff && self.next_frame_index > 1 && self.diff_image[pos] == braille {
@@ -500,7 +502,7 @@ impl VideoStream {
 			
 			self.diff_image[pos] = braille;
 
-			self.draw_braille(pos, &braille.map(|c| c.value()));
+			self.draw_braille(pos, &braille.map(|c| c.into_u32::<Argb>()));
 		};
 	}
 	
@@ -539,9 +541,9 @@ impl AudioStream {
 	}
 }
 
-fn write_image(path: impl AsRef<Path>, img: ImageIterator<impl Iterator<Item = RGB8>>) -> anyhow::Result<()> {
+fn write_image(path: impl AsRef<Path>, img: ImageIterator<impl Iterator<Item = Srgb<u8>>>) -> anyhow::Result<()> {
 	let img = img
-		.map(|p| lodepng::RGB::new(p.r, p.g, p.b))
+		.map(|p| lodepng::RGB::new(p.red, p.green, p.blue))
 		.collect();
 	Ok(lodepng::encode24_file(
 		path,
