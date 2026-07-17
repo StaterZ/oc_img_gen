@@ -334,8 +334,8 @@ impl<'a> Drop for VideoEncoder<'a> {
 }
 
 impl<'a> PacketWriter for VideoEncoder<'a> {
-	fn get_next_packet_time(&self) -> Option<Frac<u64>> {
-		(!self.frames.is_empty()).then_some(Frac::from(self.desc.num_packets as u64) * self.desc.rate.cast::<u64>())
+	fn get_next_packet_end_time(&self) -> Option<Frac<u64>> {
+		(!self.frames.is_empty()).then_some(Frac::from(self.desc.num_packets as u64 + 1) * self.desc.rate.cast::<u64>())
 	}
 
 	fn get_next_packet(&mut self) -> Option<Packet> {
