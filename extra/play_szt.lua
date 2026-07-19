@@ -1,5 +1,6 @@
 local os = require("os")
 local io = require("io")
+local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
@@ -7,7 +8,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.7"
+local version = "2.8"
 
 local linear_stream = {}
 do
@@ -18,7 +19,8 @@ do
 
 	function linear_stream.open(path, format)
 		assert(format == "rb")
-		local stream, reason = io.open(path, format)
+		path = shell.resolve(path)
+		local stream, reason = fs.open(path, format)
 		if not stream then return nil, reason end
 
 		return setmetatable({
