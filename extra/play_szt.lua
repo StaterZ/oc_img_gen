@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.6"
+local version = "2.7"
 
 local linear_stream = {}
 do
@@ -226,8 +226,8 @@ do
 			error(("bad frame command kind '%x2'"):format(command_kind))
 
 		if ops.batch_check then
-			get_value = function(file, len)
-				file:read(len) --more efficient than seek
+			get_value = function(file, len, is_rle)
+				file:read(is_rle and len*2 or len) --more efficient than seek
 				gpu.setBackground(math.random(0xffffff))
 				return (" "):rep(len)
 			end
