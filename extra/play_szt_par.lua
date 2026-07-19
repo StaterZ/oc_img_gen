@@ -2,7 +2,6 @@ local os = require("os")
 local io = require("io")
 local fs = require("filesystem")
 local shell = require("shell")
-local event = require("event")
 local unicode = require("unicode")
 local component = require("component")
 local computer = require("computer")
@@ -21,7 +20,7 @@ do
 		assert(format == "rb")
 		path = type(path) == "string" and {path} or path
 
-		local bufferSize = math.max(512, math.min(8 * 1024, computer.freeMemory() / 8))
+		local bufferSize = math.max(512, math.min(2 * 1024, computer.freeMemory() / 8))
 		
 		local streams = {}
 		for i, p in ipairs(path) do
@@ -57,14 +56,20 @@ do
 		checkArg(2, offset, "number")
 		assert(math.floor(offset) == offset, "bad argument #2 (not an integer)")
 
+		local result, reason
 		if whence == "cur" then
 			offset = offset - (#self.buffer - self.bufferHead)
-		end
-		local result, reason
-		for i, stream in ipairs(self.streams) do
-			result, reason = stream:seek(whence, offset)
-			--print(i, whence, offset, offset + ((self.next_stream - 1) % #self.streams) * self.bufferSize, result)
-			if not result then return nil, reason end
+			for i, stream in ipairs(self.streams) do
+				result, reason = stream:seek(whence, offset)
+				if not result then return nil, reason end
+			end
+		elseif whence == "set" then
+			for i, stream in ipairs(self.streams) do
+				result, reason = stream:seek(whence, offset + (i - self.next_stream) % #self.streams * bufferSize)
+				if not result then return nil, reason end
+			end
+		else
+			error("OUF!")
 		end
 		
 		self.buffer = ""
@@ -667,7 +672,7 @@ local function play(gpu, file, surfaces)
 		play_impl()
 		if ops.hold then
 			while true do
-				local e = event.pull()
+				local e = computer.pullSignal(0)
 				if e == "interrupted" or e == "key_down" then break end
 			end
 		end

@@ -2,7 +2,6 @@ local os = require("os")
 local io = require("io")
 local fs = require("filesystem")
 local shell = require("shell")
-local event = require("event")
 local unicode = require("unicode")
 local component = require("component")
 local computer = require("computer")
@@ -649,7 +648,7 @@ local function play(gpu, file, surfaces)
 		play_impl()
 		if ops.hold then
 			while true do
-				local e = event.pull()
+				local e = computer.pullSignal(0)
 				if e == "interrupted" or e == "key_down" then break end
 			end
 		end
