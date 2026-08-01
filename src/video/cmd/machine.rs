@@ -4,11 +4,11 @@ use crate::math::*;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum Tier {
-	T1 = 1,
-	T2 = 2,
-	T3 = 3,
+	#[value(name = "1")] T1 = 1,
+	#[value(name = "2")] T2 = 2,
+	#[value(name = "3")] T3 = 3,
 	
-	Emulator = 0,
+	#[value(name = "emu")] Emulator = 0,
 }
 
 pub struct Machine {

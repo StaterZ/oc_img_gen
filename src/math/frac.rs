@@ -160,10 +160,7 @@ impl<T: GoodInt> Num for Frac<T> {
 
 	fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
 		match str.split('/').collect_vec().as_slice() {
-			[numerator] => Ok(Frac::new(
-				T::from_str_radix(*numerator, radix)?,
-				T::one(),
-			)),
+			[numerator] => Ok(<Frac<_> as From<_>>::from(T::from_str_radix(*numerator, radix)?)),
 			[numerator, denominator] => Ok(Frac::new(
 				T::from_str_radix(*numerator, radix)?,
 				T::from_str_radix(*denominator, radix)?,
@@ -260,6 +257,9 @@ impl<T: GoodInt + FromStr> FromStr for Frac<T> {
 	type Err = FracParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		if let Some(percent) = s.strip_suffix('%') {
+			return Ok(Frac::new(percent.parse::<T>()?, T::from(100).unwrap()));
+		}
 		match s.split('/').collect_vec().as_slice() {
 			[numerator] => Ok(<Frac<_> as From<_>>::from(numerator.parse::<T>()?)),
 			[numerator, denominator] => Ok(Frac::new(
