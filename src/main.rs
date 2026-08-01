@@ -20,7 +20,7 @@ mod video;
 mod audio;
 mod math;
 mod encoder;
-mod player;
+mod playback;
 
 const EXT: &str = "szt";
 const FORMAT_VERSION: u16 = 6;
@@ -36,7 +36,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum CliCommand {
 	Encode(encoder::cli::Cli),
-	Play(player::Cli),
+	Play(playback::player::Cli),
+	Export(playback::exporter::Cli),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,7 +46,8 @@ fn main() -> anyhow::Result<()> {
 	let mut watch = Stopwatch::start_new();
 	match args.command {
 		CliCommand::Encode(args) => encoder::encode(encoder::cli::process_args(args))?,
-		CliCommand::Play(args) => player::play(args)?,
+		CliCommand::Play(args) => playback::player::play(args)?,
+		CliCommand::Export(args) => playback::exporter::export(args)?,
 	};
 	watch.stop();
 	eprintln!("took: {}s & {}ms", watch.elapsed().as_secs(), watch.elapsed().subsec_millis());

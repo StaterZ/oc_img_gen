@@ -235,6 +235,11 @@ impl From<ffmpeg_next::Rational> for Frac<i32> {
 		}
 	}
 }
+impl From<Frac<i32>> for ffmpeg_next::Rational {
+	fn from(value: Frac<i32>) -> Self {
+		Self::new(value.numerator, value.denominator)
+	}
+}
 
 impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration where u128: From<T> {
 	fn from(value: Frac<T>) -> Self {
