@@ -42,6 +42,7 @@ pub struct VideoDescData {
 	pub braille_strategy: BrailleStrategy,
 	pub budget: Option<Budget>,
 	pub acceptable_loss: Frac<u32>,
+	pub loss_step: Frac<u32>,
 }
 
 pub struct VideoReader<'a, 'b> {
@@ -154,6 +155,7 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 					stream_data.budget,
 					&machine,
 					stream_data.acceptable_loss,
+					stream_data.loss_step,
 				)
 			})
 			.collect_vec();

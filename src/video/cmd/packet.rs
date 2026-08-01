@@ -112,6 +112,7 @@ pub struct VideoEncoder<'a> {
 	budget: Option<Budget>,
 	machine: &'a Machine,
 	acceptable_loss: Frac<u32>,
+	loss_step: Frac<u32>,
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
@@ -137,6 +138,7 @@ impl<'a> VideoEncoder<'a> {
 		budget: Option<Budget>,
 		machine: &'a Machine,
 		acceptable_loss: Frac<u32>,
+		loss_step: Frac<u32>,
 	) -> Self {
 		#[cfg(feature = "charts")] let chart = {
 			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
@@ -176,6 +178,7 @@ impl<'a> VideoEncoder<'a> {
 			budget,
 			machine,
 			acceptable_loss,
+			loss_step,
 			#[cfg(feature = "charts")] chart,
 		}
 	}
@@ -253,7 +256,6 @@ impl<'a> VideoEncoder<'a> {
 	}
 
 	fn push_frame<const CMD_KIND: CommandKind>(&mut self, frame: TermFrame, acceptable_loss: Frac<u32>, formatter: &impl Formatter) {
-		let loss_step = Frac::new(1, 1000);
 		let mut loss = 0.into();
 
 		self.num_frames_since_emit += 1;
@@ -271,6 +273,7 @@ impl<'a> VideoEncoder<'a> {
 					};
 					let mut temp_stats = stats;
 					temp_stats.num_set_commands = 0;
+					//temp_stats.num_color_commands = 0;
 					temp_stats.get_cost(&self.machine)
 				},
 				None => Frac::ZERO,
@@ -278,8 +281,9 @@ impl<'a> VideoEncoder<'a> {
 			let cpu_cost = Frac::new(stats.num_set_pixels, 120000);
 
 			let tick_rate = 20;
+			let gpu_cost_fudge = 3;
 			let time_since_emit = self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
-			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit;
+			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit * gpu_cost_fudge;
 			let cpu_budget = self.machine.cpu_speed * time_since_emit;
 
 			#[cfg(feature = "charts")] {
@@ -300,7 +304,7 @@ impl<'a> VideoEncoder<'a> {
 				cpu_chart.series_list[1].data.push(Some(cpu_budget.into_flt()));
 			}
 
-			loss += loss_step;
+			loss += self.loss_step;
 			let has_budget = self.budget.is_some();
 			let can_afford = gpu_cost <= gpu_budget && cpu_cost <= cpu_budget;
 			let is_loss_acceptable = loss <= acceptable_loss;

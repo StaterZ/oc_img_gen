@@ -72,6 +72,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
+				args.loss_step.unwrap_or(Frac::new(1, 100)),
 			)
 		},
 		VideoMode::Matrix => {
@@ -100,6 +101,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
+				args.loss_step.unwrap_or(Frac::new(1, 100)),
 			)
 		},
 		VideoMode::Custom => create_streams_custom(
@@ -124,6 +126,7 @@ fn create_main_stream(
 	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u32>,
+	loss_step: Frac<u32>,
 ) -> VideoConfig {
 	let stream_descs_data = vec![VideoDescData {
 		name: "main".to_string(),
@@ -134,6 +137,7 @@ fn create_main_stream(
 		braille_strategy,
 		budget,
 		acceptable_loss,
+		loss_step,
 	}];
 
 	VideoConfig {
@@ -153,6 +157,7 @@ fn create_matrix_streams(
 	braille_strategy: BrailleStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u32>,
+	loss_step: Frac<u32>,
 ) -> VideoConfig {
 	let stream_input_size = stream_size.cast() * video::braille::SIZE;
 	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
@@ -171,6 +176,7 @@ fn create_matrix_streams(
 				braille_strategy,
 				budget,
 				acceptable_loss,
+				loss_step,
 			}))
 		.collect();
 
@@ -392,6 +398,12 @@ struct VideoOpts {
 		help = "selects the 'bitrate' limit for each frame. default: 0",
 	)]
 	pub acceptable_loss: Option<Frac<u32>>,
+
+	#[arg(
+		long = "loss-step",
+		help = "selects the 'bitrate' limit for each frame. default: 1%",
+	)]
+	pub loss_step: Option<Frac<u32>>,
 	
 	#[arg(
 		long = "streams-config",
