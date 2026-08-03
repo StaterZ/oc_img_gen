@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.8"
+local version = "3.1"
 
 local linear_stream = {}
 do
@@ -154,9 +154,12 @@ ops.batch_check = ops["batch-check"]
 ops.volume = ops.volume or 1
 
 local video = {}
+local swap_chain = {}
+local swap_chain_count = 0
 do
 	local main_screen
-	local back
+	local swap_chain_head = 1
+	local swap_chain_tail = 1
 	function video.pre_init(gpu)
 		main_screen = gpu.getScreen()
 	end
@@ -171,21 +174,57 @@ do
 		video.bind_main_screen(gpu)
 
 		if not ops.no_back and size_x > 0 and size_y > 0 then
-			back = gpu.allocateBuffer(size_x, size_y)
-			if back == nil then error("can't allocate back-buffer") end
+			while true do
+				local buffer = gpu.allocateBuffer(size_x, size_y)
+				if buffer == nil then break end
 
-			gpu.setActiveBuffer(back)
+				table.insert(swap_chain, buffer)
+			end
 		end
+		if #swap_chain == 0 then
+			video.deinit(gpu)
+			error("can't allocate back-buffer")
+		end
+		print(("allocated %i swap chain buffers!"):format(#swap_chain))
+		os.sleep(0.1)
 	end
 
 	function video.deinit(gpu)
-		if back then
-			gpu.freeBuffer(back)
+		if swap_chain then
+			for _, buffer in ipairs(swap_chain) do
+				gpu.freeBuffer(buffer)
+			end
 			gpu.setActiveBuffer(0)
 		end
 		video.bind_main_screen(gpu)
 	end
 
+	function video.commit(gpu)
+		if #swap_chain == 1 then return end
+		
+		local next_buffer = swap_chain[swap_chain_head]
+		gpu.bitblt(next_buffer)
+		gpu.setActiveBuffer(next_buffer)
+		swap_chain_head = (swap_chain_head % #swap_chain) + 1
+		swap_chain_count = swap_chain_count + 1
+	end
+
+	function video.inject(gpu, f)
+		local active = gpu.getActiveBuffer()
+		gpu.setActiveBuffer(swap_chain_tail)
+		f()
+		gpu.setActiveBuffer(active)
+	end
+
+	function video.present(gpu)
+		gpu.bitblt(0, nil, nil, nil, nil, swap_chain[swap_chain_tail])
+		swap_chain_tail = (swap_chain_tail % #swap_chain) + 1
+		swap_chain_count = swap_chain_count - 1
+	end
+
+	function video.is_swap_full()
+		return swap_chain_count == #swap_chain
+	end
 
 	local lut = {
 		0x0f0f0f, 0x1e1e1e, 0x2d2d2d, 0x3c3c3c, 0x4b4b4b, 0x5a5a5a, 0x696969, 0x787878, 0x878787, 0x969696, 0xa5a5a5, 0xb4b4b4, 0xc3c3c3, 0xd2d2d2, 0xe1e1e1, 0xf0f0f0,
@@ -276,15 +315,18 @@ do
 	)
 		local now, now_up = os.clock(), computer.uptime()
 		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-		local frame_time = stream.packet_index * (stream.time_base or 0)
+		local frame_time = stream.packet_index_present * (stream.time_base or 0)
 		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
 		gpu.setBackground(0xff0000)
 		gpu.setForeground(0xffffff)
-		gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
+		gpu.set(1, 1, ("%04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
 			stream.packet_index,
+			stream.packet_index_present,
 			time_fmt(frame_time),
 			stream.time_base == 0 and 0 or video_elapsed_up - frame_time,
+			swap_chain_count,
+			#swap_chain,
 			1 / frame_elapsed,
 			frame_elapsed * 1000,
 			packet_len,
@@ -318,10 +360,7 @@ do --audio engine
 			for channel = 1, num_channels do
 				engine.close(channel)
 			end
-
-			computer.uptime()
 		end
-		audio.e = sound_engines[1] --todo: remove me
 
 		for voice=1, num_voices do
 			local engine_index = math.floor((voice - 1) / num_channels)
@@ -487,7 +526,7 @@ local function probe_header(file)
 		print(("    time_base: %i/%i"):format(stream.time_base_num, stream.time_base_denom))
 		print(("    num_packets: %i"):format(stream.num_packets))
 		if stream.kind == 0x00 then
-			print(("    size: %ix%i"):format(stream.size_x, stream.size_y))
+			print(("    size: %ix%i (effective: %ix%i)"):format(stream.size_x, stream.size_y, stream.size_x * 2, stream.size_y * 4))
 		elseif stream.kind == 0x01 then
 			print(("    num_voices: %i"):format(stream.num_voices))
 		end
@@ -559,42 +598,41 @@ local function play(gpu, file, surfaces)
 		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
 		for _, stream in ipairs(streams) do
 			stream.packet_index = 0
+			stream.packet_index_present = 0
 		end
 
 		local packet_index = 0
 		while packet_index < num_total_packets do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
+			if check_interrupted() then
+				return false
+			end
 
+			local commands_len, command_count
 			local stream_id = read_u8(file)
 			local stream = streams[stream_id + 1]
 			if stream.kind == 0x00 then --video
-				local commands_len = read_u16(file)
+				commands_len = read_u16(file)
 				if not ops.no_video then
 					if commands_len > 0 then
 						if gpu.getScreen() ~= stream.surface.screen_addr then
 							gpu.bind(stream.surface.screen_addr, false)
-							if back then
-								gpu.bitblt(back, nil, nil, nil, nil, 0)
+							if swap_chain then
+								gpu.bitblt(gpu.getActiveBuffer(), nil, nil, nil, nil, 0)
 							end
-						end
-					end
-
-					local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
-
-					if commands_len > 0 then
-						if ops.fps then
-							video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
-							if not ops.no_audio and has_audio then
-								audio.draw_stats(gpu)
-							end
-						end
-						if not ops.no_back then
-							gpu.bitblt()
 						end
 						if ops.diff then
 							gpu.setBackground(0x000000)
 							gpu.setForeground(0xff0000)
 							gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+						end
+					end
+
+					command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
+
+					if commands_len > 0 then
+						if not ops.no_back then
+							video.commit(gpu)
 						end
 					end
 				else
@@ -623,14 +661,32 @@ local function play(gpu, file, surfaces)
 			end
 
 			if not ops.fast and stream.kind == 0x00 and not ops.no_video and stream.time_base ~= 0 then --video
-				repeat
-					local current_time = (computer.uptime() - video_begin_time_up)
-					local next_frame_index = math.ceil(current_time / stream.time_base)
-				until next_frame_index > stream.packet_index --TODO: won't play nice with audio stream
-			end
-
-			if check_interrupted() then
-				return false
+				if no_back then
+					repeat
+						local current_time = (computer.uptime() - video_begin_time_up)
+						local next_frame_index = math.ceil(current_time / stream.time_base)
+					until next_frame_index > stream.packet_index_present --this won't play nice with audio streams, but we can't help it without buffers
+					stream.packet_index_present = stream.packet_index_present + 1
+				else
+					while swap_chain_count > 0 do
+						local current_time = (computer.uptime() - video_begin_time_up)
+						local desired_packet_index = math.floor(current_time / stream.time_base)
+						if stream.packet_index_present > desired_packet_index then
+							if not video.is_swap_full() then break end
+						else
+							video.inject(gpu, function()
+								if ops.fps then
+									video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
+									if not ops.no_audio and has_audio then
+										audio.draw_stats(gpu)
+									end
+								end
+							end)
+							video.present(gpu)
+							stream.packet_index_present = stream.packet_index_present + 1
+						end
+					end
+				end
 			end
 
 			stream.packet_index = stream.packet_index + 1
