@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "3.1"
+local version = "3.2"
 
 local linear_stream = {}
 do
@@ -156,7 +156,7 @@ ops.volume = ops.volume or 1
 local video = {}
 local swap_chain = {}
 local swap_chain_count = 0
-do
+do --video player
 	local main_screen
 	local swap_chain_head = 1
 	local swap_chain_tail = 1
@@ -185,8 +185,6 @@ do
 			video.deinit(gpu)
 			error("can't allocate back-buffer")
 		end
-		print(("allocated %i swap chain buffers!"):format(#swap_chain))
-		os.sleep(0.1)
 	end
 
 	function video.deinit(gpu)
@@ -320,7 +318,8 @@ do
 		local packet_len = commands_len + packet_header_len
 		gpu.setBackground(0xff0000)
 		gpu.setForeground(0xffffff)
-		gpu.set(1, 1, ("%04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
+		gpu.set(1, 1, ("V|%s: %04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
+			stream.name,
 			stream.packet_index,
 			stream.packet_index_present,
 			time_fmt(frame_time),
@@ -336,63 +335,83 @@ do
 end
 
 local audio = {}
-do --audio engine
-	local num_channels = 8
+do --audio player
+	local channels_per_card = 8
 	local buf_min = 0.150
 	local buf_max = 0.500
 	
-	local sound_engines
-	local num_instructions
+	local sound_cards
+	local num_buffered_instructions
+	local num_buffered_instructions_stable
 	local start_time
 	local buffered_time_exact
 	local buffered_time
 	local committed_time
-	local stats_text
+	local stream_stats
 	function audio.init(num_voices)
-		sound_engines = {}
+		sound_cards = {}
 		for addr, _ in pairs(component.list("sound")) do
-			local engine = component.proxy(addr)
-			table.insert(sound_engines, engine)
-			--print(engine.address, engine)
+			local card = component.proxy(addr)
+			table.insert(sound_cards, card)
+			--print(card.address, card)
 
-			engine.setTotalVolume(1)
-			engine.clear()
-			for channel = 1, num_channels do
-				engine.close(channel)
+			card.setTotalVolume(1)
+			card.clear()
+			for channel = 1, channels_per_card do
+				card.close(channel)
 			end
 		end
 
 		for voice=1, num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.open(channel)
-			engine.setWave(channel, engine.modes[ops.wave or "sine"])
-			engine.resetFM(channel)
-			engine.resetAM(channel)
-			engine.resetEnvelope(channel)
+			local card_index = math.floor((voice - 1) / channels_per_card)
+			local card = sound_cards[card_index + 1]
+			local channel = voice - card_index * channels_per_card
+			card.open(channel)
+			card.setWave(channel, card.modes[ops.wave or "sine"])
+			card.resetFM(channel)
+			card.resetAM(channel)
+			card.resetEnvelope(channel)
 		end
 
-		num_instructions = 0
+		num_buffered_instructions = 0
 		start_time = computer.uptime()
 		buffered_time_exact = 0
 		buffered_time = 0
 		committed_time = 0
 
-		stats_text = ""
+		stream_stats = {}
 	end
 
 	function audio.deinit(num_voices)
-		for _, engine in ipairs(sound_engines) do
-			engine.clear()
+		for _, card in ipairs(sound_cards) do
+			card.clear()
 		end
 
 		for voice = 1, num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.close(channel)
+			local card_index = math.floor((voice - 1) / channels_per_card)
+			local card = sound_cards[card_index + 1]
+			local channel = voice - card_index * channels_per_card
+			card.close(channel)
 		end
+	end
+
+	function audio.queue(file, stream)
+		for voice = 1, stream.num_voices do
+			local card_index = math.floor((voice - 1) / channels_per_card)
+			local card = sound_cards[card_index + 1]
+			local channel = voice - card_index * channels_per_card
+			card.setVolume(channel, read_u8(file) / 0xff * ops.volume)
+			card.setFrequency(channel, read_u16(file) / 0xffff * 20000)
+		end
+		
+		buffered_time_exact = buffered_time_exact + stream.time_base
+		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
+		for i, card in ipairs(sound_cards) do
+			if (i - 1) * channels_per_card >= stream.num_voices then break end
+			card.delay(delay_ms)
+		end
+		buffered_time = buffered_time + delay_ms/1000
+		num_buffered_instructions = num_buffered_instructions + 1
 	end
 
 	function audio.commit(stream)
@@ -402,14 +421,12 @@ do --audio engine
 		local buffered_left = buffered_time - play_time
 		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
 		if committed_left < buf_min then
-			for i, engine in ipairs(sound_engines) do
-				if (i - 1) * num_channels >= stream.num_voices then break end
-				engine.process()
-				if ops.fps then
-					audio.update_stats(stream)
-				end
-				num_instructions = 0
+			for i, card in ipairs(sound_cards) do
+				if (i - 1) * channels_per_card >= stream.num_voices then break end
+				card.process()
 			end
+			num_buffered_instructions_stable = num_buffered_instructions
+			num_buffered_instructions = 0
 			committed_time = buffered_time
 			--NOTE: committed_left is now out of date here!
 		end
@@ -434,34 +451,16 @@ do --audio engine
 		end
 	end
 
-	function audio.queue(file, stream)
-		for voice = 1, stream.num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.setVolume(channel, read_u8(file) / 0xff * ops.volume)
-			engine.setFrequency(channel, read_u16(file) / 0xffff * 20000)
-		end
-		
-		buffered_time_exact = buffered_time_exact + stream.time_base
-		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
-		for i, engine in ipairs(sound_engines) do
-			if (i - 1) * num_channels >= stream.num_voices then break end
-			engine.delay(delay_ms)
-		end
-		buffered_time = buffered_time + delay_ms/1000
-		num_instructions = num_instructions + 1
-	end
-
 	function audio.update_stats(stream)
 		local now = computer.uptime()
 		local play_time = now - start_time
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stats_text = ("%04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+		stream_stats[stream.index + 1] = ("A|%s: %04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+			stream.name,
 			stream.packet_index,
-			num_instructions,
+			num_buffered_instructions_stable,
 			(buffered_left - committed_left) * 1000,
 			committed_left * 1000,
 			percentify(committed_left)
@@ -471,7 +470,9 @@ do --audio engine
 	function audio.draw_stats(gpu)
 		gpu.setBackground(0xff0000)
 		gpu.setForeground(0xffffff)
-		gpu.set(1, 2, stats_text)
+		for i, text in pairs(stream_stats) do
+			gpu.set(1, i, text)
+		end
 	end
 end
 
@@ -553,6 +554,7 @@ local function play(gpu, file, surfaces)
 	local streams = {}
 	for i, stream_desc in ipairs(header.streams) do
 		local stream = {
+			index = i - 1,
 			kind = stream_desc.kind,
 			num_packets = stream_desc.num_packets,
 			time_base = stream_desc.time_base_num / stream_desc.time_base_denom,
@@ -585,12 +587,17 @@ local function play(gpu, file, surfaces)
 		end
 		table.insert(streams, stream)
 	end
+	local play_video = has_video and not ops.no_video
+	local play_audio = has_audio and not ops.no_audio
 
 	local frames_begin_pos = file:seek()
-	if not ops.no_video then
+	if play_video then
 		video.init(gpu, max_size_x, max_size_y)
+		
+		print(("allocated %i swap chain buffers!"):format(#swap_chain))
+		os.sleep(0.1)
 	end
-	if not ops.no_audio then
+	if play_audio then
 		audio.init(max_num_voices)
 	end
 
@@ -613,7 +620,7 @@ local function play(gpu, file, surfaces)
 			local stream = streams[stream_id + 1]
 			if stream.kind == 0x00 then --video
 				commands_len = read_u16(file)
-				if not ops.no_video then
+				if play_video then
 					if commands_len > 0 then
 						if gpu.getScreen() ~= stream.surface.screen_addr then
 							gpu.bind(stream.surface.screen_addr, false)
@@ -639,7 +646,7 @@ local function play(gpu, file, surfaces)
 					file:seek("cur", commands_len + 1) --command_kind = 1b
 				end
 			elseif stream.kind == 0x01 then --audio
-				if not ops.no_audio then
+				if play_audio then
 					audio.queue(file, stream)
 				else
 					file:seek("cur", stream.num_voices * 3)
@@ -649,18 +656,21 @@ local function play(gpu, file, surfaces)
 				--error("unknown packet kind: %x2", stream.kind)
 			end
 
-			if not ops.no_audio then
+			if play_audio then
 				for _, stream in ipairs(streams) do
 					if stream.kind == 0x01 then --audio
-						if (not has_video or ops.no_video) and ops.fps and gpu ~= nil then
-							audio.draw_stats(gpu)
-						end
 						audio.commit(stream)
+						if ops.fps then
+							audio.update_stats(stream)
+						end
 					end
+				end
+				if not play_video and ops.fps and gpu ~= nil then
+					audio.draw_stats(gpu)
 				end
 			end
 
-			if not ops.fast and stream.kind == 0x00 and not ops.no_video and stream.time_base ~= 0 then --video
+			if not ops.fast and stream.kind == 0x00 and play_video and stream.time_base ~= 0 then --video
 				if no_back then
 					repeat
 						local current_time = (computer.uptime() - video_begin_time_up)
@@ -677,7 +687,7 @@ local function play(gpu, file, surfaces)
 							video.inject(gpu, function()
 								if ops.fps then
 									video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
-									if not ops.no_audio and has_audio then
+									if play_audio then
 										audio.draw_stats(gpu)
 									end
 								end
@@ -710,10 +720,10 @@ local function play(gpu, file, surfaces)
 		end
 	end
 
-	if not ops.no_video then
+	if play_video then
 		video.deinit(gpu)
 	end
-	if not ops.no_audio then
+	if play_audio then
 		audio.deinit(max_num_voices)
 	end
 end
