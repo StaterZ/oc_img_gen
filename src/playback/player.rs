@@ -370,7 +370,6 @@ struct VideoStream {
 }
 
 impl VideoStream {
-	/// Draw one command packet onto this stream's target. See `DrawTarget::draw_packet`.
 	fn draw_packet(&mut self, opts: &DrawOptions, packet: &crate::video::cmd::packet::Frame) -> anyhow::Result<()> {
 		self.target.draw_packet(&mut self.gpu, opts, packet)
 	}
