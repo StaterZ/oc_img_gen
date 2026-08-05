@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "3.2"
+local version = "3.3"
 
 local linear_stream = {}
 do
@@ -124,7 +124,7 @@ local function check_interrupted()
 
 	while true do
 		local e = computer.pullSignal(0)
-		if e == nil then
+		if not e then
 			break
 		elseif e == "interrupted" then
 			return true
@@ -153,13 +153,21 @@ ops.no_back = ops["no-back"]
 ops.batch_check = ops["batch-check"]
 ops.volume = ops.volume or 1
 
+local stats = {}
+function draw_stats(gpu)
+	gpu.setBackground(0xff0000)
+	gpu.setForeground(0xffffff)
+	for i, text in pairs(stats) do
+		gpu.set(1, i, text)
+	end
+end
+
 local video = {}
-local swap_chain = {}
-local swap_chain_count = 0
 do --video player
+	local buffer_pool = {}
+	local buffer_pool_size
+
 	local main_screen
-	local swap_chain_head = 1
-	local swap_chain_tail = 1
 	function video.pre_init(gpu)
 		main_screen = gpu.getScreen()
 	end
@@ -173,23 +181,27 @@ do --video player
 	function video.init(gpu, size_x, size_y)
 		video.bind_main_screen(gpu)
 
-		if not ops.no_back and size_x > 0 and size_y > 0 then
-			while true do
-				local buffer = gpu.allocateBuffer(size_x, size_y)
-				if buffer == nil then break end
+		if not ops.no_back then
+			if size_x > 0 and size_y > 0 then
+				while true do
+					local buffer = gpu.allocateBuffer(size_x, size_y)
+					if not buffer then break end
 
-				table.insert(swap_chain, buffer)
+					table.insert(buffer_pool, buffer)
+				end
+			end
+			if #buffer_pool == 0 then
+				video.deinit(gpu)
+				error("can't allocate back-buffer")
 			end
 		end
-		if #swap_chain == 0 then
-			video.deinit(gpu)
-			error("can't allocate back-buffer")
-		end
+		buffer_pool_size = #buffer_pool
+		return buffer_pool_size
 	end
 
 	function video.deinit(gpu)
-		if swap_chain then
-			for _, buffer in ipairs(swap_chain) do
+		if buffer_pool then
+			for _, buffer in ipairs(buffer_pool) do
 				gpu.freeBuffer(buffer)
 			end
 			gpu.setActiveBuffer(0)
@@ -197,31 +209,67 @@ do --video player
 		video.bind_main_screen(gpu)
 	end
 
-	function video.commit(gpu)
-		if #swap_chain == 1 then return end
-		
-		local next_buffer = swap_chain[swap_chain_head]
-		gpu.bitblt(next_buffer)
-		gpu.setActiveBuffer(next_buffer)
-		swap_chain_head = (swap_chain_head % #swap_chain) + 1
-		swap_chain_count = swap_chain_count + 1
+	local alloc_cache = {}
+	local buffer_owner = {}
+	function video.begin_commit(gpu, stream)
+		local buffer = table.remove(buffer_pool) --PERF: buffer_pool contains alloc_cache items. we should ensure we only grab non-cache if there are on other options
+		local prev_owner = buffer_owner[buffer]
+		if prev_owner then
+			alloc_cache[prev_owner] = nil
+		end
+
+		table.insert(stream.swap_chain, buffer)
+		local cache = alloc_cache[stream.index + 1]
+		if not cache then
+			if gpu.getScreen() ~= stream.surface.screen_addr then
+				gpu.bind(stream.surface.screen_addr, false) --OUCH!
+			end
+			cache = 0
+		end
+		if buffer ~= cache then
+			gpu.bitblt(
+				buffer,
+				stream.surface.pos_x,
+				stream.surface.pos_y,
+				stream.surface.size_x,
+				stream.surface.size_y,
+				cache
+			)
+		end
+		gpu.setActiveBuffer(buffer)
+
+		alloc_cache[stream.index + 1] = buffer
+		buffer_owner[buffer] = stream.index
 	end
 
-	function video.inject(gpu, f)
+	function video.begin_dummy_commit(stream)
+		table.insert(stream.swap_chain, 0)
+	end
+
+	function video.inject(gpu, stream, f)
 		local active = gpu.getActiveBuffer()
-		gpu.setActiveBuffer(swap_chain_tail)
+		gpu.setActiveBuffer(stream.swap_chain[1])
 		f()
 		gpu.setActiveBuffer(active)
 	end
 
-	function video.present(gpu)
-		gpu.bitblt(0, nil, nil, nil, nil, swap_chain[swap_chain_tail])
-		swap_chain_tail = (swap_chain_tail % #swap_chain) + 1
-		swap_chain_count = swap_chain_count - 1
+	function video.present(gpu, stream)
+		local frame = table.remove(stream.swap_chain, 1)
+		if frame == 0 then return end --delete dummy commits
+
+		gpu.bitblt(
+			0,
+			stream.surface.pos_x,
+			stream.surface.pos_y,
+			stream.surface.size_x,
+			stream.surface.size_y,
+			frame
+		)
+		table.insert(buffer_pool, frame)
 	end
 
-	function video.is_swap_full()
-		return swap_chain_count == #swap_chain
+	function video.is_stalled()
+		return #buffer_pool == 0
 	end
 
 	local lut = {
@@ -303,9 +351,8 @@ do --video player
 		return command_count
 	end
 
-	function video.draw_stats(
+	function video.update_stats(
 		stream,
-		gpu,
 		frame_begin_time,
 		video_begin_time_up,
 		commands_len,
@@ -313,24 +360,22 @@ do --video player
 	)
 		local now, now_up = os.clock(), computer.uptime()
 		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-		local frame_time = stream.packet_index_present * (stream.time_base or 0)
+		local presented_packet_time = stream.presented_packet_index * stream.time_base
 		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
-		gpu.setBackground(0xff0000)
-		gpu.setForeground(0xffffff)
-		gpu.set(1, 1, ("V|%s: %04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
+		stats[stream.index + 1] = ("V|%s: %04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
 			stream.name,
 			stream.packet_index,
-			stream.packet_index_present,
-			time_fmt(frame_time),
-			stream.time_base == 0 and 0 or video_elapsed_up - frame_time,
-			swap_chain_count,
-			#swap_chain,
+			stream.presented_packet_index,
+			time_fmt(presented_packet_time),
+			stream.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
+			buffer_pool_size - #buffer_pool,
+			buffer_pool_size,
 			1 / frame_elapsed,
 			frame_elapsed * 1000,
 			packet_len,
 			command_count
-		))
+		)
 	end
 end
 
@@ -347,7 +392,6 @@ do --audio player
 	local buffered_time_exact
 	local buffered_time
 	local committed_time
-	local stream_stats
 	function audio.init(num_voices)
 		sound_cards = {}
 		for addr, _ in pairs(component.list("sound")) do
@@ -378,8 +422,6 @@ do --audio player
 		buffered_time_exact = 0
 		buffered_time = 0
 		committed_time = 0
-
-		stream_stats = {}
 	end
 
 	function audio.deinit(num_voices)
@@ -424,6 +466,7 @@ do --audio player
 			for i, card in ipairs(sound_cards) do
 				if (i - 1) * channels_per_card >= stream.num_voices then break end
 				card.process()
+				stream.presented_packet_index = stream.packet_index
 			end
 			num_buffered_instructions_stable = num_buffered_instructions
 			num_buffered_instructions = 0
@@ -457,22 +500,15 @@ do --audio player
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stream_stats[stream.index + 1] = ("A|%s: %04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+		stats[stream.index + 1] = ("A|%s: %04i %04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
 			stream.name,
 			stream.packet_index,
+			stream.presented_packet_index,
 			num_buffered_instructions_stable,
 			(buffered_left - committed_left) * 1000,
 			committed_left * 1000,
 			percentify(committed_left)
 		)
-	end
-
-	function audio.draw_stats(gpu)
-		gpu.setBackground(0xff0000)
-		gpu.setForeground(0xffffff)
-		for i, text in pairs(stream_stats) do
-			gpu.set(1, i, text)
-		end
 	end
 end
 
@@ -592,9 +628,9 @@ local function play(gpu, file, surfaces)
 
 	local frames_begin_pos = file:seek()
 	if play_video then
-		video.init(gpu, max_size_x, max_size_y)
+		local num_buffers = video.init(gpu, max_size_x, max_size_y)
 		
-		print(("allocated %i swap chain buffers!"):format(#swap_chain))
+		print(("allocated %i buffers!"):format(num_buffers))
 		os.sleep(0.1)
 	end
 	if play_audio then
@@ -603,103 +639,120 @@ local function play(gpu, file, surfaces)
 
 	local function play_impl()
 		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
+		local num_live_streams = 0
 		for _, stream in ipairs(streams) do
 			stream.packet_index = 0
-			stream.packet_index_present = 0
+			stream.presented_packet_index = 0
+			if stream.kind == 0x00 and has_video then --video
+				stream.swap_chain = {}
+				num_live_streams = num_live_streams + 1
+			elseif stream.kind == 0x01 and has_audio then --audio
+				num_live_streams = num_live_streams + 1
+			else
+				--we probably just wanna skip unknowns rather than get mad about it
+				--error("unknown packet kind: %x2", stream.kind)
+			end
 		end
 
 		local packet_index = 0
-		while packet_index < num_total_packets do
+		while num_live_streams > 0 do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
 			if check_interrupted() then
 				return false
 			end
 
-			local commands_len, command_count
-			local stream_id = read_u8(file)
-			local stream = streams[stream_id + 1]
-			if stream.kind == 0x00 then --video
-				commands_len = read_u16(file)
-				if play_video then
-					if commands_len > 0 then
-						if gpu.getScreen() ~= stream.surface.screen_addr then
-							gpu.bind(stream.surface.screen_addr, false)
-							if swap_chain then
-								gpu.bitblt(gpu.getActiveBuffer(), nil, nil, nil, nil, 0)
+			local stream = nil
+			if packet_index < num_total_packets then
+				local stream_id = read_u8(file)
+				stream = streams[stream_id + 1]
+				if stream.kind == 0x00 then --video
+					local commands_len = read_u16(file)
+					if play_video then
+						if commands_len > 0 then
+							if ops.no_back then
+								if gpu.getScreen() ~= stream.surface.screen_addr then
+									gpu.bind(stream.surface.screen_addr, false)
+								end
+							else
+								video.begin_commit(gpu, stream)
+							end
+							if ops.diff then
+								gpu.setBackground(0x000000)
+								gpu.setForeground(0xff0000)
+								gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+							end
+						elseif not ops.no_back then
+							video.begin_dummy_commit(stream)
+						end
+
+						local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
+						video.update_stats(stream, frame_begin_time, video_begin_time_up, commands_len, command_count)
+
+						if ops.no_back then
+							stream.presented_packet_index = stream.presented_packet_index + 1
+							if stream.presented_packet_index == stream.num_packets then
+								num_live_streams = num_live_streams - 1
 							end
 						end
-						if ops.diff then
-							gpu.setBackground(0x000000)
-							gpu.setForeground(0xff0000)
-							gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
-						end
+					else
+						file:seek("cur", commands_len + 1) --command_kind = 1b
 					end
-
-					command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
-
-					if commands_len > 0 then
-						if not ops.no_back then
-							video.commit(gpu)
+					if ops.no_back then
+						--this won't play nice with audio streams,
+						--but we can't really help it without buffers
+						if not ops.fast and stream.time_base ~= 0 then
+							repeat
+								local current_time = (computer.uptime() - video_begin_time_up)
+								local desired_frame_index = math.floor(current_time / stream.time_base)
+							until desired_frame_index >= stream.presented_packet_index
 						end
+						stream.presented_packet_index = stream.presented_packet_index + 1
 					end
-				else
-					file:seek("cur", commands_len + 1) --command_kind = 1b
+				elseif stream.kind == 0x01 then --audio
+					if play_audio then
+						audio.queue(file, stream)
+					else
+						file:seek("cur", stream.num_voices * 3)
+					end
 				end
-			elseif stream.kind == 0x01 then --audio
-				if play_audio then
-					audio.queue(file, stream)
-				else
-					file:seek("cur", stream.num_voices * 3)
-				end
-			else
-				--we probably just wanna skip unknowns rather than get mad about it
-				--error("unknown packet kind: %x2", stream.kind)
 			end
 
-			if play_audio then
+			repeat
 				for _, stream in ipairs(streams) do
-					if stream.kind == 0x01 then --audio
-						audio.commit(stream)
+					if stream.kind == 0x00 and play_video and not ops.no_back then
+						while #stream.swap_chain > 0 do
+							local current_time = (computer.uptime() - video_begin_time_up)
+							local desired_packet_index = math.floor(current_time / stream.time_base)
+							if stream.presented_packet_index >= desired_packet_index then break end
+
+							if ops.fps then
+								video.inject(gpu, stream, function() draw_stats(gpu) end)
+							end
+							video.present(gpu, stream)
+							stream.presented_packet_index = stream.presented_packet_index + 1
+							if stream.presented_packet_index == stream.num_packets then
+								num_live_streams = num_live_streams - 1
+							end
+						end
+					elseif stream.kind == 0x01 and play_audio then --audio
+						audio.commit(stream) --commit handles presented_packet_index incrementation
 						if ops.fps then
 							audio.update_stats(stream)
 						end
-					end
-				end
-				if not play_video and ops.fps and gpu ~= nil then
-					audio.draw_stats(gpu)
-				end
-			end
-
-			if not ops.fast and stream.kind == 0x00 and play_video and stream.time_base ~= 0 then --video
-				if no_back then
-					repeat
-						local current_time = (computer.uptime() - video_begin_time_up)
-						local next_frame_index = math.ceil(current_time / stream.time_base)
-					until next_frame_index > stream.packet_index_present --this won't play nice with audio streams, but we can't help it without buffers
-					stream.packet_index_present = stream.packet_index_present + 1
-				else
-					while swap_chain_count > 0 do
-						local current_time = (computer.uptime() - video_begin_time_up)
-						local desired_packet_index = math.floor(current_time / stream.time_base)
-						if stream.packet_index_present > desired_packet_index then
-							if not video.is_swap_full() then break end
-						else
-							video.inject(gpu, function()
-								if ops.fps then
-									video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
-									if play_audio then
-										audio.draw_stats(gpu)
-									end
-								end
-							end)
-							video.present(gpu)
-							stream.packet_index_present = stream.packet_index_present + 1
+						if stream.presented_packet_index == stream.num_packets then
+							num_live_streams = num_live_streams - 1
 						end
 					end
 				end
-			end
+				if ops.fps and play_audio and not play_video and gpu then
+					draw_stats(gpu)
+					break
+				end
+			until not video.is_stalled()
 
-			stream.packet_index = stream.packet_index + 1
+			if stream then
+				stream.packet_index = stream.packet_index + 1
+			end
 			packet_index = packet_index + 1
 			--print(("frame took: %05.1fms"):format((computer.uptime() - frame_begin_time_up) * 1000))
 		end
