@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "3.3"
+local version = "3.4"
 
 local linear_stream = {}
 do
@@ -118,7 +118,8 @@ end
 
 local next_check_time = 0
 local function check_interrupted()
-	local now = os.clock()
+	local now = computer.uptime()
+
 	if now < next_check_time then return false end
 	next_check_time = now + 1
 
@@ -150,6 +151,7 @@ local args, ops = shell.parse(...)
 ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
+ops.one_buf = ops["one-buf"]
 ops.batch_check = ops["batch-check"]
 ops.volume = ops.volume or 1
 
@@ -165,7 +167,35 @@ end
 local video = {}
 do --video player
 	local buffer_pool = {}
+	local buffer_pool_idx = {}
 	local buffer_pool_size
+	local function pool_insert(buffer)
+		buffer_pool[#buffer_pool + 1] = buffer
+		buffer_pool_idx[buffer] = #buffer_pool
+	end
+
+	-- Remove a specific buffer from the pool in O(1). Returns true if the
+	-- buffer was in the pool, false if not.
+	local function pool_remove(buffer)
+		local idx = buffer_pool_idx[buffer]
+		if not idx then return false end
+
+		local last_idx = #buffer_pool
+		local last_buffer = buffer_pool[last_idx]
+		buffer_pool[idx] = last_buffer
+		buffer_pool_idx[last_buffer] = idx
+		buffer_pool[last_idx] = nil
+		buffer_pool_idx[buffer] = nil
+		return true
+	end
+
+	local function pool_pop()
+		local last_idx = #buffer_pool
+		local last_buffer = buffer_pool[last_idx]
+		buffer_pool[last_idx] = nil
+		buffer_pool_idx[last_buffer] = nil
+		return last_buffer
+	end
 
 	local main_screen
 	function video.pre_init(gpu)
@@ -183,12 +213,12 @@ do --video player
 
 		if not ops.no_back then
 			if size_x > 0 and size_y > 0 then
-				while true do
+				repeat
 					local buffer = gpu.allocateBuffer(size_x, size_y)
 					if not buffer then break end
 
-					table.insert(buffer_pool, buffer)
-				end
+					pool_insert(buffer)
+				until ops.one_buf -- the sallad approves
 			end
 			if #buffer_pool == 0 then
 				video.deinit(gpu)
@@ -209,24 +239,37 @@ do --video player
 		video.bind_main_screen(gpu)
 	end
 
-	local alloc_cache = {}
-	local buffer_owner = {}
-	function video.begin_commit(gpu, stream)
-		local buffer = table.remove(buffer_pool) --PERF: buffer_pool contains alloc_cache items. we should ensure we only grab non-cache if there are on other options
-		local prev_owner = buffer_owner[buffer]
-		if prev_owner then
-			alloc_cache[prev_owner] = nil
+	local buffer_cache = {}
+	local buffer_cache_idx = {}
+	local function alloc_buffer(cache)
+		-- 1. try to reuse the cache
+		if pool_remove(cache) then
+			return cache
 		end
 
-		table.insert(stream.swap_chain, buffer)
-		local cache = alloc_cache[stream.index + 1]
-		if not cache then
+		-- 2. try to find a free buffer (not used for cache)
+		for _, candidate in ipairs(buffer_pool) do
+			if not buffer_cache_idx[candidate] then
+				pool_remove(candidate)
+				return candidate
+			end
+		end
+
+		-- 3. worst case, pick anything
+		return pool_pop()
+	end
+
+	function video.begin_commit(gpu, stream)
+		local cache = buffer_cache[stream.index + 1]
+		if not cache then --if no cache, create a new back-buffer by copying the screen
 			if gpu.getScreen() ~= stream.surface.screen_addr then
 				gpu.bind(stream.surface.screen_addr, false) --OUCH!
 			end
 			cache = 0
 		end
-		if buffer ~= cache then
+		
+		local buffer = alloc_buffer(cache)
+		if buffer ~= cache then --if we could not get the cache, then copy it
 			gpu.bitblt(
 				buffer,
 				stream.surface.pos_x,
@@ -237,9 +280,15 @@ do --video player
 			)
 		end
 		gpu.setActiveBuffer(buffer)
-
-		alloc_cache[stream.index + 1] = buffer
-		buffer_owner[buffer] = stream.index
+		
+		--update bookkeeping
+		local prev_buffer_idx = buffer_cache_idx[buffer]
+		if prev_buffer_idx then
+			buffer_cache[prev_buffer_idx] = nil
+		end
+		buffer_cache[stream.index + 1] = buffer
+		buffer_cache_idx[buffer] = stream.index + 1
+		table.insert(stream.swap_chain, buffer)
 	end
 
 	function video.begin_dummy_commit(stream)
@@ -265,7 +314,7 @@ do --video player
 			stream.surface.size_y,
 			frame
 		)
-		table.insert(buffer_pool, frame)
+		pool_insert(frame)
 	end
 
 	function video.is_stalled()
@@ -363,13 +412,14 @@ do --video player
 		local presented_packet_time = stream.presented_packet_index * stream.time_base
 		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
-		stats[stream.index + 1] = ("V|%s: %04i %04i %s %04.1flag %i/%irdy %04.ffps %05.fms %05ib %04icmds"):format(
+		stats[stream.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
 			stream.name,
 			stream.packet_index,
 			stream.presented_packet_index,
 			time_fmt(presented_packet_time),
 			stream.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
-			buffer_pool_size - #buffer_pool,
+			#stream.swap_chain,
+			#buffer_pool,
 			buffer_pool_size,
 			1 / frame_elapsed,
 			frame_elapsed * 1000,
@@ -500,7 +550,7 @@ do --audio player
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stats[stream.index + 1] = ("A|%s: %04i %04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+		stats[stream.index + 1] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
 			stream.name,
 			stream.packet_index,
 			stream.presented_packet_index,
@@ -638,7 +688,7 @@ local function play(gpu, file, surfaces)
 	end
 
 	local function play_impl()
-		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
+		local video_begin_time_up = computer.uptime()
 		local num_live_streams = 0
 		for _, stream in ipairs(streams) do
 			stream.packet_index = 0
@@ -701,10 +751,13 @@ local function play(gpu, file, surfaces)
 						--this won't play nice with audio streams,
 						--but we can't really help it without buffers
 						if not ops.fast and stream.time_base ~= 0 then
-							repeat
+							while true do
 								local current_time = (computer.uptime() - video_begin_time_up)
 								local desired_frame_index = math.floor(current_time / stream.time_base)
-							until desired_frame_index >= stream.presented_packet_index
+								if desired_frame_index >= stream.presented_packet_index then break end
+								
+								sleep(0.05)
+							end
 						end
 						stream.presented_packet_index = stream.presented_packet_index + 1
 					end
@@ -717,13 +770,19 @@ local function play(gpu, file, surfaces)
 				end
 			end
 
-			repeat
+			while true do
+				local next_present_time = math.huge
 				for _, stream in ipairs(streams) do
 					if stream.kind == 0x00 and play_video and not ops.no_back then
 						while #stream.swap_chain > 0 do
-							local current_time = (computer.uptime() - video_begin_time_up)
-							local desired_packet_index = math.floor(current_time / stream.time_base)
-							if stream.presented_packet_index >= desired_packet_index then break end
+							local now_up = computer.uptime()
+							local current_time = (now_up - video_begin_time_up)
+							local presented_packet_time = stream.presented_packet_index * stream.time_base
+							local time_left = presented_packet_time - current_time
+							if time_left > 0 then
+								next_present_time = math.min(next_present_time, presented_packet_time)
+								break
+							end
 
 							if ops.fps then
 								video.inject(gpu, stream, function() draw_stats(gpu) end)
@@ -748,7 +807,18 @@ local function play(gpu, file, surfaces)
 					draw_stats(gpu)
 					break
 				end
-			until not video.is_stalled()
+				
+				if not video.is_stalled() then break end
+
+				if next_present_time ~= math.huge then
+					repeat
+						local now_up = computer.uptime()
+						local current_time = (now_up - video_begin_time_up)
+						local time_left = next_present_time - current_time
+						os.sleep(time_left) --sleep is no-op when time<=0
+					until time_left <= 0
+				end
+			end
 
 			if stream then
 				stream.packet_index = stream.packet_index + 1
@@ -790,7 +860,8 @@ if ops.h or ops.help then
 	print("   --hold", "hold image on screen")
 	print("   --no-video", "skip video streams")
 	print("   --no-audio", "skip audio streams")
-	print("   --no-back", "disable double buffering and the dependency on GPU buffers")
+	print("   --no-back", "disable buffering and the dependency on GPU buffers")
+	print("   --one-buf", "use only one back buffer to reduce bitblt copies")
 	print("   --cfg", "set the screen layout and other environment settings. generate a configs with 'screenConfig.lua'")
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
