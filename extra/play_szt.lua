@@ -750,14 +750,14 @@ local function play(gpu, file, surfaces)
 					if ops.no_back then
 						--this won't play nice with audio streams,
 						--but we can't really help it without buffers
-						if not ops.fast and stream.time_base ~= 0 then
-							while true do
-								local current_time = (computer.uptime() - video_begin_time_up)
-								local desired_frame_index = math.floor(current_time / stream.time_base)
-								if desired_frame_index >= stream.presented_packet_index then break end
-								
-								sleep(0.05)
-							end
+						if not ops.fast then
+							repeat
+								local now_up = computer.uptime()
+								local current_time = (now_up - video_begin_time_up)
+								local next_present_time = stream.presented_packet_index * stream.time_base
+								local time_left = next_present_time - current_time
+								os.sleep(time_left) --sleep is no-op when time<=0
+							until time_left <= 0
 						end
 						stream.presented_packet_index = stream.presented_packet_index + 1
 					end
@@ -779,7 +779,7 @@ local function play(gpu, file, surfaces)
 							local current_time = (now_up - video_begin_time_up)
 							local presented_packet_time = stream.presented_packet_index * stream.time_base
 							local time_left = presented_packet_time - current_time
-							if time_left > 0 then
+							if time_left > 0  and not ops.fast then
 								next_present_time = math.min(next_present_time, presented_packet_time)
 								break
 							end
@@ -810,7 +810,7 @@ local function play(gpu, file, surfaces)
 				
 				if not video.is_stalled() then break end
 
-				if next_present_time ~= math.huge then
+				if next_present_time ~= math.huge and not ops.fast then
 					repeat
 						local now_up = computer.uptime()
 						local current_time = (now_up - video_begin_time_up)
