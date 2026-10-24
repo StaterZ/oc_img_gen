@@ -191,7 +191,7 @@ pub struct Cli {
 	#[arg(
 		short = 'o',
 		long = "out",
-		help = "Path to where to the output SZT file, saves at in_path with .szt extension if omitted",
+		help = "Path to the output SZT file or folder, saves next to the input with .szt extension if omitted",
 		value_hint = ValueHint::FilePath,
 	)]
 	pub out_path: Option<PathBuf>,
@@ -200,7 +200,7 @@ pub struct Cli {
 	#[arg(
 		short = 's',
 		long = "start",
-		help = "What frame to start from, starts at input start if omitted",
+		help = "Time to start from, starts at input start if omitted",
 		value_parser = humantime::parse_duration,
 	)]
 	pub begin: Option<Duration>,
@@ -208,7 +208,7 @@ pub struct Cli {
 	#[arg(
 		short = 'e',
 		long = "end",
-		help = "What frame to stop from (inclusive), stops at input end if omitted",
+		help = "Time to stop at (inclusive), stops at input end if omitted",
 		value_parser = humantime::parse_duration,
 	)]
 	pub end: Option<Duration>,
@@ -254,7 +254,7 @@ struct VideoOpts {
 	
 	#[arg(
 		long = "fill-color",
-		help = "color of the padding around the video",
+		help = "color of the padding around the video, as RRGGBB hex",
 		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
 		conflicts_with = "streams_config",
 	)]
@@ -262,7 +262,7 @@ struct VideoOpts {
 
 	#[arg(
 		long = "stream-size",
-		help = "The size of the streams",
+		help = "The size of the streams in characters, fits the GPU limits if omitted",
 		conflicts_with = "streams_config",
 	)]
 	pub stream_size: Option<Size<usize>>,
@@ -326,14 +326,14 @@ struct VideoOpts {
 	#[arg(
 		short = 'l',
 		long = "loss",
-		help = "selects the 'bitrate' limit for each frame",
+		help = "highest loss a frame may have when it's over budget",
 		default_value = "0",
 	)]
 	pub acceptable_loss: Frac<u32>,
 
 	#[arg(
 		long = "loss-step",
-		help = "selects the 'bitrate' limit for each frame",
+		help = "how much to raise the loss each time a frame is over budget",
 		default_value = "1%",
 	)]
 	pub loss_step: Frac<u32>,
