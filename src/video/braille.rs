@@ -7,7 +7,6 @@ use rayon::prelude::*;
 use szu::iter::MultiZipExt;
 
 use crate::math::*;
-use crate::encoder::cli::BrailleStrategy;
 use crate::video::rgb;
 #[cfg(not(feature = "rayon"))]
 use super::image_iter::ImageIterator;
@@ -234,7 +233,7 @@ impl<T: PartialEq> PartialEq for Braille<T> {
 }
 
 #[cfg(feature = "rayon")]
-pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<Lab>>> {
+pub fn as_braille<T: Copy + Sync + Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> Braille<T> + Sync + Send) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<T>>> {
 	let row_len = input.size().w as usize;
 	ParallelImageIterator {
 		size: input.size() / SIZE,
@@ -249,14 +248,11 @@ pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ParallelImag
 					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
 				})
 			})
-			.map(match strategy {
-				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
-				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
-			}),
+			.map(from_pixels),
 	}
 }
 #[cfg(not(feature = "rayon"))]
-pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ImageIterator<impl Iterator<Item = Braille<Lab>>> {
+pub fn as_braille<T: Copy + Sync + Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> Braille<T> + Sync + Send) -> ImageIterator<impl Iterator<Item = Braille<T>>> {
 	let row_len = input.size().w as usize;
 	ImageIterator {
 		size: input.size() / SIZE,
@@ -271,10 +267,7 @@ pub fn as_braille(input: &Image<Lab>, strategy: BrailleStrategy) -> ImageIterato
 					std::array::from_fn(|y| *rows[y][start..end].as_array::<WIDTH>().unwrap())
 				})
 			})
-			.map(match strategy {
-				BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
-				BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
-			}),
+			.map(from_pixels),
 	}
 }
 

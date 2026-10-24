@@ -16,7 +16,7 @@ use palette::Srgb;
 
 use crate::{
 	encoder::{
-		cli::{BrailleStrategy, Budget, VideoFilter}, media_container::Descriptor as StreamDescriptor, muxer::{Muxer, PacketWriter}, reader::{DecoderInterface, FrameInterface, Reader, ReaderData}
+		cli::{BrailleStrategy, Budget, ColorDiffStrategy, VideoFilter}, media_container::Descriptor as StreamDescriptor, muxer::{Muxer, PacketWriter}, reader::{DecoderInterface, FrameInterface, Reader, ReaderData}
 	}, math::*, video::cmd::machine::Machine
 };
 
@@ -40,6 +40,7 @@ pub struct VideoDescData {
 	pub source_area: Option<Rect<usize>>,
 	pub filter: Option<VideoFilter>,
 	pub braille_strategy: BrailleStrategy,
+	pub color_diff_strategy: ColorDiffStrategy,
 	pub budget: Option<Budget>,
 	pub acceptable_loss: Frac<u32>,
 	pub loss_step: Frac<u32>,
@@ -152,6 +153,7 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 					source_area,
 					stream_data.filter,
 					stream_data.braille_strategy,
+					stream_data.color_diff_strategy,
 					stream_data.budget,
 					&machine,
 					stream_data.acceptable_loss,

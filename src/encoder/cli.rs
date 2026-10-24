@@ -70,6 +70,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
+				args.color_diff_strategy.unwrap_or(ColorDiffStrategy::Fast),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 				args.loss_step.unwrap_or(Frac::new(1, 100)),
@@ -99,6 +100,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				gap_size,
 				args.filter,
 				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
+				args.color_diff_strategy.unwrap_or(ColorDiffStrategy::Fast),
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 				args.loss_step.unwrap_or(Frac::new(1, 100)),
@@ -124,6 +126,7 @@ fn create_main_stream(
 	stream_size: Size<u8>,
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
+	color_diff_strategy: ColorDiffStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u32>,
 	loss_step: Frac<u32>,
@@ -135,6 +138,7 @@ fn create_main_stream(
 		source_area: None,
 		filter,
 		braille_strategy,
+		color_diff_strategy,
 		budget,
 		acceptable_loss,
 		loss_step,
@@ -155,6 +159,7 @@ fn create_matrix_streams(
 	matrix_gap_size: Size<usize>,
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
+	color_diff_strategy: ColorDiffStrategy,
 	budget: Option<Budget>,
 	acceptable_loss: Frac<u32>,
 	loss_step: Frac<u32>,
@@ -174,6 +179,7 @@ fn create_matrix_streams(
 				}),
 				filter,
 				braille_strategy,
+				color_diff_strategy,
 				budget,
 				acceptable_loss,
 				loss_step,
@@ -216,6 +222,12 @@ pub enum Budget {
 pub enum BrailleStrategy {
 	CentroidCohesion,
 	PolarPair,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum ColorDiffStrategy {
+	#[value(name = "fast")] Fast,
+	#[value(name = "ciede")] ImprovedCiede2000,
 }
 
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
@@ -375,7 +387,7 @@ struct VideoOpts {
 
 	#[arg(
 		value_enum,
-		short = 'b',
+		short = 'B',
 		long = "braille",
 		help = "What brailling strategy to use",
 		requires = "mode",
@@ -384,6 +396,17 @@ struct VideoOpts {
 	braille_strategy: Option<BrailleStrategy>,
 
 	#[arg(
+		value_enum,
+		short = 'D',
+		long = "diff",
+		help = "What color comparison strategy to use",
+		requires = "mode",
+		//default_value_t = Some(ColorDiffStrategy::Fast), //TODO: Problems?
+	)]
+	color_diff_strategy: Option<ColorDiffStrategy>,
+
+	#[arg(
+		short = 'b',
 		long = "budget",
 		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
 		requires = "mode",
@@ -393,6 +416,7 @@ struct VideoOpts {
 	
 	
 	#[arg(
+		short = 'l',
 		long = "loss",
 		help = "selects the 'bitrate' limit for each frame. default: 0",
 	)]

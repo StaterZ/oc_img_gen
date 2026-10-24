@@ -8,10 +8,9 @@ use palette::{Hsv, Lab, Srgb, FromColor};
 use szu::iter::RleRun;
 use lazy_static::lazy_static;
 
-use crate::encoder::cli::BrailleStrategy;
 use crate::math::*;
 use crate::encoder::{
-	cli::{Budget, VideoFilter},
+	cli::{Budget, VideoFilter, BrailleStrategy, ColorDiffStrategy},
 	media_container::{
 		Descriptor as StreamDescriptor,
 		Packet,
@@ -19,6 +18,7 @@ use crate::encoder::{
 	},
 	muxer::PacketWriter,
 };
+use crate::video::braille::Braille;
 use crate::video::rgb;
 use super::{
 	super::{
@@ -109,6 +109,7 @@ pub struct VideoEncoder<'a> {
 	num_frames_since_emit: usize,
 	filter: Option<VideoFilter>,
 	braille_strategy: BrailleStrategy,
+	color_diff_strategy: ColorDiffStrategy,
 	budget: Option<Budget>,
 	machine: &'a Machine,
 	acceptable_loss: Frac<u32>,
@@ -135,6 +136,7 @@ impl<'a> VideoEncoder<'a> {
 		source_area: Rect<usize>,
 		filter: Option<VideoFilter>,
 		braille_strategy: BrailleStrategy,
+		color_diff_strategy: ColorDiffStrategy,
 		budget: Option<Budget>,
 		machine: &'a Machine,
 		acceptable_loss: Frac<u32>,
@@ -175,6 +177,7 @@ impl<'a> VideoEncoder<'a> {
 			num_frames_since_emit: 0,
 			filter,
 			braille_strategy,
+			color_diff_strategy,
 			budget,
 			machine,
 			acceptable_loss,
@@ -203,10 +206,25 @@ impl<'a> VideoEncoder<'a> {
 		// );
 		// image::imageops::colorops::dither(&mut img, formatter);
 
+		// let color_diff = match self.color_diff_strategy {
+		// 	ColorDiffStrategy::Fast => |a: Lab, b| a.distance_squared(b),
+		// 	ColorDiffStrategy::ImprovedCiede2000 => |a: Lab, b| a.improved_difference(b),
+		// };
+
+		// let braille_from_pixels = match self.braille_strategy {
+		// 	BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster, color_diff),
+		// 	BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster, color_diff),
+		// };
+
+		let braille_from_pixels = match self.braille_strategy {
+			BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
+			BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
+		};
+
 		const UBER_MODE: bool = true;
 		let img = if UBER_MODE {
 			crate::stage("Stream | Process   | Uber", || {
-				braille::as_braille(&img, self.braille_strategy)
+				braille::as_braille(&img, braille_from_pixels)
 					.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))))
 					.map(|braille| braille.into())
 					.collect()
@@ -217,7 +235,7 @@ impl<'a> VideoEncoder<'a> {
 			//let img2 = crate::stage("Stream | Process   | Inflate", || img2.into_iter().map(|p| formatter.inflate(p)).collect());
 			//img2.debug_export("raw_deflate".into()).unwrap();
 
-			let img = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img, self.braille_strategy).collect());
+			let img = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img, braille_from_pixels).collect());
 			//braille::raster(&img).debug_export("raw_braille".into()).unwrap();
 			let img = crate::stage("Stream | Process   | Deflate", || img
 				.into_iter()
