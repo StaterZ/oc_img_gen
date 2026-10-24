@@ -12,7 +12,6 @@ use ffmpeg_next::{
 	format::context::Input as FfmpegInput,
 	ffi::AV_NOPTS_VALUE,
 };
-use num::traits::ConstZero;
 use crate::math::*;
 use super::muxer::PacketWriter;
 
@@ -56,8 +55,9 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 
 		let decoder = TDecoder::new(codec_ctx.decoder()).unwrap();
 
-		let mut time_base = Frac::from(stream.time_base()).cast::<i64>();
-		if time_base == Frac::ZERO { time_base = Frac::from(stream.rate()).cast::<i64>().inverse(); }
+		let mut time_base = stream.time_base();
+		if time_base.numerator() == 0 { time_base = stream.rate().invert(); }
+		let time_base = Frac::from(time_base).cast::<i64>();
 		let mut start_ts = stream.start_time();
 		if start_ts == AV_NOPTS_VALUE { start_ts = 0; }
 		let mut duration_ts = stream.duration();

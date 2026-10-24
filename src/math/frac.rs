@@ -32,11 +32,12 @@ pub struct Frac<T: GoodInt> {
 }
 
 impl<T: GoodInt> Frac<T> {
-	pub const fn new(numerator: T, denominator: T) -> Self {
+	pub fn new(numerator: T, denominator: T) -> Self {
+		debug_assert!(denominator != T::ZERO, "Frac denominator can't be zero");
 		Self { numerator, denominator }
 	}
 	pub const fn whole(value: T) -> Self {
-		Self::new(value, T::ONE)
+		Self { numerator: value, denominator: T::ONE }
 	}
 
 	pub fn half() -> Self {
@@ -64,18 +65,13 @@ impl<T: GoodInt> Frac<T> {
 	}
 
 	pub fn inverse(self) -> Self {
-		Self {
-			numerator: self.denominator,
-			denominator: self.numerator,
-		}
+		Self::new(self.denominator, self.numerator)
 	}
 
 	// divides out the gcd and moves the sign to the numerator
 	fn reduce(self) -> Self {
+		debug_assert!(self.denominator != T::ZERO, "Frac denominator can't be zero");
 		let mut gcd = self.numerator.gcd(&self.denominator);
-		if gcd == T::ZERO {
-			return self; // 0/0
-		}
 		if self.denominator < T::ZERO {
 			gcd = T::ZERO - gcd;
 		}
@@ -179,7 +175,7 @@ impl<T: GoodInt + Zero> Zero for Frac<T> {
 }
 
 impl<T: GoodInt + ConstZero + ConstOne> ConstZero for Frac<T> {
-	const ZERO: Self = Self::new(T::ZERO, T::ONE);
+	const ZERO: Self = Self::whole(T::ZERO);
 }
 
 impl<T: GoodInt + One> One for Frac<T> {
@@ -189,7 +185,7 @@ impl<T: GoodInt + One> One for Frac<T> {
 }
 
 impl<T: GoodInt + ConstOne> ConstOne for Frac<T> {
-	const ONE: Self = Self::new(T::ONE, T::ONE);
+	const ONE: Self = Self::whole(T::ONE);
 }
 
 impl<T: GoodInt + Display> Display for Frac<T> {
@@ -209,10 +205,12 @@ impl<T: GoodInt + DekuWriter<Ctx>, Ctx: Copy> DekuWriter<Ctx> for Frac<T> {
 
 impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Frac<T> {
 	fn from_reader_with_ctx<R: deku::no_std_io::Read + deku::no_std_io::Seek>(reader: &mut Reader<R>, ctx: Ctx) -> Result<Self, DekuError> {
-		Ok(Self {
-			numerator: T::from_reader_with_ctx(reader, ctx)?,
-			denominator: T::from_reader_with_ctx(reader, ctx)?,
-		})
+		let numerator = T::from_reader_with_ctx(reader, ctx)?;
+		let denominator = T::from_reader_with_ctx(reader, ctx)?;
+		if denominator == T::ZERO {
+			return Err(DekuError::Parse("Frac denominator can't be zero".into()));
+		}
+		Ok(Self { numerator, denominator })
 	}
 }
 
@@ -224,10 +222,7 @@ impl<T: GoodInt> From<T> for Frac<T> {
 
 impl From<ffmpeg_next::Rational> for Frac<i32> {
 	fn from(value: ffmpeg_next::Rational) -> Self {
-		Self {
-			numerator: value.numerator(),
-			denominator: value.denominator(),
-		}
+		Self::new(value.numerator(), value.denominator())
 	}
 }
 impl From<Frac<i32>> for ffmpeg_next::Rational {
@@ -256,19 +251,20 @@ pub enum FracParseErr<E> {
 
 impl<T: GoodInt> Frac<T> {
 	fn parse_with<E>(s: &str, parse: impl Fn(&str) -> Result<T, E>) -> Result<Self, FracParseErr<E>> {
-		let frac = if let Some(percent) = s.strip_suffix('%') {
-			Frac::new(parse(percent)?, T::from(100).unwrap())
-		} else {
-			match s.split('/').collect_vec().as_slice() {
-				[numerator] => Frac::whole(parse(numerator)?),
-				[numerator, denominator] => Frac::new(parse(numerator)?, parse(denominator)?),
-				_ => return Err(FracParseErr::BadFormat),
-			}
-		};
-		if frac.denominator == T::ZERO {
-			return Err(FracParseErr::ZeroDenominator);
+		if let Some(percent) = s.strip_suffix('%') {
+			return Ok(Frac::new(parse(percent)?, T::from(100).unwrap()));
 		}
-		Ok(frac)
+		match s.split('/').collect_vec().as_slice() {
+			[numerator] => Ok(Frac::whole(parse(numerator)?)),
+			[numerator, denominator] => {
+				let denominator = parse(denominator)?;
+				if denominator == T::ZERO {
+					return Err(FracParseErr::ZeroDenominator);
+				}
+				Ok(Frac::new(parse(numerator)?, denominator))
+			},
+			_ => Err(FracParseErr::BadFormat),
+		}
 	}
 }
 
@@ -304,7 +300,7 @@ impl<T: GoodInt> Add for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
-		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator);
 		Self {
 			numerator: self.numerator * (rhs.denominator / gcd) + rhs.numerator * (self.denominator / gcd),
 			denominator: self.denominator / gcd * rhs.denominator,
@@ -336,7 +332,7 @@ impl<T: GoodInt> Sub for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
-		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator);
 		Self {
 			numerator: self.numerator * (rhs.denominator / gcd) - rhs.numerator * (self.denominator / gcd),
 			denominator: self.denominator / gcd * rhs.denominator,
@@ -430,7 +426,7 @@ impl<T: GoodInt> Rem for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: Self) -> Self::Output {
-		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator);
 		Self {
 			numerator: (self.numerator * (rhs.denominator / gcd)) % (rhs.numerator * (self.denominator / gcd)),
 			denominator: self.denominator / gcd * rhs.denominator,
