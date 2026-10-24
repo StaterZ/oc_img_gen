@@ -10,9 +10,6 @@ use crate::{
 };
 
 pub fn process_args(args: Cli) -> EncoderConfig {
-	if !args.validate() {
-		std::process::exit(1);
-	}
 	eprintln!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
 	
 	let out_path = match args.out_path {
@@ -293,19 +290,6 @@ pub struct Cli {
 	audio: Option<AudioOpts>,
 }
 
-impl Cli {
-	fn validate(&self) -> bool {
-		let mut is_valid = true;
-		if let Some(video) = self.video.as_ref() {
-			is_valid &= video.validate();
-		}
-		if let Some(audio) = self.audio.as_ref() {
-			is_valid &= audio.validate();
-		}
-		is_valid
-	}
-}
-
 #[derive(Args, Debug)]
 struct VideoOpts {
 	#[arg(
@@ -440,12 +424,6 @@ struct VideoOpts {
 	pub streams_config: Option<PathBuf>,
 }
 
-impl VideoOpts {
-	fn validate(&self) -> bool {
-		true
-	}
-}
-
 #[derive(Debug, Clone)]
 struct CliSrgb8(Srgb<u8>);
 
@@ -505,6 +483,7 @@ pub struct AudioOpts {
 		long = "fft-window-size",
 		default_value_t = 1024,
 		help = "FFT window size (power of two)",
+		value_parser = parse_power_of_two,
 	)]
 	pub fft_window_size: usize,
 
@@ -526,20 +505,15 @@ pub struct AudioOpts {
 		long = "voices",
 		default_value_t = 8,
 		help = "How many voices to use (8 channels per sound card)",
+		value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
 	)]
 	pub num_voices: usize,
 }
-impl AudioOpts {
-	fn validate(&self) -> bool {
-		let mut is_valid = true;
-		if !self.fft_window_size.is_power_of_two() {
-			eprintln!("--window must be a power of two");
-			is_valid = false;
-		}
-		if self.num_voices == 0 {
-			eprintln!("--you need at least one voice");
-			is_valid = false;
-		}
-		is_valid
+
+fn parse_power_of_two(s: &str) -> Result<usize, String> {
+	let value = s.parse::<usize>().map_err(|e| e.to_string())?;
+	if !value.is_power_of_two() {
+		return Err(format!("{value} is not a power of two"));
 	}
+	Ok(value)
 }
