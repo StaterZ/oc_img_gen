@@ -842,7 +842,7 @@ local function play(gpu, file, surfaces)
 					break
 				end
 				
-				if not video.is_stalled() then break end
+				if not play_video or ops.no_back or not video.is_stalled() then break end --only back-buffers can stall
 
 				if next_present_time ~= math.huge and not ops.fast then
 					repeat
