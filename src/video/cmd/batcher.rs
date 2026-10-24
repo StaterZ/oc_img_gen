@@ -167,7 +167,7 @@ impl Accelerator {
 			.or_insert_with(Bucket::new)
 	}
 	
-	fn draw<>(mut self, renderer: &mut impl Renderer) {
+	fn draw(mut self, renderer: &mut impl Renderer) {
 		let mut state = RenderState::new();
 		while let Some(bucket) = self.pop_best_bucket(&state) {
 			for batch in bucket {
@@ -179,7 +179,7 @@ impl Accelerator {
 		}
 	}
 	
-	fn pop_best_bucket<>(&mut self, state: &RenderState) -> Option<Bucket> {
+	fn pop_best_bucket(&mut self, state: &RenderState) -> Option<Bucket> {
 		fn unwrap_entry<'a, K, V>(entry: Entry<'a, K, V>) -> OccupiedEntry<'a, K, V> {
 			match entry {
 				Entry::Occupied(occupied_entry) => occupied_entry,

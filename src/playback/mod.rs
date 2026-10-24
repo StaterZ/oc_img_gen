@@ -4,7 +4,7 @@ use deku::DekuContainerRead;
 use palette::{FromColor, Srgb, rgb::channels::Argb};
 
 use crate::{
-	audio::VoiceStateFlt,
+	audio::{self, VoiceStateFlt},
 	math::*,
 	video::{
 		Image, ImageIterator,
@@ -200,9 +200,9 @@ pub fn smooth_coefficient(sample_rate: f32, smooth_time: std::time::Duration) ->
 	(-1.0 / (sample_rate * smooth_time.as_secs_f32())).exp()
 }
 
-pub fn voice_target_from_sample(sample: &crate::audio::packet::VoiceState) -> VoiceStateFlt {
+pub fn voice_target_from_sample(sample: &audio::packet::VoiceState) -> VoiceStateFlt {
 	VoiceStateFlt {
-		frequency: sample.frequency as f32 / u16::MAX as f32 * 20000.0,
+		frequency: sample.frequency as f32 / u16::MAX as f32 * audio::MAX_FREQUENCY,
 		volume: sample.volume as f32 / u8::MAX as f32,
 	}
 }

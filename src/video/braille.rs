@@ -131,36 +131,31 @@ impl Braille<Lab> {
 			Some(Lab::new(sum_l / n, sum_a / n, sum_b / n))
 		}
 
-		// Start with group == 0 (all bits 0 => all pixels in bg)
-		// bg_sum = sum of all pixel_sums, fg_sum = ZERO
+		// Start with every pixel in the background.
 		let mut bg_sum = pixels.iter().copied().fold(*rgb::ZERO_LAB, |acc, p| acc + p);
 		let mut fg_sum = *rgb::ZERO_LAB;
 		let mut bg_count: usize = BITS as usize;
 		let mut fg_count: usize = 0;
 
-		// Gray-code generation helpers:
-		// Gray(i) = i ^ (i >> 1). We iterate i from 0..GROUPS and compute gray.
-		// flipped bit index = trailing_zeros(prev_gray ^ gray).
+		// Walk the ids in Gray-code order so each step moves exactly one pixel
+		// between bg and fg, letting the sums update incrementally.
+		// Only half the ids are tried: an id and its inverse give the same split.
 		let mut best = MaybeUninit::<Braille<Lab>>::uninit();
 		let mut best_score = i32::MIN;
 
 		let mut prev_gray: usize = 0;
-		// For group 0 we already have bg_sum, fg_sum, counts set.
 		for seq in 0..NUM_GROUPS {
 			let gray = seq ^ (seq >> 1);
-			// find flipped bit compared to previous gray (except seq==0)
 			if seq != 0 {
-				let diff = prev_gray ^ gray;
-				let flipped_bit = diff.trailing_zeros() as usize; // 0..BITS-1
-				// if bit in gray is 1, we moved that pixel from bg -> fg, else fg -> bg
+				let flipped_bit = (prev_gray ^ gray).trailing_zeros() as usize;
 				if ((gray >> flipped_bit) & 1) != 0 {
-					// 0->1: move pixel_sums[flipped_bit] from bg_sum to fg_sum
+					// bg -> fg
 					bg_sum -= pixels[flipped_bit];
 					fg_sum += pixels[flipped_bit];
 					bg_count -= 1;
 					fg_count += 1;
 				} else {
-					// 1->0: move pixel_sums[flipped_bit] from fg_sum to bg_sum
+					// fg -> bg
 					fg_sum -= pixels[flipped_bit];
 					bg_sum += pixels[flipped_bit];
 					fg_count -= 1;
@@ -168,8 +163,7 @@ impl Braille<Lab> {
 				}
 			}
 
-			// Candidate id is the lower (BITS-1) bits of gray; keep type compatibility with original
-			let id = (gray as u8) & ((1u8 << (BITS - 1)) - 1); // matches original group->id mapping
+			let id = (gray as u8) & ((1u8 << (BITS - 1)) - 1);
 
 			fn safe_div(lhs: &Lab, rhs: usize) -> Option<Lab> {
 				(rhs != 0).then_some(*lhs / rhs as f32)

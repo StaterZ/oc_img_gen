@@ -4,8 +4,14 @@ use clap::Parser;
 use deku::DekuContainerRead;
 use ffmpeg_next as ffmpeg;
 use itertools::Itertools;
+use palette::{Srgb, rgb::channels::Argb};
 
-use crate::{encoder::media_container::{MediaFile, PacketContent}, math::*, video::braille};
+use crate::{
+	audio::{VoiceStateFlt, packet::Sample},
+	encoder::media_container::{Descriptor, DescriptorContent, MediaFile, PacketContent},
+	math::*,
+	video::{braille, cmd::packet::Frame},
+};
 use super::{self as shared, DrawOptions, DrawTarget, Gpu, VoiceState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -120,7 +126,7 @@ fn export_png(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 	shared::write_image(out_path, target.image
 		.iter()
-		.map(|p| palette::Srgb::<u8>::from_u32::<palette::rgb::channels::Argb>(*p)))?;
+		.map(|p| Srgb::<u8>::from_u32::<Argb>(*p)))?;
 
 	eprintln!("Wrote {}", out_path.display());
 	Ok(())
@@ -128,7 +134,7 @@ fn export_png(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 /// A packed ARGB pixel from `DrawTarget::image` split into R, G, B bytes.
 fn argb_to_rgb_bytes(pixel: u32) -> [u8; 3] {
-	let color = palette::Srgb::<u8>::from_u32::<palette::rgb::channels::Argb>(pixel);
+	let color = Srgb::<u8>::from_u32::<Argb>(pixel);
 	[color.red, color.green, color.blue]
 }
 
@@ -145,7 +151,7 @@ struct VideoTrack {
 
 fn open_video_track(
 	octx: &mut ffmpeg::format::context::Output,
-	desc: &crate::encoder::media_container::Descriptor<crate::encoder::media_container::DescriptorContent>,
+	desc: &Descriptor<DescriptorContent>,
 	stream_id: u8,
 	args: &Cli,
 ) -> anyhow::Result<VideoTrack> {
@@ -206,7 +212,7 @@ fn open_video_track(
 }
 
 impl VideoTrack {
-	fn push_frame(&mut self, opts: &DrawOptions, frame: &crate::video::cmd::packet::Frame) -> anyhow::Result<()> {
+	fn push_frame(&mut self, opts: &DrawOptions, frame: &Frame) -> anyhow::Result<()> {
 		self.target.draw_packet(&mut self.gpu, opts, frame)?;
 
 		let mut rgb_frame = ffmpeg::util::frame::Video::new(ffmpeg::format::Pixel::RGB24, self.size.w, self.size.h);
@@ -263,7 +269,7 @@ impl VideoTrack {
 struct AudioTrack {
 	stream_id: u8,
 	voices: Vec<VoiceState>,
-	targets: Vec<crate::audio::VoiceStateFlt>,
+	targets: Vec<VoiceStateFlt>,
 	smooth_coefficient: f32,
 	sample_rate: f32,
 	next_frame_index: u64,
@@ -277,7 +283,7 @@ struct AudioTrack {
 
 fn open_audio_track(
 	octx: &mut ffmpeg::format::context::Output,
-	desc: &crate::encoder::media_container::Descriptor<crate::encoder::media_container::DescriptorContent>,
+	desc: &Descriptor<DescriptorContent>,
 	stream_id: u8,
 	args: &Cli,
 	codec_id: ffmpeg::codec::Id,
@@ -332,7 +338,7 @@ fn open_audio_track(
 	Ok(AudioTrack {
 		stream_id,
 		voices: vec![VoiceState::new(0.0); num_voices],
-		targets: vec![crate::audio::VoiceStateFlt::default(); num_voices],
+		targets: vec![VoiceStateFlt::default(); num_voices],
 		smooth_coefficient: shared::smooth_coefficient(sample_rate as f32, args.voice_smooth_time.into()),
 		sample_rate: sample_rate as f32,
 		next_frame_index: 0,
@@ -346,7 +352,7 @@ fn open_audio_track(
 }
 
 impl AudioTrack {
-	fn set_targets(&mut self, sample: &crate::audio::packet::Sample) {
+	fn set_targets(&mut self, sample: &Sample) {
 		for (target, voice) in self.targets.iter_mut().zip_eq(&sample.voices) {
 			*target = shared::voice_target_from_sample(voice);
 		}

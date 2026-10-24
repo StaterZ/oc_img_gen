@@ -261,7 +261,7 @@ impl<'a> VideoEncoder<'a> {
 				let p = Lab::from_color(hsv);
 				*VGA_PALETTE.iter().min_by_key(|c| OrderedFloat(p.improved_difference(**c))).unwrap() //SAFETY: unwrap safe due to VGA_PALETTE.len > 0
 			}).collect()),
-			VideoFilter::Hsv => crate::stage("Stream | Process   | VGA", || img.into_iter().map(|p| {
+			VideoFilter::Hsv => crate::stage("Stream | Process   | HSV", || img.into_iter().map(|p| {
 				let mut hsv = Hsv::from_color(p.into_format::<f32>());
 				hsv.saturation = (hsv.saturation * 6.0).round() / 6.0;
 				hsv.value = (hsv.value * 4.0).round() / 4.0;

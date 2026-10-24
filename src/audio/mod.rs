@@ -7,6 +7,9 @@ use crate::audio::packet::VoiceState;
 pub mod packet;
 pub mod audio_reader;
 
+/// Highest frequency a voice can encode; stored frequencies are fractions of this.
+pub const MAX_FREQUENCY: f32 = 20000.0;
+
 pub struct Config {
 	pub name: String,
 	pub analysis_rate: u32,
@@ -26,7 +29,7 @@ pub struct VoiceStateFlt {
 pub fn encode(master_volume: f32, timeline: Grid<VoiceStateFlt>) -> Grid<VoiceState> {
 	timeline.map(|voice_state| VoiceState {
 		volume: ((voice_state.volume * master_volume).clamp(0.0, 1.0) * (u8::MAX as f32)) as u8,
-		frequency: ((voice_state.frequency / 20000.0).clamp(0.0, 1.0) * (u16::MAX as f32)) as u16,
+		frequency: ((voice_state.frequency / MAX_FREQUENCY).clamp(0.0, 1.0) * (u16::MAX as f32)) as u16,
 	})
 }
 

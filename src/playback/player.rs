@@ -12,7 +12,7 @@ use triple_buffer::TripleBuffer;
 use display_info::DisplayInfo;
 
 use crate::{
-	audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::braille,
+	audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::{braille, cmd::packet::Frame},
 };
 use super::{self as shared, DrawOptions, DrawTarget, Gpu, VoiceState};
 
@@ -96,7 +96,6 @@ fn remove_title_bar(window: &Window) {
 		SetWindowLongW(hwnd, GWL_STYLE, style & !remove);
 
 		let size = window.get_size();
-		eprintln!("{:?}", size);
 		SetWindowPos(
 			hwnd,
 			Some(HWND_TOP),
@@ -379,7 +378,7 @@ struct VideoStream {
 }
 
 impl VideoStream {
-	fn draw_packet(&mut self, opts: &DrawOptions, packet: &crate::video::cmd::packet::Frame) -> anyhow::Result<()> {
+	fn draw_packet(&mut self, opts: &DrawOptions, packet: &Frame) -> anyhow::Result<()> {
 		self.target.draw_packet(&mut self.gpu, opts, packet)
 	}
 }
