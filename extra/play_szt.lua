@@ -371,6 +371,8 @@ do --video player
 			end
 		end
 
+		local gpu_set, gpu_set_bg, gpu_set_fg = gpu.set, gpu.setBackground, gpu.setForeground
+
 		local command_count = 0
 		local i = 0
 
@@ -379,12 +381,12 @@ do --video player
 			len = read_u8(file)
 			if len >= 0x80 then
 				len = len - 0x80
-				gpu.setBackground(lut[read_u8(file) + 1])
+				gpu_set_bg(lut[read_u8(file) + 1])
 				i = i + 1
 			end
 			if len >= 0x40 then
 				len = len - 0x40
-				gpu.setForeground(lut[read_u8(file) + 1])
+				gpu_set_fg(lut[read_u8(file) + 1])
 				i = i + 1
 			end
 			local is_rle = len >= 0x20
@@ -395,7 +397,7 @@ do --video player
 			len = len + 1
 			x = read_u8(file)
 			y = read_u8(file)
-			gpu.set(x + pos_x, y + pos_y, get_value(file, len, is_rle))
+			gpu_set(x + pos_x, y + pos_y, get_value(file, len, is_rle))
 			len = is_rle and len*2 or len
 			i = i + 3 + len
 			command_count = command_count + 1
