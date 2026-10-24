@@ -69,8 +69,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				*args.fill_color,
 				stream_size.try_cast().expect("stream size too large"),
 				args.filter,
-				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
-				args.color_diff_strategy.unwrap_or(ColorDiffStrategy::Fast),
+				args.braille_strategy,
+				args.color_diff_strategy,
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 				args.loss_step.unwrap_or(Frac::new(1, 100)),
@@ -99,8 +99,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.matrix_size.unwrap(),
 				gap_size,
 				args.filter,
-				args.braille_strategy.unwrap_or(BrailleStrategy::CentroidCohesion),
-				args.color_diff_strategy.unwrap_or(ColorDiffStrategy::Fast),
+				args.braille_strategy,
+				args.color_diff_strategy,
 				args.budget,
 				args.acceptable_loss.unwrap_or(Frac::from(0)),
 				args.loss_step.unwrap_or(Frac::new(1, 100)),
@@ -391,9 +391,9 @@ struct VideoOpts {
 		long = "braille",
 		help = "What brailling strategy to use",
 		requires = "mode",
-		//default_value_t = Some(BrailleStrategy::Soft), //TODO: Problems?
+		default_value_t = BrailleStrategy::CentroidCohesion,
 	)]
-	braille_strategy: Option<BrailleStrategy>,
+	braille_strategy: BrailleStrategy,
 
 	#[arg(
 		value_enum,
@@ -401,9 +401,9 @@ struct VideoOpts {
 		long = "diff",
 		help = "What color comparison strategy to use",
 		requires = "mode",
-		//default_value_t = Some(ColorDiffStrategy::Fast), //TODO: Problems?
+		default_value_t = ColorDiffStrategy::Fast,
 	)]
-	color_diff_strategy: Option<ColorDiffStrategy>,
+	color_diff_strategy: ColorDiffStrategy,
 
 	#[arg(
 		short = 'b',
