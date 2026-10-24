@@ -102,6 +102,21 @@ impl Braille<Lab> {
 		sharpness as i32 - irregular as i32
 	}
 
+	/// same as compute_score, but gives up once the score can't beat `best_score`
+	#[inline(always)]
+	fn compute_score_above(&self, pixels: &[Lab; BITS], best_score: i32) -> Option<i32> {
+		let sharpness = self.compute_sharpness() as i32;
+		if sharpness <= best_score { return None; }
+
+		let mut irregular = 0.0;
+		for i in 0..BITS {
+			let palette_color = if ((self.id as usize >> i) & 1) != 0 { self.fg } else { self.bg };
+			irregular += pixels[i].improved_difference(palette_color);
+			if sharpness - irregular as i32 <= best_score { return None; } //irregular only grows
+		}
+		Some(sharpness - irregular as i32)
+	}
+
 	pub fn from_pixels_centroid_cohesion(pixels: &[[Lab; WIDTH]; HEIGHT]) -> Self {
 		let pixels: &[Lab; BITS] = unsafe { std::mem::transmute(pixels) };
 
@@ -179,9 +194,7 @@ impl Braille<Lab> {
 			};
 
 			let candidate = Braille { id, bg, fg };
-			let score = candidate.compute_score(pixels);
-
-			if score > best_score {
+			if let Some(score) = candidate.compute_score_above(pixels, best_score) {
 				best_score = score;
 				best = MaybeUninit::new(candidate);
 			}
