@@ -1,5 +1,5 @@
 use std::{fmt::Display, num::ParseIntError, ops::Deref, path::{Path, PathBuf}, str::FromStr, time::Duration};
-use clap::{Args, Parser, ValueHint};
+use clap::{Args, Parser, ValueEnum, ValueHint};
 use num::traits::{ConstOne, ConstZero};
 use palette::{Srgb, rgb::channels::Argb};
 
@@ -9,10 +9,10 @@ use crate::{
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
-pub fn process_args(args: Cli) -> EncoderConfig {
+pub fn process_args(mut args: Cli) -> EncoderConfig {
 	eprintln!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
 	
-	let out_path = match args.out_path {
+	let out_path = match args.out_path.take() {
 		None => {
 			let mut path = args.in_path.clone();
 			path.set_extension(EXT);
@@ -32,8 +32,10 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 	let machine = args.tier.into();
 	let video_config = args.video.as_ref().map(|video_args| build_video_config(video_args, &machine, &args.in_path));
 	let audio_config = args.audio.as_ref().map(build_audio_config);
+	let settings = describe_settings(&args, video_config.as_ref());
 	
 	EncoderConfig {
+		settings,
 		in_path: args.in_path,
 		out_path,
 		range: args.begin..=args.end,
@@ -41,6 +43,59 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 		video: video_config,
 		audio: audio_config,
 	}
+}
+
+fn value_name(value: &impl ValueEnum) -> String {
+	value.to_possible_value().map_or_else(String::new, |value| value.get_name().to_string())
+}
+
+/// the settings the file was encoded with, as "key: value" lines. nested settings are indented
+fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
+	let time = |time: Option<Duration>, fallback: &str| time.map_or_else(|| fallback.to_string(), |time| humantime::Duration::from(time).to_string());
+	let mut lines = vec![
+		format!("encoder: {} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+		format!("encoded: {}", humantime::format_rfc3339_seconds(std::time::SystemTime::now())),
+		format!("input: {}", args.in_path.file_name().map_or_else(|| args.in_path.display().to_string(), |name| name.to_string_lossy().to_string())),
+		format!("range: {} to {}", time(args.begin, "start"), time(args.end, "end")),
+		format!("tier: {}", value_name(&args.tier)),
+	];
+
+	if let (Some(video), Some(video_config)) = (&args.video, video_config) {
+		lines.push(format!("video: {}", video.mode.as_ref().map_or_else(String::new, value_name)));
+		if let Some(desc) = video_config.stream_descs_data.first() {
+			lines.push(format!("  streams: {} of {}", video_config.stream_descs_data.len(), desc.size));
+		}
+		lines.push(format!("  frame rate: {}", video.frame_rate.map_or_else(|| "source".to_string(), |rate| rate.to_string())));
+		lines.push(format!("  fill color: {}", video.fill_color));
+		if let Some(gap) = video.matrix_gap_size {
+			lines.push(format!("  matrix gap: {}", gap));
+		}
+		if let Some(screen_size) = video.matrix_screen_size {
+			lines.push(format!("  matrix screen size: {}", screen_size));
+		}
+		lines.push(format!("  filter: {}", video.filter.as_ref().map_or_else(|| "none".to_string(), value_name)));
+		lines.push(format!("  braille: {}", value_name(&video.braille_strategy)));
+		lines.push(format!("  color diff: {}", value_name(&video.color_diff_strategy)));
+		lines.push(format!("  budget: {}", video.budget.as_ref().map_or_else(|| "none".to_string(), value_name)));
+		lines.push(format!("  loss: {}% (step {}%)", video.acceptable_loss.into_flt::<f64>() * 100.0, video.loss_step.into_flt::<f64>() * 100.0));
+	}
+
+	if let Some(audio) = &args.audio {
+		lines.push(format!("audio: {}", value_name(&audio.audio_mode)));
+		match audio.audio_mode {
+			AudioMode::Voices => {
+				lines.push(format!("  voices: {}", audio.num_voices));
+				lines.push(format!("  analysis rate: {}Hz", audio.analysis_rate));
+				lines.push(format!("  fft window: {}", audio.fft_window_size));
+				lines.push(format!("  hop length: {}", audio.hop_length.unwrap_or(audio.fft_window_size / 2)));
+				lines.push(format!("  guard: {}", audio.guard));
+			},
+			AudioMode::Pcm => {
+				lines.push(format!("  sample rate: {}Hz (tape speed {:.2})", audio.pcm_rate, dfpwm::tape_speed(audio.pcm_rate)));
+			},
+		}
+	}
+	lines.join("\n")
 }
 
 fn build_video_config(args: &VideoOpts, machine: &Machine, in_path: &Path) -> VideoConfig {

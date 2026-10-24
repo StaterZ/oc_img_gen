@@ -900,6 +900,7 @@ local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
 	local num_streams = read_u8(file)
+	local settings = file:read(read_u16(file))
 
 	local streams = {}
 	for i = 1, num_streams do
@@ -928,6 +929,7 @@ local function read_header(file)
 	return {
 		magic = magic,
 		version = version,
+		settings = settings,
 		streams = streams,
 	}
 end
@@ -940,6 +942,11 @@ local function probe_header(file)
 		header.version > szt.version and "NEW" or
 		"OLD"
 	))
+
+	print("encoded with:")
+	for line in header.settings:gmatch("[^\n]+") do
+		print("  " .. line)
+	end
 
 	print(("found %i streams:"):format(#header.streams))
 	for i, stream in ipairs(header.streams) do

@@ -18,6 +18,8 @@ pub mod reader;
 //mod ffmpeg_tracing;
 
 pub struct EncoderConfig {
+	/// written into the file so probe can show it
+	pub settings: String,
 	pub in_path: PathBuf,
 	pub out_path: PathBuf,
 
@@ -36,7 +38,7 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	let mut ictx = ffmpeg_next::format::input(&config.in_path).expect("failed to create decoder");
 	let multi_progress = MultiProgress::new();
 	
-	let mut muxer = Muxer::new();
+	let mut muxer = Muxer::new(config.settings);
 	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer, &config.out_path));
 	let audio = config.audio.and_then(|audio_config| match audio_config.mode {
 		AudioMode::Voices => AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer)

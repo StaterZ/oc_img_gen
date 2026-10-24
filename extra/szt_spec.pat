@@ -106,6 +106,7 @@ struct Header {
 	char magic[4];
 	u16 version;
 	u8 num_streams;
+	std::string::SizedString<u16> settings; //"key: value" lines
 	
 	std::assert(magic == "sztb", "bad magic");
 	std::assert(version == 7, "bad version");

@@ -82,6 +82,8 @@ pub enum PacketContent {
 pub struct Header {
 	pub version: u16,
 	pub num_streams: u8,
+	/// the settings the file was encoded with, as "key: value" lines
+	#[deku(ctx = "deku_string::Encoding::Utf8, deku_string::StringLayout::LengthPrefix(deku_string::Size::U16)")] pub settings: StringDeku,
 }
 
 #[derive(DekuWrite, DekuRead)]
@@ -103,11 +105,12 @@ pub struct MediaFile {
 }
 
 impl MediaFile {
-	pub fn new() -> Self {
+	pub fn new(settings: String) -> Self {
 		Self {
 			header: Header {
 				version: FORMAT_VERSION,
 				num_streams: 0,
+				settings: settings.into(),
 			},
 			stream_descs: Vec::new(),
 			packets: Vec::new(),

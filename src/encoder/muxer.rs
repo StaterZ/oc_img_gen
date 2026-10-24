@@ -12,9 +12,9 @@ pub struct Muxer {
 }
 
 impl Muxer {
-	pub fn new() -> Self {
+	pub fn new(settings: String) -> Self {
 		Self {
-			output: MediaFile::new(),
+			output: MediaFile::new(settings),
 		}
 	}
 
