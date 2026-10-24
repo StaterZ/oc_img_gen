@@ -514,9 +514,8 @@ do --audio player
 		
 		buffered_time_exact = buffered_time_exact + stream.time_base
 		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
-		for i, card in ipairs(sound_cards) do
-			if (i - 1) * channels_per_card >= stream.num_voices then break end
-			card.delay(delay_ms)
+		for i = 1, math.min(#sound_cards, math.ceil(stream.num_voices / channels_per_card)) do
+			sound_cards[i].delay(delay_ms)
 		end
 		buffered_time = buffered_time + delay_ms/1000
 		num_buffered_instructions = num_buffered_instructions + 1
