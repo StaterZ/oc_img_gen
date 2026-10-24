@@ -205,7 +205,7 @@ do
 end
 
 local function assertEq(found, expected, msg)
-	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, format))
+	assert(found == expected, ("%s: expected '%s', found '%s'"):format(msg, expected, found))
 end
 
 local function read_u8(file)
