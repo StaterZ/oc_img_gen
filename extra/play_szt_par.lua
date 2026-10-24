@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "4.0-par"
+local version = "4.1-par"
 
 local linear_stream = {}
 do
@@ -484,6 +484,9 @@ do --audio player
 	local buffered_time_exact
 	local buffered_time
 	local committed_time
+	local pending_cards = {} --cards that haven't accepted the current batch yet
+	local num_pending_cards = 0
+	local pending_packet_index
 	local voice_cards, voice_channels = {}, {}
 	local voice_volumes, voice_frequencies = {}, {} --last values sent, to skip repeats
 	function audio.init(num_voices)
@@ -520,6 +523,7 @@ do --audio player
 		buffered_time_exact = 0
 		buffered_time = 0
 		committed_time = 0
+		num_pending_cards = 0
 	end
 
 	function audio.deinit(num_voices)
@@ -571,16 +575,29 @@ do --audio player
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
-		if committed_left < buf_min or flush then
-			for i, card in ipairs(sound_cards) do
-				if (i - 1) * channels_per_card >= stream.num_voices then break end
-				card.process()
-				stream.presented_packet_index = stream.packet_index
+		local num_cards = math.min(#sound_cards, math.ceil(stream.num_voices / channels_per_card))
+		if num_pending_cards == 0 and (committed_left < buf_min or flush) then
+			for i = 1, num_cards do
+				pending_cards[i] = true
 			end
+			num_pending_cards = num_cards
+			pending_packet_index = stream.packet_index
 			num_buffered_instructions_stable = num_buffered_instructions
 			num_buffered_instructions = 0
 			committed_time = buffered_time
 			--NOTE: committed_left is now out of date here!
+		end
+		--a card refuses process() while its last batch is still unsent, so retry those until every card took the batch
+		if num_pending_cards > 0 then
+			for i = 1, num_cards do
+				if pending_cards[i] and sound_cards[i].process() then
+					pending_cards[i] = false
+					num_pending_cards = num_pending_cards - 1
+				end
+			end
+			if num_pending_cards == 0 then
+				stream.presented_packet_index = pending_packet_index
+			end
 		end
 
 		local buffered_left = buffered_time - play_time
