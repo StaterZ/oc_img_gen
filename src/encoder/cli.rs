@@ -420,6 +420,7 @@ struct VideoOpts {
 		long = "loss",
 		help = "selects the 'bitrate' limit for each frame",
 		default_value = "0",
+		requires = "mode",
 	)]
 	pub acceptable_loss: Frac<u32>,
 
@@ -427,6 +428,7 @@ struct VideoOpts {
 		long = "loss-step",
 		help = "selects the 'bitrate' limit for each frame",
 		default_value = "1%",
+		requires = "mode",
 	)]
 	pub loss_step: Frac<u32>,
 	
