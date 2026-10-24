@@ -768,7 +768,9 @@ local function play(gpu, file, surfaces)
 						end
 
 						local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
-						video.update_stats(stream, frame_begin_time, video_begin_time_up, commands_len, command_count)
+						if ops.fps then
+							video.update_stats(stream, frame_begin_time, video_begin_time_up, commands_len, command_count)
+						end
 
 						if ops.no_back then
 							stream.presented_packet_index = stream.presented_packet_index + 1
