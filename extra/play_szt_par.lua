@@ -241,6 +241,7 @@ local szt = {
 }
 
 local args, ops = shell.parse(...)
+ops.tape = ops.tape or #args == 0 --with no file, play the primary tape drive
 ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
@@ -1337,7 +1338,7 @@ if ops.h or ops.help then
 	print("   --batch-check", "debug the batches")
 	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a burner tape")
-	print("   --tape", "read from tape drives instead of files. the args are drive addresses holding the same data (default: primary). write tapes with 'write_szt_tape.lua'")
+	print("   --tape", "read from tape drives instead of files. the args are drive addresses holding the same data (default: primary). with no args at all, it plays the primary drive. write tapes with 'write_szt_tape.lua'")
 	return
 end
 if ops.v or ops.version then
