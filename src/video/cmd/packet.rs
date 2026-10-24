@@ -274,10 +274,19 @@ impl<'a> VideoEncoder<'a> {
 		let mut loss = 0.into();
 
 		self.num_frames_since_emit += 1;
+		let mut losses = None; //per pixel loss against prev_frame, only built once the loss rises above zero
 		let frame = loop {
+			if loss != Frac::ZERO && losses.is_none() && let Some(prev_frame) = self.prev_frame.as_ref() {
+				losses = Some(Image::with_buffer(frame.size(), frame.buffer()
+					.iter()
+					.zip(prev_frame.buffer())
+					.map(|(char, char_prev)| char.compute_loss(char_prev, formatter))
+					.collect()));
+			}
+
 			let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
 			let mut work_frame = self.prev_frame.clone();
-			batcher::draw(&mut renderer, &frame, &mut work_frame, Command::MAX_BRAILLE_COUNT, loss, formatter); //todo: acceptable_loss treated as loss here
+			batcher::draw(&mut renderer, &frame, &mut work_frame, losses.as_ref(), Command::MAX_BRAILLE_COUNT, loss, formatter); //todo: acceptable_loss treated as loss here
 			let renderer = renderer.into_inner();
 			let mut stats = renderer.get_stats();
 			let gpu_cost = match self.budget {

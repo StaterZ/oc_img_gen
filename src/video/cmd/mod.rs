@@ -21,6 +21,6 @@ pub fn code_gen(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, acceptabl
 		format!(include_str!("bootstrap.lua"), frame.size().w, frame.size().h),
 		formatter
 	));
-	batcher::draw(&mut renderer, &frame, prev_frame, 64, acceptable_loss, formatter);
+	batcher::draw(&mut renderer, &frame, prev_frame, None, 64, acceptable_loss, formatter);
 	renderer.into_inner().build()
 }

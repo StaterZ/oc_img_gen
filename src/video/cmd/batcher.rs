@@ -4,7 +4,7 @@ use itertools::Itertools;
 use num::traits::ConstZero;
 
 use crate::math::*;
-use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::{PackedColor, formatters::Formatter}};
+use super::{TermFrame, Renderer, TermPixel, TermChar, super::{Image, oc_color::{PackedColor, formatters::Formatter}}};
 
 #[derive(Debug, Clone)]
 struct Batch {
@@ -228,8 +228,9 @@ impl Accelerator {
 	}
 }
 
-pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) {
-	let batches = generate_batches(frame, prev_frame, max_batch_size, loss, formatter);
+/// `losses` optionally holds each pixel's precomputed loss against `prev_frame`
+pub fn draw(renderer: &mut impl Renderer, frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losses: Option<&Image<Frac<u32>>>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) {
+	let batches = generate_batches(frame, prev_frame, losses, max_batch_size, loss, formatter);
 	
 	let mut accelerator = Accelerator::new();
 	for batch in batches {
@@ -253,7 +254,7 @@ impl WorkBatch {
 	}
 }
 
-fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) -> Vec<Batch> {
+fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losses: Option<&Image<Frac<u32>>>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) -> Vec<Batch> {
 	let mut output = Vec::new();
 
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
@@ -281,6 +282,8 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, max_b
 				let char_prev = &prev_frame[pos];
 				if loss == Frac::ZERO {
 					char == char_prev //faster
+				} else if let Some(losses) = losses {
+					losses[pos] <= loss
 				} else {
 					char.compute_loss(char_prev, formatter) <= loss
 				}
