@@ -12,7 +12,7 @@ szu = { version = "0.2.2", git = "https://github.com/StaterZ/szu-rs", branch = "
 clap = { version = "4.6.7", features= ["derive"] }
 humantime = "2.4.0"
 stopwatch = "0.0.7"
-charts-rs = { "version" = "1.2.0", optional = true }
+charts-rs = { "version" = "2.3.0", optional = true }
 indicatif = "0.18.6"
 # tracing-indicatif = "0.3.13"
 # tracing = "0.1.41"
@@ -30,11 +30,11 @@ ffmpeg-sys-next = "9.0.1"
 lodepng = "3.12.2"
 
 #fourier
-rustfft = "6"
-realfft = "3"
+rustfft = "6.4.1"
+realfft = "3.5.0"
 
 #player
-minifb = { version = "0.28.0", git = "https://github.com/emoon/rust_minifb", branch = "master" }
+minifb = "0.29.0"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
