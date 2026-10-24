@@ -299,7 +299,7 @@ impl<'a> VideoEncoder<'a> {
 			let cpu_cost = Frac::new(stats.num_set_pixels, 120000);
 
 			let tick_rate = 20;
-			let gpu_cost_fudge = 3;
+			let gpu_cost_fudge = 3; //for some reason the gpu can handle more than what theory seems to imply... very odd...
 			let time_since_emit = self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
 			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit * gpu_cost_fudge;
 			let cpu_budget = self.machine.cpu_speed * time_since_emit;
@@ -313,7 +313,7 @@ impl<'a> VideoEncoder<'a> {
 				gpu_chart.series_list[1].data.push(Some(stats.get_set_color_cost(&self.machine).into_flt()));
 				gpu_chart.series_list[2].data.push(Some(stats.get_bitblt_cost(&self.machine).into_flt()));
 				gpu_chart.series_list[3].data.push(Some(gpu_cost.into_flt()));
-				gpu_chart.series_list[4].data.push(Some(loss.into_flt()));
+				gpu_chart.series_list[4].data.push(Some((loss.try_cast().unwrap() * gpu_budget).into_flt()));
 				gpu_chart.series_list[5].data.push(Some(gpu_budget.into_flt()));
 
 				let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
