@@ -61,8 +61,15 @@ impl<T: GoodInt> Frac<T> {
 		})
 	}
 
-	fn gcd(self) -> Self {
-		let gcd = T::gcd(self.numerator, self.denominator);
+	// divides out the gcd and moves the sign to the numerator
+	fn reduce(self) -> Self {
+		let mut gcd = T::gcd(self.numerator, self.denominator);
+		if gcd == T::ZERO {
+			return self; // 0/0
+		}
+		if self.denominator < T::ZERO {
+			gcd = T::ZERO - gcd;
+		}
 		Self {
 			numerator: self.numerator / gcd,
 			denominator: self.denominator / gcd,
@@ -147,11 +154,11 @@ impl<T: GoodInt> ToPrimitive for Frac<T> {
 	}
 	
 	fn to_f32(&self) -> Option<f32> {
-		self.into_int_trunc().to_f32()
+		Some(self.into_flt())
 	}
-	
+
 	fn to_f64(&self) -> Option<f64> {
-		self.into_int_trunc().to_f64()
+		Some(self.into_flt())
 	}
 }
 
@@ -284,13 +291,15 @@ impl<T: GoodInt> PartialEq for Frac<T> {
 
 impl<T: GoodInt> PartialOrd for Frac<T> {
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		(self.numerator * other.denominator).partial_cmp(&(other.numerator * self.denominator))
+		Some(self.cmp(other))
 	}
 }
 
 impl<T: GoodInt> Ord for Frac<T> {
 	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-		(self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
+		let ord = (self.numerator * other.denominator).cmp(&(other.numerator * self.denominator));
+		// cross multiplying by a negative denominator flips the order
+		if (self.denominator < T::ZERO) != (other.denominator < T::ZERO) { ord.reverse() } else { ord }
 	}
 }
 
@@ -298,10 +307,11 @@ impl<T: GoodInt> Add for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
+		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
 		Self {
-			numerator: self.numerator * rhs.denominator + rhs.numerator * self.denominator,
-			denominator: self.denominator * rhs.denominator,
-		}.gcd()
+			numerator: self.numerator * (rhs.denominator / gcd) + rhs.numerator * (self.denominator / gcd),
+			denominator: self.denominator / gcd * rhs.denominator,
+		}.reduce()
 	}
 }
 
@@ -329,10 +339,11 @@ impl<T: GoodInt> Sub for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
+		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
 		Self {
-			numerator: self.numerator * rhs.denominator - rhs.numerator * self.denominator,
-			denominator: self.denominator * rhs.denominator,
-		}.gcd()
+			numerator: self.numerator * (rhs.denominator / gcd) - rhs.numerator * (self.denominator / gcd),
+			denominator: self.denominator / gcd * rhs.denominator,
+		}.reduce()
 	}
 }
 
@@ -363,7 +374,7 @@ impl<T: GoodInt> Mul for Frac<T> {
 		Self {
 			numerator: self.numerator * rhs.numerator,
 			denominator: self.denominator * rhs.denominator,
-		}.gcd()
+		}.reduce()
 	}
 }
 
@@ -394,7 +405,7 @@ impl<T: GoodInt> Div for Frac<T> {
 		Self {
 			numerator: self.numerator * rhs.denominator,
 			denominator: self.denominator * rhs.numerator,
-		}.gcd()
+		}.reduce()
 	}
 }
 
@@ -422,10 +433,11 @@ impl<T: GoodInt> Rem for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: Self) -> Self::Output {
+		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
 		Self {
-			numerator: (self.numerator * rhs.denominator) % (self.denominator * rhs.numerator),
-			denominator: self.denominator * rhs.denominator,
-		}.gcd()
+			numerator: (self.numerator * (rhs.denominator / gcd)) % (rhs.numerator * (self.denominator / gcd)),
+			denominator: self.denominator / gcd * rhs.denominator,
+		}.reduce()
 	}
 }
 
