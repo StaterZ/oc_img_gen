@@ -35,22 +35,13 @@ impl Batch {
 		}
 	}
 	
-	fn draw(&self, renderer: &mut impl Renderer) {
-		if self.kind != BatchKind::FgOnly {
-			renderer.set_background(self.bg);
-		}
-		if self.kind != BatchKind::BgOnly {
-			renderer.set_foreground(self.fg);
-		}
-		renderer.set(&self.pos, &self.chars);
-	}
-
 	fn draw_with_state(&self, renderer: &mut impl Renderer, state: &mut RenderState) {
-		if self.kind != BatchKind::FgOnly {
+		let usage = self.kind.get_color_usage();
+		if usage.using_bg {
 			renderer.set_background(self.bg);
 			state.bg = Some(self.bg);
 		}
-		if self.kind != BatchKind::BgOnly {
+		if usage.using_fg {
 			renderer.set_foreground(self.fg);
 			state.fg = Some(self.fg);
 		}
