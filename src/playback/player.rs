@@ -9,6 +9,7 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use num_traits::ConstZero;
 use palette::{Srgb, rgb::channels::Argb};
 use triple_buffer::TripleBuffer;
+use display_info::DisplayInfo;
 
 use crate::{
 	audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::braille,
@@ -39,7 +40,6 @@ impl From<CliScale> for Scale {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version)]
 pub struct Cli {
 	#[arg(short = 'i', long = "in", help = "Path to image or video to encode")]
 	pub in_path: PathBuf,
@@ -162,6 +162,14 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 				let pos = pos * (size_pixels + gap_size).cast::<isize>();
 				window.set_position(pos.x, pos.y);
+			} else if let Ok(displays) = DisplayInfo::all() {
+				if let Some(display) = displays.iter().filter(|d| d.is_primary).next() {
+					let display_size = Size::new(display.width, display.height).cast::<isize>();
+					let window_size = window.get_size();
+					let window_size = Size::new(window_size.0, window_size.1).cast::<isize>();
+					let pos = (display_size - window_size) / 2;
+					window.set_position(pos.x, pos.y);
+				}
 			}
 
 			VideoStream {

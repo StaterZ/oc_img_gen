@@ -16,7 +16,6 @@ pub enum ExportFormat {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version)]
 pub struct Cli {
 	#[arg(short = 'i', long = "in", help = "Path to the file to export")]
 	pub in_path: PathBuf,

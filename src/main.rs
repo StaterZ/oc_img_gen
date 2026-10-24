@@ -27,7 +27,6 @@ const FORMAT_VERSION: u16 = 6;
 
 #[derive(Parser, Debug)]
 #[command(author, version)]
-#[command(propagate_version = true)]
 pub struct Cli {
 	#[command(subcommand)]
 	command: CliCommand,
