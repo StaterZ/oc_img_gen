@@ -244,16 +244,10 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 		});
 	}
 
-	fn process_eof(&mut self) { //remove me later
-		//TODO: move to CommonReader
-		self.get_data_mut().decoder.send_eof().unwrap();
-		self.process_frame(true);
-		
+	fn on_eof(&mut self) {
 		optimize_channel_jumping(&mut self.timeline);
 		let master_volume = if self.config.normalize { 1.0 / self.global_peak.max(1e-9) } else { 1.0 };
 		self.encoder.samples = encode_audio(master_volume, &self.timeline).into();
-
-		self.get_data().finish();
 	}
 
 	fn report(&self) -> Vec<String> {

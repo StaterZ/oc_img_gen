@@ -159,9 +159,12 @@ pub trait Reader<'a> {
 		true
 	}
 
+	fn on_eof(&mut self) { }
+
 	fn process_eof(&mut self) {
 		self.get_data_mut().decoder.send_eof().unwrap();
 		self.process_frame(true);
+		self.on_eof();
 		self.get_data().finish();
 	}
 }
