@@ -7,7 +7,7 @@ use ordered_float::OrderedFloat;
 use palette::{Lab, Srgb, FromColor, color_difference::ImprovedCiede2000};
 
 use super::super::PackedColor;
-use super::super::palette::{Palette, PaletteOr};
+use super::super::palette::{self as oc_palette, Palette, PaletteOr};
 use super::Formatter;
 
 static STATIC_PALETTE: LazyLock<[Lab; StaticColor::PALETTE_SIZE]> = LazyLock::new(|| {
@@ -127,12 +127,7 @@ impl StaticColor {
 	}
 
 	pub fn deflate(color: Lab) -> StaticColor {
-		StaticColor::new(STATIC_PALETTE
-			.iter()
-			.enumerate()
-			.min_by_key(|(_i, item)| OrderedFloat(item.improved_difference(color)))
-			.unwrap().0 as u8
-		) //unwarp is safe here since array size is comptime fixed as .len()>0
+		StaticColor::new(oc_palette::nearest(&*STATIC_PALETTE, color) as u8)
 	}
 }
 

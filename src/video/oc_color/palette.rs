@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use all_asserts::*;
 use ordered_float::OrderedFloat;
-use palette::{Lab, color_difference::ImprovedCiede2000};
+use palette::{Lab, color_difference::Ciede2000};
 
 #[derive(Debug, Clone)]
 pub struct Palette {
@@ -20,13 +20,33 @@ impl Palette {
 	}
 	
 	pub fn deflate(&self, color: Lab) -> PaletteColor {
-		PaletteColor::new(self.colors
-			.iter()
-			.enumerate()
-			.min_by_key(|(_i, item)| OrderedFloat(item.improved_difference(color)))
-			.unwrap().0 as u8
-		) //unwarp is safe here since array size is comptime fixed as .len()>0
+		PaletteColor::new(nearest(&self.colors, color) as u8)
 	}
+}
+
+/// index of the color closest to `color`, same pick as min_by_key over improved_difference
+pub fn nearest(colors: &[Lab], color: Lab) -> usize {
+	let mut best = 0;
+	let mut best_score = OrderedFloat(f32::INFINITY);
+	let mut best_delta = f32::INFINITY;
+	for (i, item) in colors.iter().enumerate() {
+		//ciede2000 >= |ΔL|/S_L, so skip colors whose lightness alone puts them past the best (with margin for float error)
+		let l_bar = (item.l + color.l) / 2.0 - 50.0;
+		let s_l = 1.0 + 0.015 * l_bar * l_bar / (l_bar * l_bar + 20.0).sqrt();
+		let delta_l = item.l - color.l;
+		let bound = best_delta * 1.001;
+		if delta_l * delta_l / (s_l * s_l) - 1e-2 > bound * bound { continue; }
+
+		//inlined improved_difference, so we keep the raw delta
+		let delta = item.difference(color);
+		let score = OrderedFloat(1.43f64 as f32 * delta.powf(0.7f64 as f32));
+		if score < best_score {
+			best = i;
+			best_score = score;
+			best_delta = delta;
+		}
+	}
+	best
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
