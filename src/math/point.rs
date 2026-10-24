@@ -16,7 +16,7 @@ impl<T: GoodNum> Point<T> {
 	pub const fn new(x: T, y: T) -> Self {
 		Self { x, y }
 	}
-	pub const fn one(v: T) -> Self {
+	pub const fn splat(v: T) -> Self {
 		Self {
 			x: v,
 			y: v,
@@ -36,7 +36,7 @@ impl<T: GoodNum> Point<T> {
 		})
 	}
 	
-	pub fn map<U: GoodNum>(&self, f: impl Fn(T) -> U) -> Point<U> {
+	pub fn map<U: GoodNum>(self, f: impl Fn(T) -> U) -> Point<U> {
 		Point {
 			x: f(self.x),
 			y: f(self.y),
@@ -67,27 +67,31 @@ impl<'a, Ctx: Copy, T: GoodNum + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Po
 	}
 }
 
-impl<T: GoodNum + FromStr> FromStr for Point<T>
-where
-	<T as FromStr>::Err: std::fmt::Debug,
-{
-	type Err = String;
+#[derive(thiserror::Error, Debug)]
+pub enum PointParseErr<E> {
+	#[error("Point must be in X,Y format")] BadFormat,
+	#[error("parse failed")] ParseError(#[from] E),
+}
+
+impl<T: GoodNum + FromStr> FromStr for Point<T> {
+	type Err = PointParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let parts: Vec<&str> = s.split(',').collect();
 		if parts.len() != 2 {
-			return Err("Point must be in X,Y format".into());
+			return Err(PointParseErr::BadFormat);
 		}
-		
-		let x = parts[0].parse::<T>().map_err(|e| format!("{:?}", e))?;
-		let y = parts[1].parse::<T>().map_err(|e| format!("{:?}", e))?;
-		Ok(Point { x, y })
+
+		Ok(Self {
+			x: parts[0].parse::<T>()?,
+			y: parts[1].parse::<T>()?,
+		})
 	}
 }
 
 impl<T: GoodNum + Zero> Zero for Point<T> {
 	fn zero() -> Self {
-		Self::one(T::zero())
+		Self::splat(T::zero())
 	}
 	
 	fn is_zero(&self) -> bool {
@@ -96,7 +100,7 @@ impl<T: GoodNum + Zero> Zero for Point<T> {
 }
 
 impl<T: GoodNum + ConstZero> ConstZero for Point<T> {
-	const ZERO: Self = Self::one(T::ZERO);
+	const ZERO: Self = Self::splat(T::ZERO);
 }
 
 impl<T: GoodNum> Add for Point<T> {

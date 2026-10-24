@@ -16,7 +16,7 @@ impl<T: GoodNum> Size<T> {
 	pub const fn new(w: T, h: T) -> Self {
 		Self { w, h }
 	}
-	pub const fn one(v: T) -> Self {
+	pub const fn splat(v: T) -> Self {
 		Self {
 			w: v,
 			h: v,
@@ -40,9 +40,10 @@ impl<T: GoodNum> Size<T> {
 		})
 	}
 
+	// underflows for unsigned T if content is larger than self
 	pub fn center(self, content: Self) -> Rect<T> {
 		Rect {
-			pos: (self - content) / T::from(2).unwrap(),
+			pos: (self - content) / (T::ONE + T::ONE),
 			size: content,
 		}
 	}
@@ -133,7 +134,7 @@ impl<T: GoodNum + FromStr> FromStr for Size<T> {
 
 impl<T: GoodNum + Zero> Zero for Size<T> {
 	fn zero() -> Self {
-		Self::one(T::zero())
+		Self::splat(T::zero())
 	}
 	
 	fn is_zero(&self) -> bool {
@@ -142,17 +143,17 @@ impl<T: GoodNum + Zero> Zero for Size<T> {
 }
 
 impl<T: GoodNum + ConstZero> ConstZero for Size<T> {
-	const ZERO: Self = Self::one(T::ZERO);
+	const ZERO: Self = Self::splat(T::ZERO);
 }
 
 impl<T: GoodNum + One> One for Size<T> {
 	fn one() -> Self {
-		Self::one(T::one())
+		Self::splat(T::one())
 	}
 }
 
 impl<T: GoodNum + ConstOne> ConstOne for Size<T> {
-	const ONE: Self = Self::one(T::ONE);
+	const ONE: Self = Self::splat(T::ONE);
 }
 
 impl<T: GoodNum> Add for Size<T> {
@@ -176,6 +177,7 @@ impl<T: GoodNum> Add<T> for Size<T> {
 	}
 }
 
+// the difference of two sizes is an offset, used by center
 impl<T: GoodNum> Sub for Size<T> {
 	type Output = Point<T>;
 

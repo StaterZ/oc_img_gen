@@ -231,7 +231,7 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 		});
 		
 		let img = crate::stage("Frame  | Preamble  | Into Image", || Image::from(frame));
-		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color, Point::one(Frac::half())));
+		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color, Point::splat(Frac::half())));
 		
 		let emit_streams_len = emit_streams.len();
 		let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_streams_len as u64)
