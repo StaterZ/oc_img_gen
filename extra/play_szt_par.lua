@@ -565,13 +565,13 @@ do --audio player
 		num_buffered_instructions = num_buffered_instructions + 1
 	end
 
-	function audio.commit(stream)
+	function audio.commit(stream, flush)
 		local now = computer.uptime()
 		local play_time = now - start_time
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
-		if committed_left < buf_min then
+		if committed_left < buf_min or flush then
 			for i, card in ipairs(sound_cards) do
 				if (i - 1) * channels_per_card >= stream.num_voices then break end
 				card.process()
@@ -855,7 +855,8 @@ local function play(gpu, file, surfaces)
 							end
 						end
 					elseif stream.kind == 0x01 and play_audio then --audio
-						audio.commit(stream) --commit handles presented_packet_index incrementation
+						--with --fast the audio runs far ahead of real time, so flush it once the input is done instead of waiting for it to play out
+						audio.commit(stream, ops.fast and packet_index >= num_total_packets) --commit handles presented_packet_index incrementation
 						if ops.fps then
 							audio.update_stats(stream)
 						end
