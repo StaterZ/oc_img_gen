@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "3.4"
+local version = "4.0"
 
 local linear_stream = {}
 do
