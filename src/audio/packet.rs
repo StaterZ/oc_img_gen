@@ -40,6 +40,8 @@ pub struct PcmDescriptor {
 	/// where the block starts, counted from the start of the file
 	pub offset: u32,
 	pub num_bytes: u32,
+	/// crc32 of the block, so the player knows if a burner tape holds it already
+	pub checksum: u32,
 }
 
 pub struct AudioEncoder {

@@ -79,6 +79,18 @@ pub fn decode(data: &[u8]) -> Vec<i8> {
 	out
 }
 
+/// crc32 (the zlib one), so the player can find a block on a burner tape without reading it
+pub fn checksum(data: &[u8]) -> u32 {
+	let mut crc = !0u32;
+	for &byte in data {
+		crc ^= byte as u32;
+		for _ in 0..8 {
+			crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+		}
+	}
+	!crc
+}
+
 /// The tape speed that plays at `sample_rate`.
 pub fn tape_speed(sample_rate: u32) -> f32 {
 	sample_rate as f32 / TAPE_SAMPLE_RATE as f32
@@ -103,6 +115,11 @@ mod tests {
 			.map(|(a, b)| (*a as f32 - *b as f32).abs())
 			.sum::<f32>() / (samples.len() - 1000) as f32;
 		assert!(error < 20.0, "mean error {error}");
+	}
+
+	#[test]
+	fn checksum_is_crc32() {
+		assert_eq!(checksum(b"123456789"), 0xcbf4_3926);
 	}
 
 	#[test]

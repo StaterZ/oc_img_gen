@@ -119,6 +119,7 @@ impl MediaFile {
 		let pcm = self.stream_descs[stream_id as usize].content.as_pcm_mut().unwrap();
 		pcm.offset = self.pcm_data.len() as u32; //relative for now, into_bytes makes it absolute
 		pcm.num_bytes = data.len() as u32;
+		pcm.checksum = crate::audio::dfpwm::checksum(&data);
 		self.pcm_data.extend(data);
 	}
 

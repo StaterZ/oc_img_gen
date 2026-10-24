@@ -219,6 +219,7 @@ ops.no_back = ops["no-back"]
 ops.one_buf = ops["one-buf"]
 ops.batch_check = ops["batch-check"]
 ops.pcm_tape = ops["pcm-tape"]
+ops.pcm_format = ops["pcm-format"]
 ops.volume = ops.volume or 1
 
 local stats = {}
@@ -678,10 +679,21 @@ do --audio player
 end
 
 local pcm = {}
-do --pcm player. a computronics tape drive plays the DFPWM block on its own, we only start and stop it
+do --pcm player. the audio burns onto a burner tape once, then a computronics tape drive plays the DFPWM block on its own
 	local tape_sample_rate = 48000 --the drive plays 1500 bytes per 250ms at speed 1
 
+	--a burner tape keeps the blocks it played until a new one doesn't fit after the last one. its layout:
+	--  index: "sztp", u8 version, u8 num_entries, then per entry u32 checksum, u32 num_bytes, u32 sample_rate, u32 offset
+	--  blocks: from index_size on, in the order they were burned. each one has pad_size of silence after it
+	local burner_magic = "sztp"
+	local burner_version = 1
+	local index_size = 4096
+	local entry_size = 16
+	local max_entries = math.min(0xff, math.floor((index_size - 6) / entry_size))
+	local pad_size = 3000 --the drive plays up to 250ms at a time, so it can overshoot a block
+
 	local drive
+	local block_offset --where the block starts on the drive
 	local start_time
 
 	--a drive that the packets are read from can't play at the same time, since a drive has one head
@@ -695,19 +707,116 @@ do --pcm player. a computronics tape drive plays the DFPWM block on its own, we 
 		return used
 	end
 
-	--returns the drive to play from, or nil and why not
-	function pcm.find_drive(file, header_bytes, reads_packets)
+	local function seek_to(d, pos)
+		d.seek(pos - d.getPosition())
+	end
+
+	--returns the entries, or nil when the tape holds something else
+	local function read_index(d)
+		seek_to(d, 0)
+		local data = d.read(index_size)
+		if data:sub(1, #burner_magic) ~= burner_magic then
+			if data:find("[^\0]") then return nil end --not blank, so it isn't ours to erase
+			return {}
+		end
+		if data:byte(5) ~= burner_version then return nil end
+
+		local entries = {}
+		for i = 1, data:byte(6) do
+			local checksum, num_bytes, sample_rate, offset = string.unpack("<I4I4I4I4", data, 7 + (i - 1) * entry_size)
+			entries[i] = {
+				checksum = checksum,
+				num_bytes = num_bytes,
+				sample_rate = sample_rate,
+				offset = offset,
+			}
+		end
+		return entries
+	end
+
+	local function write_index(d, entries)
+		local parts = {burner_magic, string.char(burner_version, #entries)}
+		for _, entry in ipairs(entries) do
+			parts[#parts + 1] = string.pack("<I4I4I4I4", entry.checksum, entry.num_bytes, entry.sample_rate, entry.offset)
+		end
+		seek_to(d, 0)
+		d.write(table.concat(parts))
+	end
+
+	--copies the block from the szt file onto the burner tape, unless the tape holds it already. returns where it starts
+	local function burn(d, file, stream, frames_begin_pos)
+		local entries = read_index(d)
+		if not entries then
+			if not ops.pcm_format then
+				return nil, ("the tape in drive %s is not blank or a pcm burner tape. give --pcm-format to erase it"):format(d.address)
+			end
+			entries = {}
+		end
+
+		for _, entry in ipairs(entries) do
+			if entry.checksum == stream.checksum and entry.num_bytes == stream.num_bytes and entry.sample_rate == stream.sample_rate then
+				return entry.offset
+			end
+		end
+
+		local size = stream.num_bytes + pad_size
+		local last = entries[#entries]
+		local offset = last and last.offset + last.num_bytes + pad_size or index_size
+		if offset + size > d.getSize() or #entries >= max_entries then
+			--it doesn't fit after the last block, so start over from the front
+			if index_size + size > d.getSize() then
+				return nil, ("the pcm audio is %i bytes, but the tape in drive %s only holds %i"):format(size, d.address, d.getSize() - index_size)
+			end
+			entries = {}
+			offset = index_size
+			write_index(d, entries) --forget the old blocks first, so a cut-off burn can't leave a bad entry
+		end
+
+		print(("burning pcm audio onto tape drive %s"):format(d.address))
+		--each drive.write costs a tick, so write big chunks
+		local chunk_size = math.floor(math.max(512, math.min(64 * 1024, computer.freeMemory() / 8)))
+		file:seek("set", stream.offset)
+		seek_to(d, offset)
+		local written = 0
+		while written < stream.num_bytes do
+			local chunk = file:read(math.min(chunk_size, stream.num_bytes - written))
+			d.write(chunk)
+			written = written + #chunk
+			io.write(("\r%i/%i bytes (%3.f%%)"):format(written, stream.num_bytes, written / stream.num_bytes * 100))
+		end
+		print()
+		d.write(string.rep("\x55", pad_size)) --alternating DFPWM bits hold the level
+		file:seek("set", frames_begin_pos)
+
+		entries[#entries + 1] = {
+			checksum = stream.checksum,
+			num_bytes = stream.num_bytes,
+			sample_rate = stream.sample_rate,
+			offset = offset,
+		}
+		write_index(d, entries)
+		return offset
+	end
+
+	--picks the drive to play from and gets the block onto it. returns false and why not when it can't
+	function pcm.prepare(file, stream, frames_begin_pos, reads_packets)
 		local used = video_drives(file)
 		local addr
 		if type(ops.pcm_tape) == "string" then
 			local reason
 			addr, reason = component.get(ops.pcm_tape, "tape_drive")
-			if not addr then return nil, reason end
+			if not addr then return false, reason end
 		else
+			--take the first burner or blank tape, so a drive with other tapes in it is left alone
 			for candidate in component.list("tape_drive") do
-				if not used[candidate] then
-					addr = candidate
-					break
+				local d = component.proxy(candidate)
+				if not used[candidate] and d.isReady() then
+					addr = addr or candidate
+					d.stop()
+					if read_index(d) then
+						addr = candidate
+						break
+					end
 				end
 			end
 			--with no packets to read, the drive that holds the file can play it
@@ -715,33 +824,29 @@ do --pcm player. a computronics tape drive plays the DFPWM block on its own, we 
 				addr = next(used)
 			end
 			if not addr then
-				return nil, next(used)
-					and "the tape drive reads the video, so it can't play the pcm audio too. put a copy of the tape in a second drive ('write_szt_tape.lua <file> <drive> <drive>')"
+				return false, next(used)
+					and "the tape drive reads the video, so it can't play the pcm audio too. add a tape drive with a blank tape to burn the audio onto"
 					or "no tape drive found"
 			end
 		end
-		if used[addr] and reads_packets then
-			return nil, ("tape drive %s reads the video, so it can't play the pcm audio too"):format(addr)
-		end
 
 		local found = component.proxy(addr)
-		if not found.isReady() then return nil, ("no tape in drive %s"):format(addr) end
-
-		--a drive that reads the file holds it, otherwise check that the tape starts with this file
-		if not used[addr] then
-			found.stop()
-			found.seek(-found.getPosition())
-			if found.read(#header_bytes) ~= header_bytes then
-				return nil, ("the tape in drive %s doesn't hold this file. write it with 'write_szt_tape.lua <file> %s'"):format(addr, addr:sub(1, 8))
+		if not found.isReady() then return false, ("no tape in drive %s"):format(addr) end
+		if used[addr] then
+			if reads_packets then
+				return false, ("tape drive %s reads the video, so it can't play the pcm audio too"):format(addr)
 			end
+			block_offset = stream.offset --it holds the file, so play the block in place
+		else
+			found.stop()
+			local offset, reason = burn(found, file, stream, frames_begin_pos)
+			if not offset then return false, reason end
+			block_offset = offset
 		end
-		return found
-	end
 
-	function pcm.init(found)
 		drive = found
-		drive.stop()
 		drive.setVolume(math.max(0, math.min(1, tonumber(ops.volume) or 1)))
+		return true, addr
 	end
 
 	function pcm.stop()
@@ -759,7 +864,7 @@ do --pcm player. a computronics tape drive plays the DFPWM block on its own, we 
 
 	function pcm.start(stream)
 		drive.stop()
-		drive.seek(stream.offset - drive.getPosition())
+		seek_to(drive, block_offset)
 		drive.setSpeed(stream.sample_rate / tape_sample_rate)
 		drive.play()
 		start_time = computer.uptime()
@@ -815,6 +920,7 @@ local function read_header(file)
 			stream.sample_rate = read_u32(file)
 			stream.offset = read_u32(file)
 			stream.num_bytes = read_u32(file)
+			stream.checksum = read_u32(file)
 		end
 		table.insert(streams, stream)
 	end
@@ -853,6 +959,7 @@ local function probe_header(file)
 		elseif stream.kind == 0x02 then
 			print(("    sample_rate: %iHz (tape speed %.2f)"):format(stream.sample_rate, stream.sample_rate / 48000))
 			print(("    dfpwm: %i bytes at byte %i (%s)"):format(stream.num_bytes, stream.offset, time_fmt(stream.num_bytes * 8 / stream.sample_rate)))
+			print(("    checksum: %08x"):format(stream.checksum))
 		end
 	end
 
@@ -911,6 +1018,8 @@ local function play(gpu, file, surfaces)
 		elseif stream_desc.kind == 0x02 and not pcm_stream then --a drive plays one block, so the rest are skipped
 			stream.sample_rate = stream_desc.sample_rate
 			stream.offset = stream_desc.offset
+			stream.num_bytes = stream_desc.num_bytes
+			stream.checksum = stream_desc.checksum
 			stream.duration = stream_desc.num_bytes * 8 / stream_desc.sample_rate
 			pcm_stream = stream
 		end
@@ -922,13 +1031,10 @@ local function play(gpu, file, surfaces)
 	local frames_begin_pos = file:seek()
 	local play_pcm = false
 	if pcm_stream and not ops.no_audio then
-		file:seek("set", 0)
-		local header_bytes = file:read(frames_begin_pos)
-		local drive, reason = pcm.find_drive(file, header_bytes, num_total_packets > 0)
-		if drive then
-			pcm.init(drive)
+		local ok, reason = pcm.prepare(file, pcm_stream, frames_begin_pos, num_total_packets > 0)
+		if ok then
 			play_pcm = true
-			print(("pcm audio plays from tape drive %s"):format(drive.address))
+			print(("pcm audio plays from tape drive %s"):format(reason))
 		else
 			print(("skipping pcm audio: %s"):format(reason))
 			os.sleep(2)
@@ -1146,7 +1252,8 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
-	print("   --pcm-tape", "tape drive that plays the pcm audio (default: the first drive the video doesn't read from). it needs a tape written with 'write_szt_tape.lua'")
+	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit")
+	print("   --pcm-format", "erase the pcm tape if it isn't blank or a burner tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). write tapes with 'write_szt_tape.lua'")
 	return
 end

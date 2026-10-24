@@ -83,6 +83,7 @@ struct PcmDesc {
 	u32 sample_rate;
 	u32 offset; //from the start of the file
 	u32 num_bytes;
+	u32 checksum; //crc32 of the block
 };
 enum DescKind: u8 {
 	Video = 0x00,

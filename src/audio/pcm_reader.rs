@@ -69,6 +69,7 @@ impl<'a> PcmReader<'a> {
 				sample_rate: config.pcm_rate,
 				offset: 0,
 				num_bytes: 0,
+				checksum: 0,
 			},
 		};
 		let stream_id = muxer.create_stream(desc.into());
