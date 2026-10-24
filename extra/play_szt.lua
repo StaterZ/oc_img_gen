@@ -505,11 +505,18 @@ do --audio player
 		end
 	end
 
+	local byte = string.byte
 	function audio.queue(file, stream)
-		for voice = 1, stream.num_voices do
+		local num_voices = stream.num_voices
+		local data = file:read(num_voices * 3)
+		local volume_scale = ops.volume
+		local p = 1
+		for voice = 1, num_voices do
 			local card, channel = voice_cards[voice], voice_channels[voice]
-			card.setVolume(channel, read_u8(file) / 0xff * ops.volume)
-			card.setFrequency(channel, read_u16(file) / 0xffff * 20000)
+			local volume, freq_lo, freq_hi = byte(data, p, p + 2)
+			p = p + 3
+			card.setVolume(channel, volume / 0xff * volume_scale)
+			card.setFrequency(channel, (freq_lo + freq_hi * 0x100) / 0xffff * 20000)
 		end
 		
 		buffered_time_exact = buffered_time_exact + stream.time_base
