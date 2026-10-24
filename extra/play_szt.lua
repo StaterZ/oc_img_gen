@@ -458,6 +458,7 @@ do --audio player
 	local buffered_time
 	local committed_time
 	local voice_cards, voice_channels = {}, {}
+	local voice_volumes, voice_frequencies = {}, {} --last values sent, to skip repeats
 	function audio.init(num_voices)
 		sound_cards = {}
 		for addr, _ in pairs(component.list("sound")) do
@@ -483,6 +484,8 @@ do --audio player
 			card.resetEnvelope(channel)
 			voice_cards[voice] = card
 			voice_channels[voice] = channel
+			voice_volumes[voice] = nil
+			voice_frequencies[voice] = nil
 		end
 
 		num_buffered_instructions = 0
@@ -512,11 +515,18 @@ do --audio player
 		local volume_scale = ops.volume
 		local p = 1
 		for voice = 1, num_voices do
-			local card, channel = voice_cards[voice], voice_channels[voice]
 			local volume, freq_lo, freq_hi = byte(data, p, p + 2)
 			p = p + 3
-			card.setVolume(channel, volume / 0xff * volume_scale)
-			card.setFrequency(channel, (freq_lo + freq_hi * 0x100) / 0xffff * 20000)
+			--channel state persists between process() calls, so repeats are wasted instructions
+			if volume ~= voice_volumes[voice] then
+				voice_cards[voice].setVolume(voice_channels[voice], volume / 0xff * volume_scale)
+				voice_volumes[voice] = volume
+			end
+			local frequency = freq_lo + freq_hi * 0x100
+			if frequency ~= voice_frequencies[voice] then
+				voice_cards[voice].setFrequency(voice_channels[voice], frequency / 0xffff * 20000)
+				voice_frequencies[voice] = frequency
+			end
 		end
 		
 		buffered_time_exact = buffered_time_exact + stream.time_base
