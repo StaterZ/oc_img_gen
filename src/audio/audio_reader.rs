@@ -17,7 +17,7 @@ use num::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
 use crate::{
-	audio::{VoiceStateFlt, packet::Sample}, encoder::{
+	audio::VoiceStateFlt, encoder::{
 		media_container::Descriptor as StreamDescriptor,
 		muxer::{Muxer, PacketWriter},
 		reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
@@ -251,16 +251,7 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 		
 		optimize_channel_jumping(&mut self.timeline);
 		let master_volume = if self.config.normalize { 1.0 / self.global_peak.max(1e-9) } else { 1.0 };
-		let samples = encode_audio(master_volume, self.timeline.clone()); //PERF: ouch!
-		
-		//TODO: this is just so terrible...
-		self.encoder.samples = samples
-			.into_vec()
-			.chunks(self.config.num_voices)
-			.map(|chunk| Sample {
-				voices: chunk.to_vec(),
-			})
-			.collect();
+		self.encoder.samples = encode_audio(master_volume, &self.timeline).into();
 
 		self.get_data().finish();
 	}

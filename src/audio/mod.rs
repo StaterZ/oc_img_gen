@@ -2,7 +2,7 @@ use grid::Grid;
 use itertools::Itertools;
 use lapjv::lapjv;
 
-use crate::audio::packet::VoiceState;
+use crate::audio::packet::{Sample, VoiceState};
 
 pub mod packet;
 pub mod audio_reader;
@@ -26,11 +26,18 @@ pub struct VoiceStateFlt {
 	pub frequency: f32,
 }
 
-pub fn encode(master_volume: f32, timeline: Grid<VoiceStateFlt>) -> Grid<VoiceState> {
-	timeline.map(|voice_state| VoiceState {
-		volume: ((voice_state.volume * master_volume).clamp(0.0, 1.0) * (u8::MAX as f32)) as u8,
-		frequency: ((voice_state.frequency / MAX_FREQUENCY).clamp(0.0, 1.0) * (u16::MAX as f32)) as u16,
-	})
+pub fn encode(master_volume: f32, timeline: &Grid<VoiceStateFlt>) -> Vec<Sample> {
+	timeline
+		.iter_rows()
+		.map(|row| Sample {
+			voices: row
+				.map(|voice_state| VoiceState {
+					volume: ((voice_state.volume * master_volume).clamp(0.0, 1.0) * (u8::MAX as f32)) as u8,
+					frequency: ((voice_state.frequency / MAX_FREQUENCY).clamp(0.0, 1.0) * (u16::MAX as f32)) as u16,
+				})
+				.collect(),
+		})
+		.collect()
 }
 
 pub fn optimize_channel_jumping(timeline: &mut Grid<VoiceStateFlt>) {
