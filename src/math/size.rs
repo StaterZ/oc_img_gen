@@ -2,18 +2,9 @@ use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 use deku::prelude::*;
 use num::NumCast;
 use num::traits::{ConstZero, ConstOne, Zero, One};
-use szu::math::{GoodInt, GoodNum};
+use szu::math::GoodNum;
 
-use crate::math::IntoIntRound;
-
-use super::{Frac, Point, Rect};
-
-pub trait SizeTrait<T: GoodNum> {
-	type RatioOutput;
-
-	fn ratio(&self) -> Self::RatioOutput;
-	fn contain(&self, content: Self) -> Self;
-}
+use super::{HasRatio, Point, Rect};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Size<T: GoodNum> {
@@ -57,49 +48,25 @@ impl<T: GoodNum> Size<T> {
 	}
 }
 
-impl<T: GoodInt> SizeTrait<T> for Size<T> {
-	type RatioOutput = Frac<T>;
-
-	fn ratio(&self) -> Self::RatioOutput {
-		Frac::new(self.w, self.h)
+impl<T: HasRatio> Size<T> {
+	pub fn ratio(&self) -> T::Ratio {
+		T::ratio(self.w, self.h)
 	}
-	
-	fn contain(&self, content: Self) -> Self {
+
+	pub fn contain(&self, content: Self) -> Self {
 		if content.ratio() > self.ratio() {
 			Self {
 				w: self.w,
-				h: (Frac::whole(self.w) / content.ratio()).into_int_round(),
+				h: self.w.div_ratio(content.ratio()),
 			}
 		} else {
 			Self {
-				w: (Frac::whole(self.h) * content.ratio()).into_int_round(),
+				w: self.h.mul_ratio(content.ratio()),
 				h: self.h,
 			}
 		}
 	}
 }
-
-// impl<T: GoodFloat> SizeTrait<T> for Size<T> {
-// 	type RatioOutput = T;
-
-// 	fn ratio(&self) -> Self::RatioOutput {
-// 		self.x / self.y
-// 	}
-	
-// 	fn contain(&self, content: Self) -> Self {
-// 		if content.ratio() > self.ratio() {
-// 			Self {
-// 				x: self.x,
-// 				y: self.x / content.ratio(),
-// 			}
-// 		} else {
-// 			Self {
-// 				x: self.y * content.ratio(),
-// 				y: self.y,
-// 			}
-// 		}
-// 	}
-// }
 
 // impl<T: GoodNum + Num> Num for Size<T> {
 // 	type FromStrRadixErr = SizeParseErr<<T as Num>::FromStrRadixErr>;

@@ -6,7 +6,7 @@ use palette::{Srgb, rgb::channels::Argb};
 use crate::{
 	EXT, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
-	}, math::{Frac, Point, Rect, Size, SizeTrait}, video::{self, cmd::machine::{Machine, Tier}}
+	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
 pub fn process_args(args: Cli) -> EncoderConfig {
