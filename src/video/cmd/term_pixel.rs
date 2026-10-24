@@ -1,4 +1,4 @@
-use num::One;
+use num::{One, Zero};
 use palette::color_difference::ImprovedCiede2000;
 
 use crate::{math::*, video::rgb};
@@ -45,7 +45,10 @@ impl TermPixel {
 	}
 
 	pub fn compute_loss(&self, other: &Self, formatter: &impl Formatter) -> Frac<u32> {
-		if ('⠀'..='⣿').contains(&char::from(self.sym)) {
+		let is_braille = |c: TermChar| ('⠀'..='⣿').contains(&char::from(c));
+		if self == other { //early exit and handles text equality
+			Frac::zero()
+		} else if is_braille(self.sym) && is_braille(other.sym) {
 			let self_bg = formatter.inflate(self.bg);
 			let self_fg = formatter.inflate(self.fg);
 			let other_bg = formatter.inflate(other.bg);
@@ -67,7 +70,7 @@ impl TermPixel {
 				(self_sym_val & other_sym_val).count_ones() * (fg_fg_delta * SCALAR) as u32;
 			Frac::new(score, (rgb::IMPROVED_DIFFERENCE_MAX * SCALAR) as u32 * braille::BITS as u32)
 		} else {
-			Frac::one() //TODO: should we handle loss for text?
+			Frac::one() //text can't be partially right
 		}
 	}
 }
