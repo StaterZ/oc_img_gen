@@ -286,7 +286,7 @@ impl<'a> VideoEncoder<'a> {
 
 			let mut renderer = CachedRenderer::new(StatRenderer::new(SztRenderer::<CMD_KIND>::new()));
 			let mut work_frame = self.prev_frame.clone();
-			batcher::draw(&mut renderer, &frame, &mut work_frame, losses.as_ref(), Command::MAX_BRAILLE_COUNT, loss, formatter); //todo: acceptable_loss treated as loss here
+			batcher::draw(&mut renderer, &frame, &mut work_frame, losses.as_ref(), Command::MAX_BRAILLE_COUNT, loss, formatter);
 			let renderer = renderer.into_inner();
 			let mut stats = renderer.get_stats();
 			let gpu_cost = match self.budget {
@@ -345,7 +345,7 @@ impl<'a> VideoEncoder<'a> {
 			let is_loss_acceptable = loss <= acceptable_loss;
 			if !has_budget || can_afford || !is_loss_acceptable {
 				if has_budget && !can_afford && !is_loss_acceptable {
-					break Frame { //TODO: remove this terrible by moving from frame-rate-based format to timestamped frames
+					break Frame {
 						commands_len: 0,
 						command_kind: CMD_KIND,
 						commands: Vec::new(),
