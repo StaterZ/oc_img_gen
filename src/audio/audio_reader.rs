@@ -42,6 +42,7 @@ pub struct AudioReader<'a> {
 	r2c: Arc<dyn RealToComplex<f32>>,
 	fft_in: Vec<f32>,
 	fft_out: Vec<Complex<f32>>,
+	fft_window: Vec<f32>,
 	global_peak: f32,
 	timeline: Grid<VoiceStateFlt>,
 }
@@ -118,6 +119,9 @@ impl<'a> AudioReader<'a> {
 		let r2c = fft_planner.plan_fft_forward(config.fft_window_size);
 		let fft_in = r2c.make_input_vec();
 		let fft_out = r2c.make_output_vec();
+		let fft_window = (0..config.fft_window_size) //Hann
+			.map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / config.fft_window_size as f32).cos())
+			.collect();
 
 		let timeline = Grid::<VoiceStateFlt>::new_with_order(
 			0,
@@ -136,6 +140,7 @@ impl<'a> AudioReader<'a> {
 			r2c,
 			fft_in,
 			fft_out,
+			fft_window,
 			global_peak: 0.0,
 			timeline,
 		})
@@ -183,9 +188,8 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 			// Window/Hop analysis
 			while self.pcm.len() >= self.config.fft_window_size {
 				// Copy & window (Hann)
-				for i in 0..self.config.fft_window_size {
-					let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / self.config.fft_window_size as f32).cos();
-					self.fft_in[i] = self.pcm[i] * w;
+				for (i, (sample, w)) in self.pcm.iter().zip(&self.fft_window).enumerate() {
+					self.fft_in[i] = sample * w;
 				}
 				self.r2c.process(&mut self.fft_in, &mut self.fft_out).unwrap();
 
