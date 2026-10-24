@@ -291,6 +291,7 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug)]
+#[group(requires = "mode")]
 struct VideoOpts {
 	#[arg(
 		value_enum,
@@ -310,7 +311,6 @@ struct VideoOpts {
 		short = 'f',
 		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
-		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
 	pub frame_rate: Option<Frac<u16>>,
@@ -319,7 +319,6 @@ struct VideoOpts {
 		long = "fill-color",
 		help = "color of the padding around the video",
 		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
-		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
 	pub fill_color: CliSrgb8,
@@ -327,7 +326,6 @@ struct VideoOpts {
 	#[arg(
 		long = "stream-size",
 		help = "The size of the streams",
-		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
 	pub stream_size: Option<Size<usize>>,
@@ -335,7 +333,6 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-size",
 		help = "How many grid cells (streams) to create",
-		requires = "mode",
 		required_if_eq("mode", "Matrix"),
 		conflicts_with = "streams_config",
 	)]
@@ -344,7 +341,6 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-gap-size",
 		help = "sub-pixels to skip between matrix cells, defaults to 0 to omitted",
-		requires = "mode",
 		required_if_eq("mode", "Matrix"),
 		conflicts_with = "streams_config",
 		conflicts_with = "matrix_screen_size",
@@ -354,7 +350,6 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-screen-size",
 		help = "screen size of matrix segments, this is used to derive the matrix gap size",
-		requires = "mode",
 		required_if_eq("mode", "Matrix"),
 		conflicts_with = "streams_config",
 		conflicts_with = "matrix_gap_size",
@@ -364,7 +359,6 @@ struct VideoOpts {
 	#[arg(
 		long = "filter",
 		help = "what to pass the pixels through before encoding",
-		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
 	pub filter: Option<VideoFilter>,
@@ -374,7 +368,6 @@ struct VideoOpts {
 		short = 'B',
 		long = "braille",
 		help = "What brailling strategy to use",
-		requires = "mode",
 		default_value_t = BrailleStrategy::CentroidCohesion,
 	)]
 	braille_strategy: BrailleStrategy,
@@ -384,7 +377,6 @@ struct VideoOpts {
 		short = 'D',
 		long = "diff",
 		help = "What color comparison strategy to use",
-		requires = "mode",
 		default_value_t = ColorDiffStrategy::Fast,
 	)]
 	color_diff_strategy: ColorDiffStrategy,
@@ -393,7 +385,6 @@ struct VideoOpts {
 		short = 'b',
 		long = "budget",
 		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
-		requires = "mode",
 		conflicts_with = "streams_config",
 	)]
 	pub budget: Option<Budget>,
@@ -404,7 +395,6 @@ struct VideoOpts {
 		long = "loss",
 		help = "selects the 'bitrate' limit for each frame",
 		default_value = "0",
-		requires = "mode",
 	)]
 	pub acceptable_loss: Frac<u32>,
 
@@ -412,14 +402,12 @@ struct VideoOpts {
 		long = "loss-step",
 		help = "selects the 'bitrate' limit for each frame",
 		default_value = "1%",
-		requires = "mode",
 	)]
 	pub loss_step: Frac<u32>,
 	
 	#[arg(
 		long = "streams-config",
 		help = "path to json streams config file",
-		requires = "mode",
 	)]
 	pub streams_config: Option<PathBuf>,
 }
