@@ -265,7 +265,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 			BatchKind::BgOnly
 		} else if c.sym.is_fg_only() {
 			BatchKind::FgOnly
-		} else if c.flip().is_some() { //TODO: optimize this shit
+		} else if c.sym.is_flippable() {
 			BatchKind::Flippable
 		} else {
 			BatchKind::Unique

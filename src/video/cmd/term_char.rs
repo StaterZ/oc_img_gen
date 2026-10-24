@@ -40,6 +40,10 @@ impl TermChar {
 		}.map(|c| c.into())
 	}
 	
+	pub fn is_flippable(&self) -> bool {
+		('⠀'..='⣿').contains(&self.0) || FLIPPABLES.contains_key(&self.0)
+	}
+
 	pub fn is_bg_only(&self) -> bool {
 		matches!(self.0, ' ' | '⠀')
 	}
