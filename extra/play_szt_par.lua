@@ -877,6 +877,11 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		return true, addr
 	end
 
+	--the bytes a burner tape needs to hold a block
+	function pcm.burner_size(num_bytes)
+		return index_size + num_bytes + pad_size
+	end
+
 	function pcm.stop()
 		if drive then
 			drive.stop()
@@ -1000,6 +1005,49 @@ local function probe_header(file)
 
 	local frames_begin_pos = file:seek()
 	print(("headers done at byte: %i"):format(frames_begin_pos))
+
+	--pcm blocks end the file, otherwise walk the packets to find the end
+	local file_size = frames_begin_pos
+	local pcm_streams = {}
+	local num_packets = 0
+	for _, stream in ipairs(header.streams) do
+		num_packets = num_packets + stream.num_packets
+		if stream.kind == 0x02 then
+			file_size = math.max(file_size, stream.offset + stream.num_bytes)
+			table.insert(pcm_streams, stream)
+		end
+	end
+	if #pcm_streams == 0 then
+		for _ = 1, num_packets do
+			local stream = header.streams[read_u8(file) + 1]
+			if stream.kind == 0x00 then
+				file:read(read_u16(file) + 1) --command_kind = 1b
+			elseif stream.kind == 0x01 then
+				file:read(stream.num_voices * 3)
+			end
+		end
+		file_size = file:seek()
+	end
+
+	--tapes hold 6000 bytes per second of play time (computronics' 'tapeLengths' are in minutes)
+	local minute = 1500 * 4 * 60
+	local default_lengths = {2, 4, 6, 8, 16, 32, 64, 128}
+	local function tape_fmt(num_bytes)
+		local minutes = num_bytes / minute
+		local fits = "none of the default tapes"
+		for _, length in ipairs(default_lengths) do
+			if length >= minutes then
+				fits = ("a %i minute tape"):format(length)
+				break
+			end
+		end
+		return ("%i bytes (%.2f minutes), fits on %s"):format(num_bytes, minutes, fits)
+	end
+	print("tape size needed:")
+	print(("  data tape: %s"):format(tape_fmt(file_size)))
+	for _, stream in ipairs(pcm_streams) do
+		print(("  burner tape for '%s': %s"):format(stream.name, tape_fmt(pcm.burner_size(stream.num_bytes))))
+	end
 end
 
 local function play(gpu, file, surfaces)
