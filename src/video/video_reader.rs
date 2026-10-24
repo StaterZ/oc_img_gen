@@ -1,4 +1,4 @@
-use std::{ops::RangeInclusive, time::Duration};
+use std::{ops::RangeInclusive, path::Path, time::Duration};
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools;
 use ffmpeg_next::{
@@ -96,6 +96,7 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 		machine: &'b Machine,
 		config: VideoConfig,
 		muxer: &mut Muxer,
+		out_path: &Path,
 	) -> Option<Self> {
 		let stream = ictx
 			.streams()
@@ -158,6 +159,7 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 					&machine,
 					stream_data.acceptable_loss,
 					stream_data.loss_step,
+					out_path,
 				)
 			})
 			.collect_vec();

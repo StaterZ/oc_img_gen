@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, marker::ConstParamTy, sync::LazyLock};
+use std::{collections::VecDeque, marker::ConstParamTy, path::Path, sync::LazyLock};
 use deku::prelude::*;
 use num::traits::ConstZero;
 use ordered_float::OrderedFloat;
@@ -115,6 +115,7 @@ pub struct VideoEncoder<'a> {
 	loss_step: Frac<u32>,
 	pub stats: EncodeStats,
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
+	#[cfg(feature = "charts")] chart_path: std::path::PathBuf,
 }
 
 //running totals for the summary printed after encoding, use is cost / budget
@@ -182,7 +183,15 @@ impl<'a> VideoEncoder<'a> {
 		machine: &'a Machine,
 		acceptable_loss: Frac<u32>,
 		loss_step: Frac<u32>,
+		out_path: &Path,
 	) -> Self {
+		//next to the output, named after it
+		#[cfg(feature = "charts")] let chart_path = out_path.with_file_name(format!("{}_chart_{}.svg",
+			out_path.file_stem().unwrap_or_default().to_string_lossy(),
+			desc.name.replace(',', "_"),
+		));
+		#[cfg(not(feature = "charts"))] let _ = out_path;
+
 		#[cfg(feature = "charts")] let chart = {
 			let name: &str = &desc.name;
 			let gpu_chart = new_line_chart(&format!("{name} | GPU cost per frame"), "call budget", &["set", "color", "bitblt", "cost", "budget"]);
@@ -229,6 +238,7 @@ impl<'a> VideoEncoder<'a> {
 			loss_step,
 			stats: EncodeStats::default(),
 			#[cfg(feature = "charts")] chart,
+			#[cfg(feature = "charts")] chart_path,
 		}
 	}
 
@@ -485,9 +495,8 @@ impl<'a> VideoEncoder<'a> {
 impl<'a> Drop for VideoEncoder<'a> {
 	fn drop(&mut self) {
 		#[cfg(feature = "charts")] {
-			let path = format!("chart_{}.svg", self.desc.name.replace(',', "_"));
-			std::fs::write(&path, self.chart.svg().unwrap()).unwrap();
-			eprintln!("chart: {}", path);
+			std::fs::write(&self.chart_path, self.chart.svg().unwrap()).unwrap();
+			eprintln!("chart: {}", self.chart_path.display());
 		}
 	}
 }

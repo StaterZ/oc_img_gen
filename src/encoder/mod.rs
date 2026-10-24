@@ -38,7 +38,7 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	let multi_progress = MultiProgress::new();
 	
 	let mut muxer = Muxer::new();
-	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer));
+	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer, &config.out_path));
 	let audio = config.audio.and_then(|audio_config| AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer));
 	
 	let mut readers = Vec::<Box<dyn CommonReader>>::new();
