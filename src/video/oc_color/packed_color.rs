@@ -20,10 +20,10 @@ impl PackedColor {
 	}
 	
 	pub fn unpack(self) -> PaletteOr<StaticColor> {
-		const SIZE_1U8: u8 = Palette::SIZE as u8 - 1; //TODO: wonky range pattern limitation
-		match self.0 {
-			0..=SIZE_1U8 => PaletteOr::Palette(PaletteColor::new(self.0)),
-			_ => PaletteOr::NonPalette(StaticColor::new(self.0 - Palette::SIZE as u8)),
+		if self.0 < Palette::SIZE as u8 {
+			PaletteOr::Palette(PaletteColor::new(self.0))
+		} else {
+			PaletteOr::NonPalette(StaticColor::new(self.0 - Palette::SIZE as u8))
 		}
 	}
 }
