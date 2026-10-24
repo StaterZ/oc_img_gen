@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "2.8-par"
+local version = "4.0-par"
 
 local linear_stream = {}
 do
@@ -56,17 +56,19 @@ do
 		checkArg(2, offset, "number")
 		assert(math.floor(offset) == offset, "bad argument #2 (not an integer)")
 
-		local result, reason
+		local result
 		if whence == "cur" then
 			offset = offset - (#self.buffer - self.bufferHead)
 			for i, stream in ipairs(self.streams) do
-				result, reason = stream:seek(whence, offset)
-				if not result then return nil, reason end
+				local pos, reason = stream:seek(whence, offset)
+				if not pos then return nil, reason end
+				if i == self.next_stream then result = pos end --the next stream holds the logical position
 			end
 		elseif whence == "set" then
 			for i, stream in ipairs(self.streams) do
-				result, reason = stream:seek(whence, offset + (i - self.next_stream) % #self.streams * bufferSize)
-				if not result then return nil, reason end
+				local pos, reason = stream:seek(whence, offset + (i - self.next_stream) % #self.streams * self.bufferSize)
+				if not pos then return nil, reason end
+				if i == self.next_stream then result = pos end
 			end
 		else
 			error("OUF!")
@@ -103,7 +105,7 @@ do
 			end
 			self.buffer = result
 
-			if needed >= #self.buffer then
+			if needed > #self.buffer then
 				data = data .. self.buffer
 				needed = n - #data
 				--print(#self.buffer, needed, "stitch spin", ("'%s'"):format(data))
@@ -143,13 +145,14 @@ end
 
 local next_check_time = 0
 local function check_interrupted()
-	local now = os.clock()
+	local now = computer.uptime()
+
 	if now < next_check_time then return false end
 	next_check_time = now + 1
 
 	while true do
 		local e = computer.pullSignal(0)
-		if e == nil then
+		if not e then
 			break
 		elseif e == "interrupted" then
 			return true
@@ -175,13 +178,53 @@ local args, ops = shell.parse(...)
 ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
+ops.one_buf = ops["one-buf"]
 ops.batch_check = ops["batch-check"]
 ops.volume = ops.volume or 1
 
+local stats = {}
+function draw_stats(gpu)
+	gpu.setBackground(0xff0000)
+	gpu.setForeground(0xffffff)
+	for i, text in pairs(stats) do
+		gpu.set(1, i, text)
+	end
+end
+
 local video = {}
-do
+do --video player
+	local buffer_pool = {}
+	local buffer_pool_idx = {}
+	local buffer_pool_size
+	local function pool_insert(buffer)
+		buffer_pool[#buffer_pool + 1] = buffer
+		buffer_pool_idx[buffer] = #buffer_pool
+	end
+
+	-- Remove a specific buffer from the pool in O(1). Returns true if the
+	-- buffer was in the pool, false if not.
+	local function pool_remove(buffer)
+		local idx = buffer_pool_idx[buffer]
+		if not idx then return false end
+
+		local last_idx = #buffer_pool
+		local last_buffer = buffer_pool[last_idx]
+		buffer_pool[idx] = last_buffer
+		buffer_pool_idx[last_buffer] = idx
+		buffer_pool[last_idx] = nil
+		buffer_pool_idx[buffer] = nil
+		return true
+	end
+
+	local function pool_pop()
+		local last_idx = #buffer_pool
+		local last_buffer = buffer_pool[last_idx]
+		buffer_pool[last_idx] = nil
+		buffer_pool_idx[last_buffer] = nil
+		return last_buffer
+	end
+
 	local main_screen
-	local back
 	function video.pre_init(gpu)
 		main_screen = gpu.getScreen()
 	end
@@ -195,22 +238,115 @@ do
 	function video.init(gpu, size_x, size_y)
 		video.bind_main_screen(gpu)
 
-		if not ops.no_back and size_x > 0 and size_y > 0 then
-			back = gpu.allocateBuffer(size_x, size_y)
-			if back == nil then error("can't allocate back-buffer") end
+		if not ops.no_back then
+			if size_x > 0 and size_y > 0 then
+				repeat
+					local buffer = gpu.allocateBuffer(size_x, size_y)
+					if not buffer then break end
 
-			gpu.setActiveBuffer(back)
+					pool_insert(buffer)
+				until ops.one_buf -- the sallad approves
+			end
+			if #buffer_pool == 0 then
+				video.deinit(gpu)
+				error("can't allocate back-buffer")
+			end
 		end
+		buffer_pool_size = #buffer_pool
+		return buffer_pool_size
 	end
 
 	function video.deinit(gpu)
-		if back then
-			gpu.freeBuffer(back)
+		if buffer_pool then
+			for _, buffer in ipairs(buffer_pool) do
+				gpu.freeBuffer(buffer)
+			end
 			gpu.setActiveBuffer(0)
 		end
 		video.bind_main_screen(gpu)
 	end
 
+	local buffer_cache = {}
+	local buffer_cache_idx = {}
+	local function alloc_buffer(cache)
+		-- 1. try to reuse the cache
+		if pool_remove(cache) then
+			return cache
+		end
+
+		-- 2. try to find a free buffer (not used for cache)
+		for _, candidate in ipairs(buffer_pool) do
+			if not buffer_cache_idx[candidate] then
+				pool_remove(candidate)
+				return candidate
+			end
+		end
+
+		-- 3. worst case, pick anything
+		return pool_pop()
+	end
+
+	function video.begin_commit(gpu, stream)
+		local cache = buffer_cache[stream.index + 1]
+		if not cache then --if no cache, create a new back-buffer by copying the screen
+			if gpu.getScreen() ~= stream.surface.screen_addr then
+				gpu.bind(stream.surface.screen_addr, false) --OUCH!
+			end
+			cache = 0
+		end
+		
+		local buffer = alloc_buffer(cache)
+		if buffer ~= cache then --if we could not get the cache, then copy it
+			gpu.bitblt(
+				buffer,
+				stream.surface.pos_x,
+				stream.surface.pos_y,
+				stream.surface.size_x,
+				stream.surface.size_y,
+				cache
+			)
+		end
+		gpu.setActiveBuffer(buffer)
+		
+		--update bookkeeping
+		local prev_buffer_idx = buffer_cache_idx[buffer]
+		if prev_buffer_idx then
+			buffer_cache[prev_buffer_idx] = nil
+		end
+		buffer_cache[stream.index + 1] = buffer
+		buffer_cache_idx[buffer] = stream.index + 1
+		table.insert(stream.swap_chain, buffer)
+	end
+
+	function video.begin_dummy_commit(stream)
+		table.insert(stream.swap_chain, 0)
+	end
+
+	function video.inject(gpu, stream, f)
+		local active = gpu.getActiveBuffer()
+		gpu.setActiveBuffer(stream.swap_chain[1])
+		f()
+		gpu.setActiveBuffer(active)
+	end
+
+	function video.present(gpu, stream)
+		local frame = table.remove(stream.swap_chain, 1)
+		if frame == 0 then return end --delete dummy commits
+
+		gpu.bitblt(
+			0,
+			stream.surface.pos_x,
+			stream.surface.pos_y,
+			stream.surface.size_x,
+			stream.surface.size_y,
+			frame
+		)
+		pool_insert(frame)
+	end
+
+	function video.is_stalled()
+		return #buffer_pool == 0
+	end
 
 	local lut = {
 		0x0f0f0f, 0x1e1e1e, 0x2d2d2d, 0x3c3c3c, 0x4b4b4b, 0x5a5a5a, 0x696969, 0x787878, 0x878787, 0x969696, 0xa5a5a5, 0xb4b4b4, 0xc3c3c3, 0xd2d2d2, 0xe1e1e1, 0xf0f0f0,
@@ -222,57 +358,46 @@ do
 		0xff0000, 0xff0040, 0xff0080, 0xff00c0, 0xff00ff,  0xff2400, 0xff2440, 0xff2480, 0xff24c0, 0xff24ff,  0xff4900, 0xff4940, 0xff4980, 0xff49c0, 0xff49ff,  0xff6d00, 0xff6d40, 0xff6d80, 0xff6dc0, 0xff6dff,  0xff9200, 0xff9240, 0xff9280, 0xff92c0, 0xff92ff,  0xffb600, 0xffb640, 0xffb680, 0xffb6c0, 0xffb6ff,  0xffdb00, 0xffdb40, 0xffdb80, 0xffdbc0, 0xffdbff,  0xffff00, 0xffff40, 0xffff80, 0xffffc0, 0xffffff,
 	}
 	
-	local concat_buffer = {}
-	local function gv_raw(file, len) return file:read(len) end
-	local function gv_braille(file, len, is_rle)
-		if is_rle then
-			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file)):rep(read_u8(file))
-			end
-		else
-			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file))
-			end
-		end
-		for j = len + 1, #concat_buffer do
-			concat_buffer[j] = nil
-		end
-		return table.concat(concat_buffer)
+	--unicode.char is a native call, so build all 256 braille chars once
+	local braille = {}
+	for b = 0, 0xff do
+		braille[b] = unicode.char(0x2800 + b)
 	end
+
+	local byte, sub, rep, concat = string.byte, string.sub, string.rep, table.concat
+
+	local concat_buffer = {}
 
 	local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
 	function video.draw_stream_frame(gpu, file, stream, commands_len)
 		local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
 
 		local command_kind = read_u8(file)
-
-		local get_value =
-			command_kind == 0x01 and gv_braille or --check 0x01 first since it's likely more common
-			command_kind == 0x00 and gv_raw or
+		local is_braille = command_kind == 0x01 --check 0x01 first since it's likely more common
+		if not is_braille and command_kind ~= 0x00 then
 			error(("bad frame command kind '%x2'"):format(command_kind))
-
-		if ops.batch_check then
-			get_value = function(file, len, is_rle)
-				file:read(is_rle and len*2 or len) --more efficient than seek
-				gpu.setBackground(math.random(0xffffff))
-				return (" "):rep(len)
-			end
 		end
+		local batch_check = ops.batch_check
+
+		--read the whole frame at once and parse it with byte() instead of a read per field
+		local data = file:read(commands_len)
+		local gpu_set, gpu_set_bg, gpu_set_fg = gpu.set, gpu.setBackground, gpu.setForeground
 
 		local command_count = 0
-		local i = 0
+		local i = 1
 
-		local len, x, y
-		while i < commands_len do
-			len = read_u8(file)
+		local len, x, y, value
+		while i <= commands_len do
+			len = byte(data, i)
+			i = i + 1
 			if len >= 0x80 then
 				len = len - 0x80
-				gpu.setBackground(lut[read_u8(file) + 1])
+				gpu_set_bg(lut[byte(data, i) + 1])
 				i = i + 1
 			end
 			if len >= 0x40 then
 				len = len - 0x40
-				gpu.setForeground(lut[read_u8(file) + 1])
+				gpu_set_fg(lut[byte(data, i) + 1])
 				i = i + 1
 			end
 			local is_rle = len >= 0x20
@@ -281,19 +406,44 @@ do
 			end
 
 			len = len + 1
-			x = read_u8(file)
-			y = read_u8(file)
-			gpu.set(x + pos_x, y + pos_y, get_value(file, len, is_rle))
-			len = is_rle and len*2 or len
-			i = i + 3 + len
+			x, y = byte(data, i, i + 1)
+			i = i + 2
+			if batch_check then
+				gpu_set_bg(math.random(0xffffff))
+				value = rep(" ", len)
+			elseif not is_braille then
+				value = sub(data, i, i + len - 1)
+			elseif is_rle then
+				if len == 1 then
+					value = rep(braille[byte(data, i)], byte(data, i + 1))
+				else
+					local q = i
+					for j = 1, len do
+						concat_buffer[j] = rep(braille[byte(data, q)], byte(data, q + 1))
+						q = q + 2
+					end
+					value = concat(concat_buffer, "", 1, len)
+				end
+			else
+				if len == 1 then
+					value = braille[byte(data, i)]
+				else
+					local q = i - 1
+					for j = 1, len do
+						concat_buffer[j] = braille[byte(data, q + j)]
+					end
+					value = concat(concat_buffer, "", 1, len)
+				end
+			end
+			gpu_set(x + pos_x, y + pos_y, value)
+			i = i + (is_rle and len*2 or len)
 			command_count = command_count + 1
 		end
 		return command_count
 	end
 
-	function video.draw_stats(
+	function video.update_stats(
 		stream,
-		gpu,
 		frame_begin_time,
 		video_begin_time_up,
 		commands_len,
@@ -301,83 +451,118 @@ do
 	)
 		local now, now_up = os.clock(), computer.uptime()
 		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-		local frame_time = stream.packet_index * (stream.time_base or 0)
+		local presented_packet_time = stream.presented_packet_index * stream.time_base
 		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
-		gpu.setBackground(0xff0000)
-		gpu.setForeground(0xffffff)
-		gpu.set(1, 1, ("%04i %s %04.1flag %04.ffps %05.fms %05ib %04icmds"):format(
+		stats[stream.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
+			stream.name,
 			stream.packet_index,
-			time_fmt(frame_time),
-			stream.time_base == 0 and 0 or video_elapsed_up - frame_time,
+			stream.presented_packet_index,
+			time_fmt(presented_packet_time),
+			stream.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
+			#stream.swap_chain,
+			#buffer_pool,
+			buffer_pool_size,
 			1 / frame_elapsed,
 			frame_elapsed * 1000,
 			packet_len,
 			command_count
-		))
+		)
 	end
 end
 
 local audio = {}
-do --audio engine
-	local num_channels = 8
+do --audio player
+	local channels_per_card = 8
 	local buf_min = 0.150
 	local buf_max = 0.500
 	
-	local sound_engines
-	local num_instructions
+	local sound_cards
+	local num_buffered_instructions
+	local num_buffered_instructions_stable
 	local start_time
 	local buffered_time_exact
 	local buffered_time
 	local committed_time
-	local stats_text
+	local voice_cards, voice_channels = {}, {}
+	local voice_volumes, voice_frequencies = {}, {} --last values sent, to skip repeats
 	function audio.init(num_voices)
-		sound_engines = {}
+		sound_cards = {}
 		for addr, _ in pairs(component.list("sound")) do
-			local engine = component.proxy(addr)
-			table.insert(sound_engines, engine)
-			--print(engine.address, engine)
+			local card = component.proxy(addr)
+			table.insert(sound_cards, card)
+			--print(card.address, card)
 
-			engine.setTotalVolume(1)
-			engine.clear()
-			for channel = 1, num_channels do
-				engine.close(channel)
+			card.setTotalVolume(1)
+			card.clear()
+			for channel = 1, channels_per_card do
+				card.close(channel)
 			end
-
-			computer.uptime()
 		end
 
 		for voice=1, num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.open(channel)
-			engine.setWave(channel, engine.modes[ops.wave or "sine"])
-			engine.resetFM(channel)
-			engine.resetAM(channel)
-			engine.resetEnvelope(channel)
+			local card_index = math.floor((voice - 1) / channels_per_card)
+			local card = sound_cards[card_index + 1]
+			local channel = voice - card_index * channels_per_card
+			card.open(channel)
+			card.setWave(channel, card.modes[ops.wave or "sine"])
+			card.resetFM(channel)
+			card.resetAM(channel)
+			card.resetEnvelope(channel)
+			voice_cards[voice] = card
+			voice_channels[voice] = channel
+			voice_volumes[voice] = nil
+			voice_frequencies[voice] = nil
 		end
 
-		num_instructions = 0
+		num_buffered_instructions = 0
 		start_time = computer.uptime()
 		buffered_time_exact = 0
 		buffered_time = 0
 		committed_time = 0
-
-		stats_text = ""
 	end
 
 	function audio.deinit(num_voices)
-		for _, engine in ipairs(sound_engines) do
-			engine.clear()
+		for _, card in ipairs(sound_cards) do
+			card.clear()
 		end
 
 		for voice = 1, num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.close(channel)
+			local card_index = math.floor((voice - 1) / channels_per_card)
+			local card = sound_cards[card_index + 1]
+			local channel = voice - card_index * channels_per_card
+			card.close(channel)
 		end
+	end
+
+	local byte = string.byte
+	function audio.queue(file, stream)
+		local num_voices = stream.num_voices
+		local data = file:read(num_voices * 3)
+		local volume_scale = ops.volume
+		local p = 1
+		for voice = 1, num_voices do
+			local volume, freq_lo, freq_hi = byte(data, p, p + 2)
+			p = p + 3
+			--channel state persists between process() calls, so repeats are wasted instructions
+			if volume ~= voice_volumes[voice] then
+				voice_cards[voice].setVolume(voice_channels[voice], volume / 0xff * volume_scale)
+				voice_volumes[voice] = volume
+			end
+			local frequency = freq_lo + freq_hi * 0x100
+			if frequency ~= voice_frequencies[voice] then
+				voice_cards[voice].setFrequency(voice_channels[voice], frequency / 0xffff * 20000)
+				voice_frequencies[voice] = frequency
+			end
+		end
+		
+		buffered_time_exact = buffered_time_exact + stream.time_base
+		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
+		for i = 1, math.min(#sound_cards, math.ceil(stream.num_voices / channels_per_card)) do
+			sound_cards[i].delay(delay_ms)
+		end
+		buffered_time = buffered_time + delay_ms/1000
+		num_buffered_instructions = num_buffered_instructions + 1
 	end
 
 	function audio.commit(stream)
@@ -387,14 +572,13 @@ do --audio engine
 		local buffered_left = buffered_time - play_time
 		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
 		if committed_left < buf_min then
-			for i, engine in ipairs(sound_engines) do
-				if (i - 1) * num_channels >= stream.num_voices then break end
-				engine.process()
-				if ops.fps then
-					audio.update_stats(stream)
-				end
-				num_instructions = 0
+			for i, card in ipairs(sound_cards) do
+				if (i - 1) * channels_per_card >= stream.num_voices then break end
+				card.process()
+				stream.presented_packet_index = stream.packet_index
 			end
+			num_buffered_instructions_stable = num_buffered_instructions
+			num_buffered_instructions = 0
 			committed_time = buffered_time
 			--NOTE: committed_left is now out of date here!
 		end
@@ -419,44 +603,21 @@ do --audio engine
 		end
 	end
 
-	function audio.queue(file, stream)
-		for voice = 1, stream.num_voices do
-			local engine_index = math.floor((voice - 1) / num_channels)
-			local engine = sound_engines[engine_index + 1]
-			local channel = voice - engine_index * num_channels
-			engine.setVolume(channel, read_u8(file) / 0xff * ops.volume)
-			engine.setFrequency(channel, read_u16(file) / 0xffff * 20000)
-		end
-		
-		buffered_time_exact = buffered_time_exact + stream.time_base
-		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
-		for i, engine in ipairs(sound_engines) do
-			if (i - 1) * num_channels >= stream.num_voices then break end
-			engine.delay(delay_ms)
-		end
-		buffered_time = buffered_time + delay_ms/1000
-		num_instructions = num_instructions + 1
-	end
-
 	function audio.update_stats(stream)
 		local now = computer.uptime()
 		local play_time = now - start_time
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stats_text = ("%04i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+		stats[stream.index + 1] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+			stream.name,
 			stream.packet_index,
-			num_instructions,
+			stream.presented_packet_index,
+			num_buffered_instructions_stable,
 			(buffered_left - committed_left) * 1000,
 			committed_left * 1000,
 			percentify(committed_left)
 		)
-	end
-
-	function audio.draw_stats(gpu)
-		gpu.setBackground(0xff0000)
-		gpu.setForeground(0xffffff)
-		gpu.set(1, 2, stats_text)
 	end
 end
 
@@ -511,7 +672,7 @@ local function probe_header(file)
 		print(("    time_base: %i/%i"):format(stream.time_base_num, stream.time_base_denom))
 		print(("    num_packets: %i"):format(stream.num_packets))
 		if stream.kind == 0x00 then
-			print(("    size: %ix%i"):format(stream.size_x, stream.size_y))
+			print(("    size: %ix%i (effective: %ix%i)"):format(stream.size_x, stream.size_y, stream.size_x * 2, stream.size_y * 4))
 		elseif stream.kind == 0x01 then
 			print(("    num_voices: %i"):format(stream.num_voices))
 		end
@@ -538,6 +699,7 @@ local function play(gpu, file, surfaces)
 	local streams = {}
 	for i, stream_desc in ipairs(header.streams) do
 		local stream = {
+			index = i - 1,
 			kind = stream_desc.kind,
 			num_packets = stream_desc.num_packets,
 			time_base = stream_desc.time_base_num / stream_desc.time_base_denom,
@@ -570,94 +732,158 @@ local function play(gpu, file, surfaces)
 		end
 		table.insert(streams, stream)
 	end
+	local play_video = has_video and not ops.no_video
+	local play_audio = has_audio and not ops.no_audio
 
 	local frames_begin_pos = file:seek()
-	if not ops.no_video then
-		video.init(gpu, max_size_x, max_size_y)
+	if play_video then
+		local num_buffers = video.init(gpu, max_size_x, max_size_y)
+		
+		print(("allocated %i buffers!"):format(num_buffers))
+		os.sleep(0.1)
 	end
-	if not ops.no_audio then
+	if play_audio then
 		audio.init(max_num_voices)
 	end
 
 	local function play_impl()
-		local video_begin_time, video_begin_time_up = os.clock(), computer.uptime()
+		local video_begin_time_up = computer.uptime()
+		local num_live_streams = 0
 		for _, stream in ipairs(streams) do
 			stream.packet_index = 0
-		end
-
-		local packet_index = 0
-		while packet_index < num_total_packets do
-			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
-
-			local stream_id = read_u8(file)
-			local stream = streams[stream_id + 1]
-			if stream.kind == 0x00 then --video
-				local commands_len = read_u16(file)
-				if not ops.no_video then
-					if commands_len > 0 then
-						if gpu.getScreen() ~= stream.surface.screen_addr then
-							gpu.bind(stream.surface.screen_addr, false)
-							if back then
-								gpu.bitblt(back, nil, nil, nil, nil, 0)
-							end
-						end
-					end
-
-					local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
-
-					if commands_len > 0 then
-						if ops.fps then
-							video.draw_stats(stream, gpu, frame_begin_time, video_begin_time_up, commands_len, command_count)
-							if not ops.no_audio and has_audio then
-								audio.draw_stats(gpu)
-							end
-						end
-						if not ops.no_back then
-							gpu.bitblt()
-						end
-						if ops.diff then
-							gpu.setBackground(0x000000)
-							gpu.setForeground(0xff0000)
-							gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
-						end
-					end
-				else
-					file:seek("cur", commands_len + 1) --command_kind = 1b
-				end
-			elseif stream.kind == 0x01 then --audio
-				if not ops.no_audio then
-					audio.queue(file, stream)
-				else
-					file:seek("cur", stream.num_voices * 3)
-				end
+			stream.presented_packet_index = 0
+			if stream.kind == 0x00 and play_video then --video
+				stream.swap_chain = {}
+				num_live_streams = num_live_streams + 1
+			elseif stream.kind == 0x01 and play_audio then --audio
+				num_live_streams = num_live_streams + 1
 			else
 				--we probably just wanna skip unknowns rather than get mad about it
 				--error("unknown packet kind: %x2", stream.kind)
 			end
+		end
 
-			if not ops.no_audio then
-				for _, stream in ipairs(streams) do
-					if stream.kind == 0x01 then --audio
-						if (not has_video or ops.no_video) and ops.fps and gpu ~= nil then
-							audio.draw_stats(gpu)
-						end
-						audio.commit(stream)
-					end
-				end
-			end
-
-			if not ops.fast and stream.kind == 0x00 and not ops.no_video and stream.time_base ~= 0 then --video
-				repeat
-					local current_time = (computer.uptime() - video_begin_time_up)
-					local next_frame_index = math.ceil(current_time / stream.time_base)
-				until next_frame_index > stream.packet_index --TODO: won't play nice with audio stream
-			end
-
+		local packet_index = 0
+		while num_live_streams > 0 do
+			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
 			if check_interrupted() then
 				return false
 			end
 
-			stream.packet_index = stream.packet_index + 1
+			local stream = nil
+			if packet_index < num_total_packets then
+				local stream_id = read_u8(file)
+				stream = streams[stream_id + 1]
+				if stream.kind == 0x00 then --video
+					local commands_len = read_u16(file)
+					if play_video then
+						if commands_len > 0 then
+							if ops.no_back then
+								if gpu.getScreen() ~= stream.surface.screen_addr then
+									gpu.bind(stream.surface.screen_addr, false)
+								end
+							else
+								video.begin_commit(gpu, stream)
+							end
+							if ops.diff then
+								gpu.setBackground(0x000000)
+								gpu.setForeground(0xff0000)
+								gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+							end
+						elseif not ops.no_back then
+							video.begin_dummy_commit(stream)
+						end
+
+						local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
+						if ops.fps then
+							video.update_stats(stream, frame_begin_time, video_begin_time_up, commands_len, command_count)
+						end
+
+						if ops.no_back then
+							stream.presented_packet_index = stream.presented_packet_index + 1
+							if stream.presented_packet_index == stream.num_packets then
+								num_live_streams = num_live_streams - 1
+							end
+						end
+					else
+						file:seek("cur", commands_len + 1) --command_kind = 1b
+					end
+					if ops.no_back then
+						--this won't play nice with audio streams,
+						--but we can't really help it without buffers
+						if not ops.fast then
+							repeat
+								local now_up = computer.uptime()
+								local current_time = (now_up - video_begin_time_up)
+								local next_present_time = stream.presented_packet_index * stream.time_base
+								local time_left = next_present_time - current_time
+								os.sleep(time_left) --sleep is no-op when time<=0
+							until time_left <= 0
+						end
+						stream.presented_packet_index = stream.presented_packet_index + 1
+					end
+				elseif stream.kind == 0x01 then --audio
+					if play_audio then
+						audio.queue(file, stream)
+					else
+						file:seek("cur", stream.num_voices * 3)
+					end
+				end
+			end
+
+			while true do
+				local next_present_time = math.huge
+				for _, stream in ipairs(streams) do
+					if stream.kind == 0x00 and play_video and not ops.no_back then
+						while #stream.swap_chain > 0 do
+							local now_up = computer.uptime()
+							local current_time = (now_up - video_begin_time_up)
+							local presented_packet_time = stream.presented_packet_index * stream.time_base
+							local time_left = presented_packet_time - current_time
+							if time_left > 0  and not ops.fast then
+								next_present_time = math.min(next_present_time, presented_packet_time)
+								break
+							end
+
+							if ops.fps then
+								video.inject(gpu, stream, function() draw_stats(gpu) end)
+							end
+							video.present(gpu, stream)
+							stream.presented_packet_index = stream.presented_packet_index + 1
+							if stream.presented_packet_index == stream.num_packets then
+								num_live_streams = num_live_streams - 1
+							end
+						end
+					elseif stream.kind == 0x01 and play_audio then --audio
+						audio.commit(stream) --commit handles presented_packet_index incrementation
+						if ops.fps then
+							audio.update_stats(stream)
+						end
+						if stream.presented_packet_index == stream.num_packets then
+							num_live_streams = num_live_streams - 1
+						end
+					end
+				end
+				if ops.fps and play_audio and not play_video and gpu then
+					draw_stats(gpu)
+					break
+				end
+				
+				if not play_video or ops.no_back or not video.is_stalled() then break end --only back-buffers can stall
+
+				if next_present_time ~= math.huge and not ops.fast then
+					repeat
+						local now_up = computer.uptime()
+						local current_time = (now_up - video_begin_time_up)
+						local time_left = next_present_time - current_time
+						os.sleep(time_left) --sleep is no-op when time<=0
+					until time_left <= 0
+				end
+			end
+
+			if stream then
+				stream.packet_index = stream.packet_index + 1
+			end
 			packet_index = packet_index + 1
 			--print(("frame took: %05.1fms"):format((computer.uptime() - frame_begin_time_up) * 1000))
 		end
@@ -678,10 +904,10 @@ local function play(gpu, file, surfaces)
 		end
 	end
 
-	if not ops.no_video then
+	if play_video then
 		video.deinit(gpu)
 	end
-	if not ops.no_audio then
+	if play_audio then
 		audio.deinit(max_num_voices)
 	end
 end
@@ -695,7 +921,8 @@ if ops.h or ops.help then
 	print("   --hold", "hold image on screen")
 	print("   --no-video", "skip video streams")
 	print("   --no-audio", "skip audio streams")
-	print("   --no-back", "disable double buffering and the dependency on GPU buffers")
+	print("   --no-back", "disable buffering and the dependency on GPU buffers")
+	print("   --one-buf", "use only one back buffer to reduce bitblt copies")
 	print("   --cfg", "set the screen layout and other environment settings. generate a configs with 'screenConfig.lua'")
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
