@@ -1,5 +1,3 @@
-use num::traits::ConstZero;
-
 use crate::math::*;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -14,7 +12,6 @@ pub enum Tier {
 pub struct Machine {
 	pub cpu_speed: Frac<usize>,
 
-	pub set_resolution_cost: Frac<usize>,
 	pub set_color_cost: Frac<usize>,
 	pub set_cost: Frac<usize>,
 	pub set_palette_color_cost: Frac<usize>,
@@ -59,8 +56,6 @@ impl From<Tier> for Machine {
 			Tier::T1 => Self {
 				cpu_speed: Frac::new(1, 1),
 
-				set_resolution_cost: Frac::ZERO, //TODO
-				
 				//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L64
 				set_color_cost: Frac::new(1, 32),
 				set_cost: Frac::new(1, 64),
@@ -77,8 +72,6 @@ impl From<Tier> for Machine {
 			},
 			Tier::T2 => Self {
 				cpu_speed: Frac::new(1, 1),
-
-				set_resolution_cost: Frac::ZERO, //TODO
 
 				//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L64
 				set_color_cost: Frac::new(1, 64),
@@ -97,8 +90,6 @@ impl From<Tier> for Machine {
 			Tier::T3 => Self {
 				cpu_speed: Frac::new(1, 1),
 				
-				set_resolution_cost: Frac::ZERO, //TODO
-				
 				//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L64
 				set_color_cost: Frac::new(1, 128),
 				set_cost: Frac::new(1, 256),
@@ -115,8 +106,6 @@ impl From<Tier> for Machine {
 			},
 			Tier::Emulator => Self {
 				cpu_speed: Frac::new(1, 1),
-				
-				set_resolution_cost: Frac::ZERO, //TODO
 				
 				//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L64
 				set_color_cost: Frac::new(1, 128),

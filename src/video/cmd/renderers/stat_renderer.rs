@@ -1,3 +1,5 @@
+use num::traits::ConstZero;
+
 use crate::{
 	math::{Frac, Point, Size},
 	video::cmd::{machine::Machine, renderers::{BasicRenderer, RenderState}}
@@ -28,7 +30,14 @@ impl Stats {
 	}
 
 	pub fn get_set_resolution_cost(&self, machine: &Machine) -> Frac<usize> {
-		machine.set_resolution_cost * self.num_resolution_commands
+		//setResolution is not a direct callback, so it waits for the next server tick, forfeiting whatever call budget is left in the current tick and resuming on a fresh one
+		//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L403
+		//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/machine/Machine.scala#L519-L520
+		//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/machine/Machine.scala#L581-L589
+		//the first call lands at an unknown point in the tick so on average it only forfeits half of it
+		//every call after that starts right on a tick boundary so it forfeits the whole tick
+		if self.num_resolution_commands == 0 { return Frac::ZERO; }
+		machine.call_budget * self.num_resolution_commands - machine.call_budget / 2
 	}
 
 	pub fn get_set_color_cost(&self, machine: &Machine) -> Frac<usize> {
