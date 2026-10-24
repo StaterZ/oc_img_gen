@@ -78,7 +78,7 @@ do
 			end
 			self.buffer = result
 
-			if needed >= #self.buffer then
+			if needed > #self.buffer then
 				data = data .. self.buffer
 				needed = n - #data
 				--print(#self.buffer, needed, "stitch spin", ("'%s'"):format(data))
