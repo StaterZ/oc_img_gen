@@ -337,56 +337,40 @@ do --video player
 		braille[b] = unicode.char(0x2800 + b)
 	end
 
+	local byte, sub, rep, concat = string.byte, string.sub, string.rep, table.concat
+
 	local concat_buffer = {}
-	local function gv_raw(file, len) return file:read(len) end
-	local function gv_braille(file, len, is_rle)
-		if is_rle then
-			for i = 1, len do
-				concat_buffer[i] = braille[read_u8(file)]:rep(read_u8(file))
-			end
-		else
-			for i = 1, len do
-				concat_buffer[i] = braille[read_u8(file)]
-			end
-		end
-		return table.concat(concat_buffer, "", 1, len)
-	end
 
 	local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
 	function video.draw_stream_frame(gpu, file, stream, commands_len)
 		local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
 
 		local command_kind = read_u8(file)
-
-		local get_value =
-			command_kind == 0x01 and gv_braille or --check 0x01 first since it's likely more common
-			command_kind == 0x00 and gv_raw or
+		local is_braille = command_kind == 0x01 --check 0x01 first since it's likely more common
+		if not is_braille and command_kind ~= 0x00 then
 			error(("bad frame command kind '%x2'"):format(command_kind))
-
-		if ops.batch_check then
-			get_value = function(file, len, is_rle)
-				file:read(is_rle and len*2 or len) --more efficient than seek
-				gpu.setBackground(math.random(0xffffff))
-				return (" "):rep(len)
-			end
 		end
+		local batch_check = ops.batch_check
 
+		--read the whole frame at once and parse it with byte() instead of a read per field
+		local data = file:read(commands_len)
 		local gpu_set, gpu_set_bg, gpu_set_fg = gpu.set, gpu.setBackground, gpu.setForeground
 
 		local command_count = 0
-		local i = 0
+		local i = 1
 
-		local len, x, y
-		while i < commands_len do
-			len = read_u8(file)
+		local len, x, y, value
+		while i <= commands_len do
+			len = byte(data, i)
+			i = i + 1
 			if len >= 0x80 then
 				len = len - 0x80
-				gpu_set_bg(lut[read_u8(file) + 1])
+				gpu_set_bg(lut[byte(data, i) + 1])
 				i = i + 1
 			end
 			if len >= 0x40 then
 				len = len - 0x40
-				gpu_set_fg(lut[read_u8(file) + 1])
+				gpu_set_fg(lut[byte(data, i) + 1])
 				i = i + 1
 			end
 			local is_rle = len >= 0x20
@@ -395,11 +379,29 @@ do --video player
 			end
 
 			len = len + 1
-			x = read_u8(file)
-			y = read_u8(file)
-			gpu_set(x + pos_x, y + pos_y, get_value(file, len, is_rle))
-			len = is_rle and len*2 or len
-			i = i + 3 + len
+			x, y = byte(data, i, i + 1)
+			i = i + 2
+			if batch_check then
+				gpu_set_bg(math.random(0xffffff))
+				value = rep(" ", len)
+			elseif not is_braille then
+				value = sub(data, i, i + len - 1)
+			elseif is_rle then
+				local q = i
+				for j = 1, len do
+					concat_buffer[j] = rep(braille[byte(data, q)], byte(data, q + 1))
+					q = q + 2
+				end
+				value = concat(concat_buffer, "", 1, len)
+			else
+				local q = i - 1
+				for j = 1, len do
+					concat_buffer[j] = braille[byte(data, q + j)]
+				end
+				value = concat(concat_buffer, "", 1, len)
+			end
+			gpu_set(x + pos_x, y + pos_y, value)
+			i = i + (is_rle and len*2 or len)
 			command_count = command_count + 1
 		end
 		return command_count
