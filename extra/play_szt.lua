@@ -7,7 +7,66 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "4.1"
+local version = "4.2"
+
+--raw stream over a computronics tape drive, the data starts at the beginning of the tape
+local tape_stream = {}
+do
+	local mt = {
+		__index = tape_stream,
+		__metatable = "TapeStream"
+	}
+
+	function tape_stream.open(address)
+		local addr, reason
+		if address then
+			addr, reason = component.get(address, "tape_drive")
+			if not addr then return nil, reason end
+		elseif component.isAvailable("tape_drive") then
+			addr = component.tape_drive.address
+		else
+			return nil, "no tape drive found"
+		end
+		local drive = component.proxy(addr)
+		if not drive.isReady() then return nil, "no tape in drive" end
+		drive.stop() --a playing tape moves under us
+
+		return setmetatable({
+			drive = drive,
+			pos = 0,
+			drive_pos = drive.getPosition(),
+			size = drive.getSize(),
+		}, mt)
+	end
+
+	function tape_stream:close() end
+
+	--drive.seek costs a tick like drive.read, so only move the tape when we read
+	function tape_stream:seek(whence, offset)
+		if whence == "set" then
+			self.pos = offset
+		elseif whence == "cur" then
+			self.pos = self.pos + offset
+		else
+			return nil, "can't seek from the end of a tape"
+		end
+		return self.pos
+	end
+
+	function tape_stream:read(n)
+		local left = self.size - self.pos
+		if left <= 0 then return nil end
+		n = math.floor(math.min(n, left)) --the drive wants an integer
+		if self.pos ~= self.drive_pos then
+			self.drive.seek(self.pos - self.drive_pos)
+		end
+		local data = self.drive.read(n)
+		if not data then return nil, "no tape in drive" end
+		self.pos = self.pos + #data
+		self.drive_pos = self.pos
+		return data
+	end
+end
 
 local linear_stream = {}
 do
@@ -16,17 +75,23 @@ do
 		__metatable = "LinearStream"
 	}
 
-	function linear_stream.open(path, format)
+	function linear_stream.open(path, format, is_tape)
 		assert(format == "rb")
-		path = shell.resolve(path)
-		local stream, reason = fs.open(path, format)
+		local stream, reason
+		if is_tape then
+			stream, reason = tape_stream.open(path)
+		else
+			path = shell.resolve(path)
+			stream, reason = fs.open(path, format)
+		end
 		if not stream then return nil, reason end
 
 		return setmetatable({
 			stream = stream,
 			buffer = "",
 			bufferHead = 0,
-			bufferSize = math.max(512, math.min(8 * 1024, computer.freeMemory() / 8))
+			--each tape read costs a tick, so read more at once
+			bufferSize = math.max(512, math.min((is_tape and 32 or 8) * 1024, computer.freeMemory() / 8))
 		}, mt)
 	end
 
@@ -918,6 +983,7 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
+	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). write tapes with 'write_szt_tape.lua'")
 	return
 end
 if ops.v or ops.version then
@@ -953,7 +1019,7 @@ end
 
 --do playback
 local path = args[1]
-local file, reason = linear_stream.open(path, "rb")
+local file, reason = linear_stream.open(path, "rb", ops.tape)
 if not file then
 	error("Failed to open file: " .. reason)
 end
