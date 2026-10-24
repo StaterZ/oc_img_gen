@@ -349,10 +349,7 @@ do --video player
 				concat_buffer[i] = braille[read_u8(file)]
 			end
 		end
-		for j = len + 1, #concat_buffer do
-			concat_buffer[j] = nil
-		end
-		return table.concat(concat_buffer)
+		return table.concat(concat_buffer, "", 1, len)
 	end
 
 	local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
