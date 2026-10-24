@@ -68,11 +68,11 @@ impl<T: GoodInt> SizeTrait<T> for Size<T> {
 		if content.ratio() > self.ratio() {
 			Self {
 				w: self.w,
-				h: (<Frac::<T> as From<T>>::from(self.w) / content.ratio()).into_int_round(),
+				h: (Frac::whole(self.w) / content.ratio()).into_int_round(),
 			}
 		} else {
 			Self {
-				w: (<Frac::<T> as From<T>>::from(self.h) * content.ratio()).into_int_round(),
+				w: (Frac::whole(self.h) * content.ratio()).into_int_round(),
 				h: self.h,
 			}
 		}

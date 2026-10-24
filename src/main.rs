@@ -2,7 +2,6 @@
 #![feature(adt_const_params)]
 #![feature(duration_constants)]
 #![feature(const_trait_impl)]
-#![feature(specialization)]
 #![feature(try_blocks)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]

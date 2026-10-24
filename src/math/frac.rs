@@ -2,7 +2,7 @@ use std::{fmt::Display, ops::*, str::FromStr, time::Duration,};
 use deku::prelude::*;
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
-use num::{Num, NumCast, Signed, ToPrimitive};
+use num::{Num, NumCast, ToPrimitive};
 use num::traits::{ConstOne, ConstZero, Float, One, Zero};
 use szu::math::{GoodInt, GoodNum};
 
@@ -14,15 +14,14 @@ pub trait IntoIntRound {
 impl<T: GoodInt> IntoIntRound for Frac<T> {
 	type Output = T;
 
-	default fn into_int_round(self) -> Self::Output {
-		let bias = self.denominator / T::from(2).unwrap();
-		(self.numerator + bias) / self.denominator
-	}
-}
-impl<T: GoodInt + Signed> IntoIntRound for Frac<T> {
+	// rounds half away from zero
 	fn into_int_round(self) -> Self::Output {
-		let bias = self.numerator.signum() * (self.denominator.abs() / T::from(2).unwrap());
-		(self.numerator + bias) / self.denominator
+		let bias = self.denominator / (T::ONE + T::ONE);
+		if (self.numerator < T::ZERO) != (self.denominator < T::ZERO) {
+			(self.numerator - bias) / self.denominator
+		} else {
+			(self.numerator + bias) / self.denominator
+		}
 	}
 }
 
@@ -35,6 +34,9 @@ pub struct Frac<T: GoodInt> {
 impl<T: GoodInt> Frac<T> {
 	pub const fn new(numerator: T, denominator: T) -> Self {
 		Self { numerator, denominator }
+	}
+	pub const fn whole(value: T) -> Self {
+		Self::new(value, T::ONE)
 	}
 
 	pub fn half() -> Self {
@@ -54,11 +56,18 @@ impl<T: GoodInt> Frac<T> {
 			denominator: self.denominator.into(),
 		}
 	}
-	pub fn try_cast<U: GoodInt + TryFrom<T>>(self) -> Result<Frac::<U>, U::Error> {
-		Ok(Frac {
-			numerator: self.numerator.try_into()?,
-			denominator: self.denominator.try_into()?,
+	pub fn try_cast<U: GoodInt + TryFrom<T>>(self) -> Option<Frac::<U>> {
+		Some(Frac {
+			numerator: self.numerator.try_into().ok()?,
+			denominator: self.denominator.try_into().ok()?,
 		})
+	}
+
+	pub fn inverse(self) -> Self {
+		Self {
+			numerator: self.denominator,
+			denominator: self.numerator,
+		}
 	}
 
 	// divides out the gcd and moves the sign to the numerator
@@ -84,23 +93,14 @@ impl<T: GoodInt + IntegerSquareRoot> Frac<T> {
 			denominator: self.denominator,
 		}
 	}
-
-	pub fn inverse(self) -> Self {
-		Self {
-			numerator: self.denominator,
-			denominator: self.numerator,
-		}
-	}
 }
 
 impl<T: GoodInt> GoodNum for Frac<T> { }
 
 impl<T: GoodInt> NumCast for Frac<T> {
+	// floats are truncated
 	fn from<U: num::ToPrimitive>(n: U) -> Option<Self> {
-		Some(Self {
-			numerator: T::from(n)?,
-			denominator: T::one(),
-		})
+		Some(Self::whole(T::from(n)?))
 	}
 }
 
@@ -166,20 +166,13 @@ impl<T: GoodInt> Num for Frac<T> {
 	type FromStrRadixErr = FracParseErr<<T as Num>::FromStrRadixErr>;
 
 	fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
-		match str.split('/').collect_vec().as_slice() {
-			[numerator] => Ok(<Frac<_> as From<_>>::from(T::from_str_radix(*numerator, radix)?)),
-			[numerator, denominator] => Ok(Frac::new(
-				T::from_str_radix(*numerator, radix)?,
-				T::from_str_radix(*denominator, radix)?,
-			)),
-			_ => Err(FracParseErr::BadFormat),
-		}
+		Self::parse_with(str, |s| T::from_str_radix(s, radix))
 	}
 }
 
 impl<T: GoodInt + Zero> Zero for Frac<T> {
 	fn zero() -> Self {
-		<Self as From<T>>::from(T::zero())
+		Self::whole(T::zero())
 	}
 
 	fn is_zero(&self) -> bool {
@@ -193,7 +186,7 @@ impl<T: GoodInt + ConstZero + ConstOne> ConstZero for Frac<T> {
 
 impl<T: GoodInt + One> One for Frac<T> {
 	fn one() -> Self {
-		<Self as From<T>>::from(T::one())
+		Self::whole(T::one())
 	}
 }
 
@@ -227,10 +220,7 @@ impl<'a, Ctx: Copy, T: GoodInt + DekuReader<'a, Ctx>> DekuReader<'a, Ctx> for Fr
 
 impl<T: GoodInt> From<T> for Frac<T> {
 	fn from(value: T) -> Self {
-		Self {
-			numerator: value,
-			denominator: T::one(),
-		}
+		Self::whole(value)
 	}
 }
 
@@ -248,10 +238,10 @@ impl From<Frac<i32>> for ffmpeg_next::Rational {
 	}
 }
 
-impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration where u128: From<T> {
+impl<T: GoodInt> From<Frac<T>> for Duration where u64: From<T>, u128: From<T> {
 	fn from(value: Frac<T>) -> Self {
 		const NANOS_PER_SEC: u128 = 1_000_000_000;
-		let ns = ((value % T::one()).cast::<u128>() * <Frac<u128> as From<u128>>::from(NANOS_PER_SEC)).into_int_trunc() as u32;
+		let ns = ((value % T::ONE).cast::<u128>() * NANOS_PER_SEC).into_int_trunc() as u32;
 		Self::new(
 			value.into_int_trunc().into(),
 			ns,
@@ -261,25 +251,34 @@ impl<T: GoodInt + Into<u64> + Into<u32>> From<Frac<T>> for Duration where u128: 
 
 #[derive(thiserror::Error, Debug)]
 pub enum FracParseErr<E> {
-	#[error("Frac must be in NUM or NUM/DENOM format")] BadFormat,
+	#[error("Frac must be in NUM, NUM/DENOM or NUM% format")] BadFormat,
+	#[error("Frac denominator can't be zero")] ZeroDenominator,
 	#[error("parse failed: {0}")] ParseError(#[from] E),
+}
+
+impl<T: GoodInt> Frac<T> {
+	fn parse_with<E>(s: &str, parse: impl Fn(&str) -> Result<T, E>) -> Result<Self, FracParseErr<E>> {
+		let frac = if let Some(percent) = s.strip_suffix('%') {
+			Frac::new(parse(percent)?, T::from(100).unwrap())
+		} else {
+			match s.split('/').collect_vec().as_slice() {
+				[numerator] => Frac::whole(parse(numerator)?),
+				[numerator, denominator] => Frac::new(parse(numerator)?, parse(denominator)?),
+				_ => return Err(FracParseErr::BadFormat),
+			}
+		};
+		if frac.denominator == T::ZERO {
+			return Err(FracParseErr::ZeroDenominator);
+		}
+		Ok(frac)
+	}
 }
 
 impl<T: GoodInt + FromStr> FromStr for Frac<T> {
 	type Err = FracParseErr<<T as FromStr>::Err>;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		if let Some(percent) = s.strip_suffix('%') {
-			return Ok(Frac::new(percent.parse::<T>()?, T::from(100).unwrap()));
-		}
-		match s.split('/').collect_vec().as_slice() {
-			[numerator] => Ok(<Frac<_> as From<_>>::from(numerator.parse::<T>()?)),
-			[numerator, denominator] => Ok(Frac::new(
-				T::from_str(numerator)?,
-				T::from_str(denominator)?,
-			)),
-			_ => Err(FracParseErr::BadFormat),
-		}
+		Self::parse_with(s, T::from_str)
 	}
 }
 
@@ -319,7 +318,7 @@ impl<T: GoodInt> Add<T> for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: T) -> Self::Output {
-		self + <Self as From<T>>::from(rhs)
+		self + Self::whole(rhs)
 	}
 }
 
@@ -351,7 +350,7 @@ impl<T: GoodInt> Sub<T> for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: T) -> Self::Output {
-		self - <Self as From<T>>::from(rhs)
+		self - Self::whole(rhs)
 	}
 }
 
@@ -382,7 +381,7 @@ impl<T: GoodInt> Mul<T> for Frac<T> {
 	type Output = Self;
 
 	fn mul(self, rhs: T) -> Self::Output {
-		self * <Self as From<T>>::from(rhs)
+		self * Self::whole(rhs)
 	}
 }
 
@@ -413,7 +412,7 @@ impl<T: GoodInt> Div<T> for Frac<T> {
 	type Output = Self;
 
 	fn div(self, rhs: T) -> Self::Output {
-		self / <Self as From<T>>::from(rhs)
+		self / Self::whole(rhs)
 	}
 }
 
@@ -445,7 +444,7 @@ impl<T: GoodInt> Rem<T> for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: T) -> Self::Output {
-		self % <Self as From<T>>::from(rhs)
+		self % Self::whole(rhs)
 	}
 }
 
