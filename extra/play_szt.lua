@@ -9,6 +9,9 @@ local serialization = require("serialization")
 
 local version = "4.3"
 
+--the player names the tape it burns pcm audio onto, so it can find it again
+local burner_label = "szt pcm burner"
+
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
 do
@@ -24,6 +27,16 @@ do
 			if not addr then return nil, reason end
 		elseif component.isAvailable("tape_drive") then
 			addr = component.tape_drive.address
+			--the primary may hold the burner tape, then take another drive
+			if component.tape_drive.getLabel() == burner_label then
+				for candidate in component.list("tape_drive") do
+					local d = component.proxy(candidate)
+					if d.isReady() and d.getLabel() ~= burner_label then
+						addr = candidate
+						break
+					end
+				end
+			end
 		else
 			return nil, "no tape drive found"
 		end
@@ -808,15 +821,25 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			addr, reason = component.get(ops.pcm_tape, "tape_drive")
 			if not addr then return false, reason end
 		else
-			--take the first burner or blank tape, so a drive with other tapes in it is left alone
+			--take the tape named as the burner, else a blank tape, so a drive with other tapes in it is left alone.
+			--a tape the video reads from can't be the burner, even when it has the name
 			for candidate in component.list("tape_drive") do
 				local d = component.proxy(candidate)
-				if not used[candidate] and d.isReady() then
-					addr = addr or candidate
-					d.stop()
-					if read_index(d) then
-						addr = candidate
-						break
+				if not used[candidate] and d.isReady() and d.getLabel() == burner_label then
+					addr = candidate
+					break
+				end
+			end
+			if not addr then
+				for candidate in component.list("tape_drive") do
+					local d = component.proxy(candidate)
+					if not used[candidate] and d.isReady() then
+						addr = addr or candidate
+						d.stop()
+						if read_index(d) then
+							addr = candidate
+							break
+						end
 					end
 				end
 			end
@@ -843,6 +866,9 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			local offset, reason = burn(found, file, stream, frames_begin_pos)
 			if not offset then return false, reason end
 			block_offset = offset
+			if found.getLabel() ~= burner_label then
+				found.setLabel(burner_label)
+			end
 		end
 
 		drive = found
@@ -1308,7 +1334,7 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
-	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit")
+	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. burner_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a burner tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'write_szt_tape.lua'")
 	return
@@ -1345,7 +1371,7 @@ else
 end
 
 --do playback
-local path = args[1]
+local path = args[1] or type(ops.tape) == "string" and ops.tape or nil --'--tape=<addr>' names the drive too
 local file, reason = linear_stream.open(path, "rb", ops.tape)
 if not file then
 	error("Failed to open file: " .. reason)
