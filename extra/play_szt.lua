@@ -387,18 +387,26 @@ do --video player
 			elseif not is_braille then
 				value = sub(data, i, i + len - 1)
 			elseif is_rle then
-				local q = i
-				for j = 1, len do
-					concat_buffer[j] = rep(braille[byte(data, q)], byte(data, q + 1))
-					q = q + 2
+				if len == 1 then
+					value = rep(braille[byte(data, i)], byte(data, i + 1))
+				else
+					local q = i
+					for j = 1, len do
+						concat_buffer[j] = rep(braille[byte(data, q)], byte(data, q + 1))
+						q = q + 2
+					end
+					value = concat(concat_buffer, "", 1, len)
 				end
-				value = concat(concat_buffer, "", 1, len)
 			else
-				local q = i - 1
-				for j = 1, len do
-					concat_buffer[j] = braille[byte(data, q + j)]
+				if len == 1 then
+					value = braille[byte(data, i)]
+				else
+					local q = i - 1
+					for j = 1, len do
+						concat_buffer[j] = braille[byte(data, q + j)]
+					end
+					value = concat(concat_buffer, "", 1, len)
 				end
-				value = concat(concat_buffer, "", 1, len)
 			end
 			gpu_set(x + pos_x, y + pos_y, value)
 			i = i + (is_rle and len*2 or len)
