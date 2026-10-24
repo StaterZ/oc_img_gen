@@ -1,12 +1,11 @@
-use std::{collections::VecDeque, marker::ConstParamTy};
+use std::{collections::VecDeque, marker::ConstParamTy, sync::LazyLock};
 use deku::prelude::*;
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 use ordered_float::OrderedFloat;
 use palette::color_difference::ImprovedCiede2000;
 use palette::rgb::channels::Argb;
 use palette::{Hsv, Lab, Srgb, FromColor};
 use szu::iter::RleRun;
-use lazy_static::lazy_static;
 
 use crate::math::*;
 use crate::encoder::{
@@ -117,18 +116,16 @@ pub struct VideoEncoder<'a> {
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
 }
 
-lazy_static! {
-	static ref VGA_PALETTE: [Lab; 1 << 3] = [
-		0x000000,
-		0xff0000,
-		0x00ff00,
-		0xffff00,
-		0x0000ff,
-		0xff00ff,
-		0x00ffff,
-		0xffffff,
-	].map(|c| Lab::from_color(Srgb::<u8>::from_u32::<Argb>(c).into_format::<f32>()));
-}
+static VGA_PALETTE: LazyLock<[Lab; 1 << 3]> = LazyLock::new(|| [
+	0x000000,
+	0xff0000,
+	0x00ff00,
+	0xffff00,
+	0x0000ff,
+	0xff00ff,
+	0x00ffff,
+	0xffffff,
+].map(|c| Lab::from_color(Srgb::<u8>::from_u32::<Argb>(c).into_format::<f32>())));
 impl<'a> VideoEncoder<'a> {
 	pub fn new(
 		desc: StreamDescriptor<Descriptor>,

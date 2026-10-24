@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::{HashMap, hash_map::{Entry, OccupiedEntry}}, ops::Deref, rc::Rc};
 use all_asserts::*;
 use itertools::Itertools;
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 
 use crate::math::*;
 use super::{TermFrame, Renderer, TermPixel, TermChar, super::oc_color::{PackedColor, formatters::Formatter}};

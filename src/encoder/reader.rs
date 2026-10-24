@@ -12,7 +12,7 @@ use ffmpeg_next::{
 	format::context::Input as FfmpegInput,
 	ffi::AV_NOPTS_VALUE,
 };
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 use crate::math::*;
 use super::muxer::PacketWriter;
 

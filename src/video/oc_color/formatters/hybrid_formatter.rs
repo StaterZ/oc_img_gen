@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::mem::MaybeUninit;
+use std::sync::LazyLock;
 use image::imageops::ColorMap;
-use lazy_static::lazy_static;
 use all_asserts::*;
 use ordered_float::OrderedFloat;
 use palette::{Lab, Srgb, FromColor, color_difference::ImprovedCiede2000};
@@ -10,36 +10,34 @@ use super::super::PackedColor;
 use super::super::palette::{Palette, PaletteOr};
 use super::Formatter;
 
-lazy_static! {
-	static ref STATIC_PALETTE: [Lab; StaticColor::PALETTE_SIZE] = {
-		let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); StaticColor::PALETTE_SIZE];
-		let mut i = 0;
-		for i_r in 0..StaticColor::NUM_REDS {
-			let r = ((i_r * 0x100) / (StaticColor::NUM_REDS - 1)).min(0xff) as u8;
-			for i_g in 0..StaticColor::NUM_GREENS {
-				let g = ((i_g * 0x100) / (StaticColor::NUM_GREENS - 1)).min(0xff) as u8;
-				for i_b in 0..StaticColor::NUM_BLUES {
-					let b = ((i_b * 0x100) / (StaticColor::NUM_BLUES - 1)).min(0xff) as u8;
-					result[i] = MaybeUninit::new(Srgb::<u8>::new(r, g, b));
-					//eprintln!("{:02X}: {}", i, unsafe { result[i].assume_init() });
-					i = i + 1;
-				}
+static STATIC_PALETTE: LazyLock<[Lab; StaticColor::PALETTE_SIZE]> = LazyLock::new(|| {
+	let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); StaticColor::PALETTE_SIZE];
+	let mut i = 0;
+	for i_r in 0..StaticColor::NUM_REDS {
+		let r = ((i_r * 0x100) / (StaticColor::NUM_REDS - 1)).min(0xff) as u8;
+		for i_g in 0..StaticColor::NUM_GREENS {
+			let g = ((i_g * 0x100) / (StaticColor::NUM_GREENS - 1)).min(0xff) as u8;
+			for i_b in 0..StaticColor::NUM_BLUES {
+				let b = ((i_b * 0x100) / (StaticColor::NUM_BLUES - 1)).min(0xff) as u8;
+				result[i] = MaybeUninit::new(Srgb::<u8>::new(r, g, b));
+				//eprintln!("{:02X}: {}", i, unsafe { result[i].assume_init() });
+				i = i + 1;
 			}
 		}
-		
-		unsafe { std::mem::transmute::<_, [Srgb<u8>; StaticColor::PALETTE_SIZE]>(result) }
-	}.map(|c| Lab::from_color(c.into_format::<f32>()));
+	}
 
-	static ref DYNAMIC_PALETTE_DEFAULT: Palette = Palette::new({
-		let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); Palette::SIZE];
-		for (i, item) in result.iter_mut().enumerate() {
-			let shade = ((i + 1) * 0xFF / (Palette::SIZE + 1)) as u8;
-			*item = MaybeUninit::new(Srgb::<u8>::new(shade, shade, shade));
-			//eprintln!("{:02X}: {}", i, unsafe { item.assume_init() });
-		}
-		unsafe { std::mem::transmute::<_, [Srgb<u8>; Palette::SIZE]>(result) }
-	}.map(|c| Lab::from_color(c.into_format::<f32>())));
-}
+	unsafe { std::mem::transmute::<_, [Srgb<u8>; StaticColor::PALETTE_SIZE]>(result) }
+}.map(|c| Lab::from_color(c.into_format::<f32>())));
+
+static DYNAMIC_PALETTE_DEFAULT: LazyLock<Palette> = LazyLock::new(|| Palette::new({
+	let mut result =  [MaybeUninit::<Srgb<u8>>::uninit(); Palette::SIZE];
+	for (i, item) in result.iter_mut().enumerate() {
+		let shade = ((i + 1) * 0xFF / (Palette::SIZE + 1)) as u8;
+		*item = MaybeUninit::new(Srgb::<u8>::new(shade, shade, shade));
+		//eprintln!("{:02X}: {}", i, unsafe { item.assume_init() });
+	}
+	unsafe { std::mem::transmute::<_, [Srgb<u8>; Palette::SIZE]>(result) }
+}.map(|c| Lab::from_color(c.into_format::<f32>()))));
 
 pub struct HybridFormatter {
 	palette: Palette,

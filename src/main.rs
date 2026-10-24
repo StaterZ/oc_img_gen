@@ -11,8 +11,8 @@
 #![allow(unused_features)]
 
 use std::io::Write;
+use std::time::Instant;
 use indicatif::ProgressStyle;
-use stopwatch::Stopwatch;
 use szu::flush_print;
 use clap::{Parser, Subcommand};
 
@@ -42,24 +42,23 @@ enum CliCommand {
 fn main() -> anyhow::Result<()> {
 	let args = Cli::parse();
 	
-	let mut watch = Stopwatch::start_new();
+	let start = Instant::now();
 	match args.command {
 		CliCommand::Encode(args) => encoder::encode(encoder::cli::process_args(args))?,
 		CliCommand::Play(args) => playback::player::play(args)?,
 		CliCommand::Export(args) => playback::exporter::export(args)?,
 	};
-	watch.stop();
-	eprintln!("took: {}s & {}ms", watch.elapsed().as_secs(), watch.elapsed().subsec_millis());
+	let e = start.elapsed();
+	eprintln!("took: {}s & {}ms", e.as_secs(), e.subsec_millis());
 	Ok(())
 }
 
 pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 	if cfg!(feature = "log") {
 		flush_print!("{:<32}", title);
-		let mut timer = Stopwatch::start_new();
+		let start = Instant::now();
 		let output = f();
-		timer.stop();
-		let e = timer.elapsed();
+		let e = start.elapsed();
 		eprintln!(" time: {}.{}ms", e.as_millis(), e.as_micros() - e.as_millis() * 1000);
 		output
 	} else {

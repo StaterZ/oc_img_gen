@@ -6,7 +6,7 @@ use deku::DekuContainerRead;
 use indicatif::ProgressBar;
 use itertools::Itertools;
 use minifb::{Key, Scale, Window, WindowOptions};
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 use palette::{Srgb, rgb::channels::Argb};
 use triple_buffer::TripleBuffer;
 use display_info::DisplayInfo;
@@ -79,6 +79,7 @@ pub struct Cli {
 	pub voice_smooth_time: humantime::Duration,
 }
 
+#[cfg(windows)]
 fn remove_title_bar(window: &Window) {
 	use windows::Win32::Foundation::HWND;
 	use windows::Win32::UI::WindowsAndMessaging::{
@@ -149,7 +150,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 			).expect("Failed to open window");
 
 			if let Some(pos) = pos {
-				remove_title_bar(&window);
+				#[cfg(windows)] remove_title_bar(&window);
 
 				let gap_size = args.matrix_gap_size
 					.or_else(|| args.matrix_screen_size

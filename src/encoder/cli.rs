@@ -1,6 +1,6 @@
 use std::{fmt::Display, num::ParseIntError, ops::Deref, path::{Path, PathBuf}, str::FromStr, time::Duration};
 use clap::{Args, Parser, ValueHint};
-use num_traits::{ConstOne, ConstZero};
+use num::traits::{ConstOne, ConstZero};
 use palette::{Srgb, rgb::channels::Argb};
 
 use crate::{

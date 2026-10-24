@@ -1,7 +1,7 @@
 use std::{fmt::Display, ops::*, str::FromStr};
 use deku::prelude::*;
 use num::NumCast;
-use num_traits::{ConstZero, Zero};
+use num::traits::{ConstZero, Zero};
 use szu::math::GoodNum;
 
 use super::Size;

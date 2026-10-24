@@ -1,7 +1,7 @@
 use std::{fmt::Display, ops::{Add, Div, Mul, Sub}, str::FromStr};
 use deku::prelude::*;
 use num::NumCast;
-use num_traits::{ConstZero, ConstOne, Zero, One};
+use num::traits::{ConstZero, ConstOne, Zero, One};
 use szu::math::{GoodInt, GoodNum};
 
 use crate::math::IntoIntRound;

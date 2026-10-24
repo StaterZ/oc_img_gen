@@ -11,7 +11,7 @@ use ffmpeg_next::{
 	media::Type as MediaType,
 	format::context::Input as FfmpegInput,
 };
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 use palette::Srgb;
 
 use crate::{

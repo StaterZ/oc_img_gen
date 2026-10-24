@@ -3,7 +3,7 @@ use deku::prelude::*;
 use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
 use num::{Num, NumCast, Signed, ToPrimitive};
-use num_traits::{ConstOne, ConstZero, Float, One, Zero};
+use num::traits::{ConstOne, ConstZero, Float, One, Zero};
 use szu::math::{GoodInt, GoodNum};
 
 pub trait IntoIntRound {

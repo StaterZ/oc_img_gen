@@ -1,4 +1,4 @@
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 
 use crate::math::*;
 

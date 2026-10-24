@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use itertools::Itertools;
 use all_asserts::*;
-use num_traits::ConstZero;
+use num::traits::ConstZero;
 use palette::Srgb;
 
 use crate::math::*;
