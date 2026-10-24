@@ -331,16 +331,22 @@ do --video player
 		0xff0000, 0xff0040, 0xff0080, 0xff00c0, 0xff00ff,  0xff2400, 0xff2440, 0xff2480, 0xff24c0, 0xff24ff,  0xff4900, 0xff4940, 0xff4980, 0xff49c0, 0xff49ff,  0xff6d00, 0xff6d40, 0xff6d80, 0xff6dc0, 0xff6dff,  0xff9200, 0xff9240, 0xff9280, 0xff92c0, 0xff92ff,  0xffb600, 0xffb640, 0xffb680, 0xffb6c0, 0xffb6ff,  0xffdb00, 0xffdb40, 0xffdb80, 0xffdbc0, 0xffdbff,  0xffff00, 0xffff40, 0xffff80, 0xffffc0, 0xffffff,
 	}
 	
+	--unicode.char is a native call, so build all 256 braille chars once
+	local braille = {}
+	for b = 0, 0xff do
+		braille[b] = unicode.char(0x2800 + b)
+	end
+
 	local concat_buffer = {}
 	local function gv_raw(file, len) return file:read(len) end
 	local function gv_braille(file, len, is_rle)
 		if is_rle then
 			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file)):rep(read_u8(file))
+				concat_buffer[i] = braille[read_u8(file)]:rep(read_u8(file))
 			end
 		else
 			for i = 1, len do
-				concat_buffer[i] = unicode.char(0x2800 + read_u8(file))
+				concat_buffer[i] = braille[read_u8(file)]
 			end
 		end
 		for j = len + 1, #concat_buffer do
