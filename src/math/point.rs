@@ -135,6 +135,16 @@ impl<T: GoodNum + From<U>, U: GoodNum> Mul<Size<U>> for Point<T> {
 		}
 	}
 }
+impl<T: GoodNum> Mul for Point<T> {
+	type Output = Self;
+
+	fn mul(self, rhs: Self) -> Self::Output {
+		Self {
+			x: self.x * rhs.x,
+			y: self.y * rhs.y,
+		}
+	}
+}
 impl<T: GoodNum> Mul<T> for Point<T> {
 	type Output = Self;
 

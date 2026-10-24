@@ -88,10 +88,7 @@ impl<T: Copy> Image<T> {
 
 	pub fn resize(&self, size: Size<usize>, fill: T, anchor: Point<Frac<isize>>) -> Self {
 		let delta = (size.cast::<isize>() - self.size.cast::<isize>()).cast::<Frac<isize>>();
-		let offset = Point::new( //TODO: blegh!
-			(anchor.x * delta.x).into_int_round(),
-			(anchor.y * delta.y).into_int_round(),
-		);
+		let offset = (anchor * delta).map(|v| v.into_int_round());
 		
 		let mut new = Self::new(size, fill);
 		let rect = Rect::new(Point::ZERO, new.size.cast());
