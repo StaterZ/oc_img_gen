@@ -72,8 +72,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.braille_strategy,
 				args.color_diff_strategy,
 				args.budget,
-				args.acceptable_loss.unwrap_or(Frac::from(0)),
-				args.loss_step.unwrap_or(Frac::new(1, 100)),
+				args.acceptable_loss,
+				args.loss_step,
 			)
 		},
 		VideoMode::Matrix => {
@@ -102,8 +102,8 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.braille_strategy,
 				args.color_diff_strategy,
 				args.budget,
-				args.acceptable_loss.unwrap_or(Frac::from(0)),
-				args.loss_step.unwrap_or(Frac::new(1, 100)),
+				args.acceptable_loss,
+				args.loss_step,
 			)
 		},
 		VideoMode::Custom => create_streams_custom(
@@ -418,15 +418,17 @@ struct VideoOpts {
 	#[arg(
 		short = 'l',
 		long = "loss",
-		help = "selects the 'bitrate' limit for each frame. default: 0",
+		help = "selects the 'bitrate' limit for each frame",
+		default_value = "0",
 	)]
-	pub acceptable_loss: Option<Frac<u32>>,
+	pub acceptable_loss: Frac<u32>,
 
 	#[arg(
 		long = "loss-step",
-		help = "selects the 'bitrate' limit for each frame. default: 1%",
+		help = "selects the 'bitrate' limit for each frame",
+		default_value = "1%",
 	)]
-	pub loss_step: Option<Frac<u32>>,
+	pub loss_step: Frac<u32>,
 	
 	#[arg(
 		long = "streams-config",
