@@ -6,12 +6,24 @@ use crate::audio::packet::{Sample, VoiceState};
 
 pub mod packet;
 pub mod audio_reader;
+pub mod pcm_reader;
+pub mod dfpwm;
 
 /// Highest frequency a voice can encode; stored frequencies are fractions of this.
 pub const MAX_FREQUENCY: f32 = 20000.0;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+pub enum Mode {
+	/// peaks from an fft, played as sound card voices
+	Voices,
+	/// DFPWM for computronics tape drives
+	Pcm,
+}
+
 pub struct Config {
 	pub name: String,
+	pub mode: Mode,
+	pub pcm_rate: u32,
 	pub analysis_rate: u32,
 	pub fft_window_size: usize,
 	pub hop_length: usize,

@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "4.2"
+local version = "4.3"
 
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
@@ -209,7 +209,7 @@ end
 
 local szt = {
 	magic = "sztb",
-	version = 6,
+	version = 7,
 }
 
 local args, ops = shell.parse(...)
@@ -218,6 +218,7 @@ ops.no_audio = ops["no-audio"]
 ops.no_back = ops["no-back"]
 ops.one_buf = ops["one-buf"]
 ops.batch_check = ops["batch-check"]
+ops.pcm_tape = ops["pcm-tape"]
 ops.volume = ops.volume or 1
 
 local stats = {}
@@ -676,6 +677,120 @@ do --audio player
 	end
 end
 
+local pcm = {}
+do --pcm player. a computronics tape drive plays the DFPWM block on its own, we only start and stop it
+	local tape_sample_rate = 48000 --the drive plays 1500 bytes per 250ms at speed 1
+
+	local drive
+	local start_time
+
+	--a drive that the packets are read from can't play at the same time, since a drive has one head
+	local function video_drives(file)
+		local used = {}
+		for _, stream in ipairs(file.streams or {file.stream}) do
+			if stream.drive then
+				used[stream.drive.address] = true
+			end
+		end
+		return used
+	end
+
+	--returns the drive to play from, or nil and why not
+	function pcm.find_drive(file, header_bytes, reads_packets)
+		local used = video_drives(file)
+		local addr
+		if type(ops.pcm_tape) == "string" then
+			local reason
+			addr, reason = component.get(ops.pcm_tape, "tape_drive")
+			if not addr then return nil, reason end
+		else
+			for candidate in component.list("tape_drive") do
+				if not used[candidate] then
+					addr = candidate
+					break
+				end
+			end
+			--with no packets to read, the drive that holds the file can play it
+			if not addr and not reads_packets then
+				addr = next(used)
+			end
+			if not addr then
+				return nil, next(used)
+					and "the tape drive reads the video, so it can't play the pcm audio too. put a copy of the tape in a second drive ('write_szt_tape.lua <file> <drive> <drive>')"
+					or "no tape drive found"
+			end
+		end
+		if used[addr] and reads_packets then
+			return nil, ("tape drive %s reads the video, so it can't play the pcm audio too"):format(addr)
+		end
+
+		local found = component.proxy(addr)
+		if not found.isReady() then return nil, ("no tape in drive %s"):format(addr) end
+
+		--a drive that reads the file holds it, otherwise check that the tape starts with this file
+		if not used[addr] then
+			found.stop()
+			found.seek(-found.getPosition())
+			if found.read(#header_bytes) ~= header_bytes then
+				return nil, ("the tape in drive %s doesn't hold this file. write it with 'write_szt_tape.lua <file> %s'"):format(addr, addr:sub(1, 8))
+			end
+		end
+		return found
+	end
+
+	function pcm.init(found)
+		drive = found
+		drive.stop()
+		drive.setVolume(math.max(0, math.min(1, tonumber(ops.volume) or 1)))
+	end
+
+	function pcm.stop()
+		if drive then
+			drive.stop()
+		end
+	end
+
+	function pcm.deinit()
+		if drive then
+			drive.stop()
+			drive = nil
+		end
+	end
+
+	function pcm.start(stream)
+		drive.stop()
+		drive.seek(stream.offset - drive.getPosition())
+		drive.setSpeed(stream.sample_rate / tape_sample_rate)
+		drive.play()
+		start_time = computer.uptime()
+	end
+
+	--returns true once the block played out
+	function pcm.update(stream, is_only_live_stream)
+		local time_left = stream.duration - (computer.uptime() - start_time)
+		if time_left <= 0 then
+			drive.stop() --the tape goes on past the block
+			return true
+		end
+		if is_only_live_stream then
+			os.sleep(math.min(time_left, 0.5)) --nothing else to do, so wait but still catch interrupts
+		end
+		return false
+	end
+
+	function pcm.update_stats(stream)
+		local elapsed = computer.uptime() - start_time
+		stats[stream.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s"):format(
+			stream.name,
+			time_fmt(math.min(elapsed, stream.duration)),
+			time_fmt(stream.duration),
+			stream.sample_rate,
+			stream.sample_rate / tape_sample_rate,
+			drive.getState()
+		)
+	end
+end
+
 local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
@@ -696,6 +811,10 @@ local function read_header(file)
 			stream.size_y = read_u8(file)
 		elseif stream.kind == 0x01 then
 			stream.num_voices = read_u8(file)
+		elseif stream.kind == 0x02 then
+			stream.sample_rate = read_u32(file)
+			stream.offset = read_u32(file)
+			stream.num_bytes = read_u32(file)
 		end
 		table.insert(streams, stream)
 	end
@@ -721,6 +840,7 @@ local function probe_header(file)
 		local kind_text =
 			stream.kind == 0x00 and "video" or
 			stream.kind == 0x01 and "audio" or
+			stream.kind == 0x02 and "pcm" or
 			"unknown"
 
 		print(("  %i: %s | '%s'"):format(i - 1, kind_text, stream.name))
@@ -730,6 +850,9 @@ local function probe_header(file)
 			print(("    size: %ix%i (effective: %ix%i)"):format(stream.size_x, stream.size_y, stream.size_x * 2, stream.size_y * 4))
 		elseif stream.kind == 0x01 then
 			print(("    num_voices: %i"):format(stream.num_voices))
+		elseif stream.kind == 0x02 then
+			print(("    sample_rate: %iHz (tape speed %.2f)"):format(stream.sample_rate, stream.sample_rate / 48000))
+			print(("    dfpwm: %i bytes at byte %i (%s)"):format(stream.num_bytes, stream.offset, time_fmt(stream.num_bytes * 8 / stream.sample_rate)))
 		end
 	end
 
@@ -751,6 +874,7 @@ local function play(gpu, file, surfaces)
 	local max_num_voices = 0
 	local num_total_packets = 0
 	local has_video, has_audio = false, false
+	local pcm_stream
 	local streams = {}
 	for i, stream_desc in ipairs(header.streams) do
 		local stream = {
@@ -784,6 +908,11 @@ local function play(gpu, file, surfaces)
 
 			stream.num_voices = stream_desc.num_voices
 			max_num_voices = math.max(max_num_voices, stream.num_voices)
+		elseif stream_desc.kind == 0x02 and not pcm_stream then --a drive plays one block, so the rest are skipped
+			stream.sample_rate = stream_desc.sample_rate
+			stream.offset = stream_desc.offset
+			stream.duration = stream_desc.num_bytes * 8 / stream_desc.sample_rate
+			pcm_stream = stream
 		end
 		table.insert(streams, stream)
 	end
@@ -791,6 +920,20 @@ local function play(gpu, file, surfaces)
 	local play_audio = has_audio and not ops.no_audio
 
 	local frames_begin_pos = file:seek()
+	local play_pcm = false
+	if pcm_stream and not ops.no_audio then
+		file:seek("set", 0)
+		local header_bytes = file:read(frames_begin_pos)
+		local drive, reason = pcm.find_drive(file, header_bytes, num_total_packets > 0)
+		if drive then
+			pcm.init(drive)
+			play_pcm = true
+			print(("pcm audio plays from tape drive %s"):format(drive.address))
+		else
+			print(("skipping pcm audio: %s"):format(reason))
+			os.sleep(2)
+		end
+	end
 	if play_video then
 		local num_buffers = video.init(gpu, max_size_x, max_size_y)
 		
@@ -812,12 +955,18 @@ local function play(gpu, file, surfaces)
 				num_live_streams = num_live_streams + 1
 			elseif stream.kind == 0x01 and play_audio then --audio
 				num_live_streams = num_live_streams + 1
+			elseif stream == pcm_stream and play_pcm then
+				stream.is_live = true
+				num_live_streams = num_live_streams + 1
 			else
 				--we probably just wanna skip unknowns rather than get mad about it
 				--error("unknown packet kind: %x2", stream.kind)
 			end
 		end
 
+		if play_pcm then
+			pcm.start(pcm_stream)
+		end
 		local packet_index = 0
 		while num_live_streams > 0 do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
@@ -918,9 +1067,20 @@ local function play(gpu, file, surfaces)
 						if stream.presented_packet_index == stream.num_packets then
 							num_live_streams = num_live_streams - 1
 						end
+					elseif stream.is_live then --pcm
+						if ops.fps then
+							pcm.update_stats(stream)
+						end
+						--with --fast the video won't wait for the tape, so stop it with the input
+						local is_done = ops.fast and packet_index >= num_total_packets
+						if is_done then pcm.stop() end
+						if is_done or pcm.update(stream, num_live_streams == 1 and packet_index >= num_total_packets) then
+							stream.is_live = false
+							num_live_streams = num_live_streams - 1
+						end
 					end
 				end
-				if ops.fps and play_audio and not play_video and gpu then
+				if ops.fps and (play_audio or play_pcm) and not play_video and gpu then
 					draw_stats(gpu)
 					break
 				end
@@ -966,6 +1126,9 @@ local function play(gpu, file, surfaces)
 	if play_audio then
 		audio.deinit(max_num_voices)
 	end
+	if play_pcm then
+		pcm.deinit()
+	end
 end
 
 if ops.h or ops.help then
@@ -983,6 +1146,7 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
+	print("   --pcm-tape", "tape drive that plays the pcm audio (default: the first drive the video doesn't read from). it needs a tape written with 'write_szt_tape.lua'")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). write tapes with 'write_szt_tape.lua'")
 	return
 end
@@ -1041,6 +1205,7 @@ local function errHandler(err)
 end
 
 local result, reason = xpcall(run, errHandler)
+pcm.deinit() --don't leave the tape playing after an error
 
 file:close()
 if ops.p or ops.probe then return end

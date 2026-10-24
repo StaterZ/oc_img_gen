@@ -122,6 +122,11 @@ pub trait Reader<'a> {
 		Vec::new()
 	}
 
+	//streams that are one block instead of packets hand it over after eof
+	fn take_pcm(&mut self) -> Option<(u8, Vec<u8>)> {
+		None
+	}
+
 	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool);
 
 	fn receive_and_process(&mut self, should_force_emit: bool) {
@@ -174,6 +179,7 @@ pub trait CommonReader {
 	fn init(&mut self);
 	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
 	fn report(&self) -> Vec<String>;
+	fn take_pcm(&mut self) -> Option<(u8, Vec<u8>)>;
 	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool;
 	fn process_eof(&mut self);
 }
@@ -193,6 +199,10 @@ impl<'a, T: Reader<'a>> CommonReader for T {
 
 	fn report(&self) -> Vec<String> {
 		Reader::report(self)
+	}
+
+	fn take_pcm(&mut self) -> Option<(u8, Vec<u8>)> {
+		Reader::take_pcm(self)
 	}
 
 	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {

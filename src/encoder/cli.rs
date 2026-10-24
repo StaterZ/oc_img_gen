@@ -4,7 +4,7 @@ use num::traits::{ConstOne, ConstZero};
 use palette::{Srgb, rgb::channels::Argb};
 
 use crate::{
-	EXT, encoder::{
+	EXT, audio::{Mode as AudioMode, dfpwm}, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
@@ -169,6 +169,8 @@ pub enum ColorDiffStrategy {
 pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 	AudioConfig {
 		name: "main".to_string(),
+		mode: args.audio_mode,
+		pcm_rate: args.pcm_rate,
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
@@ -394,6 +396,22 @@ impl From<Srgb<u8>> for CliSrgb8 {
 #[derive(Args, Debug)]
 pub struct AudioOpts {
 	#[arg(
+		value_enum,
+		long = "audio-mode",
+		default_value_t = AudioMode::Voices,
+		help = "voices: sound card voices from an fft. pcm: DFPWM for computronics tape drives, play it with play_szt --pcm-tape",
+	)]
+	pub audio_mode: AudioMode,
+
+	#[arg(
+		long = "pcm-rate",
+		default_value_t = dfpwm::TAPE_SAMPLE_RATE,
+		help = "pcm sample rate (Hz). the tape drive plays 48000 at speed 1, so this sets the speed (12000-96000, a multiple of 32)",
+		value_parser = parse_pcm_rate,
+	)]
+	pub pcm_rate: u32,
+
+	#[arg(
 		long = "analysis-rate",
 		default_value_t = 24000,
 		help = "Target analysis sample rate (Hz)",
@@ -429,6 +447,18 @@ pub struct AudioOpts {
 		value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
 	)]
 	pub num_voices: usize,
+}
+
+fn parse_pcm_rate(s: &str) -> Result<u32, String> {
+	let value = s.parse::<u32>().map_err(|e| e.to_string())?;
+	let speed = dfpwm::tape_speed(value);
+	if !(dfpwm::TAPE_MIN_SPEED..=dfpwm::TAPE_MAX_SPEED).contains(&speed) {
+		return Err(format!("{value}Hz needs tape speed {speed:.2}, but tape drives only play at {}-{}", dfpwm::TAPE_MIN_SPEED, dfpwm::TAPE_MAX_SPEED));
+	}
+	if value % dfpwm::TAPE_SAMPLE_RATE_STEP != 0 {
+		return Err(format!("{value}Hz is not a multiple of {}, which is the step the tape drive speed has", dfpwm::TAPE_SAMPLE_RATE_STEP));
+	}
+	Ok(value)
 }
 
 fn parse_power_of_two(s: &str) -> Result<usize, String> {

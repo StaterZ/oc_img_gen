@@ -1,13 +1,12 @@
 use std::{ops::RangeInclusive, path::PathBuf, time::Duration};
 use indicatif::MultiProgress;
-use deku::prelude::*;
 use itertools::Itertools;
 // use tracing_indicatif::IndicatifLayer;
 // use tracing_subscriber::prelude::*;
 
 use crate::{math::*, video::cmd::machine::Machine};
 pub use crate::video::video_reader::{VideoConfig, VideoReader, VideoDescData};
-use crate::audio::{Config as AudioConfig, audio_reader::AudioReader};
+use crate::audio::{Config as AudioConfig, Mode as AudioMode, audio_reader::AudioReader, pcm_reader::PcmReader};
 use muxer::Muxer;
 use reader::CommonReader;
 
@@ -39,14 +38,19 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	
 	let mut muxer = Muxer::new();
 	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer, &config.out_path));
-	let audio = config.audio.and_then(|audio_config| AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer));
+	let audio = config.audio.and_then(|audio_config| match audio_config.mode {
+		AudioMode::Voices => AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer)
+			.map(|reader| Box::new(reader) as Box<dyn CommonReader>),
+		AudioMode::Pcm => PcmReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer)
+			.map(|reader| Box::new(reader) as Box<dyn CommonReader>),
+	});
 	
 	let mut readers = Vec::<Box<dyn CommonReader>>::new();
 	if let Some(video) = video {
 		readers.push(Box::new(video));
 	}
 	if let Some(audio) = audio {
-		readers.push(Box::new(audio));
+		readers.push(audio);
 	}
 
 	for reader in readers.iter_mut() {
@@ -70,16 +74,19 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	for reader in readers.iter_mut() {
 		reader.process_eof();
 	}
-	let media_file = muxer.process_eof(readers
+	let mut media_file = muxer.process_eof(readers
 		.iter_mut()
 		.flat_map(|r| r.get_writers())
 		.collect_vec()
 		.as_mut_slice()); //TODO: PERF
+	for (stream_id, data) in readers.iter_mut().filter_map(|reader| reader.take_pcm()) {
+		media_file.push_pcm(stream_id, data);
+	}
 	
 	if cfg!(feature = "log") {
 		eprintln!();
 	}
-	let bytes = media_file.to_bytes().unwrap();
+	let bytes = media_file.into_bytes().unwrap();
 	crate::stage("Postamble  | Writing...  ", || std::fs::write(&config.out_path, &bytes)
 		.map_err(AppError::WriteFailed))?;
 

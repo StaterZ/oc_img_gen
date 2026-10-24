@@ -10,6 +10,7 @@ if ops.h or ops.help or not args[1] then
 	print("write_szt_tape <file> [drive address...]")
 	print("writes a szt file to the start of tapes so 'play_szt.lua --tape' can play it")
 	print("default drive is the primary. give several to fill tapes for 'play_szt_par.lua --tape'")
+	print("pcm audio plays from its own copy of the tape, so give one more drive for it ('play_szt.lua --pcm-tape')")
 	print("   --no-label", "don't set the tape label to the file name")
 	return
 end
@@ -53,6 +54,12 @@ for _, drive in ipairs(drives) do
 		io.write(("\r%i/%i bytes (%3.f%%)"):format(written, file_size, written / file_size * 100))
 	end
 	file:close()
+
+	--the drive plays 250ms at a time, so it can overshoot the pcm audio at the end. make that silence
+	local pad = math.min(3000, drive.getSize() - written)
+	if pad > 0 then
+		drive.write(string.rep("\x55", pad)) --alternating DFPWM bits hold the level
+	end
 	print()
 
 	drive.seek(-drive.getPosition())

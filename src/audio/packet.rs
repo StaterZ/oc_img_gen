@@ -32,6 +32,16 @@ pub struct Descriptor {
 	pub num_voices: u8,
 }
 
+/// PCM audio is one DFPWM block after the packets, so a tape drive can play it as is.
+#[derive(Debug, Clone, PartialEq, Eq, DekuWrite, DekuRead)]
+#[deku(endian = "little")]
+pub struct PcmDescriptor {
+	pub sample_rate: u32,
+	/// where the block starts, counted from the start of the file
+	pub offset: u32,
+	pub num_bytes: u32,
+}
+
 pub struct AudioEncoder {
 	pub desc: StreamDescriptor<Descriptor>,
 	stream_id: u8,

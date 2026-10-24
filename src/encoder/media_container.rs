@@ -34,11 +34,23 @@ impl From<Descriptor<crate::audio::packet::Descriptor>> for Descriptor<Descripto
 	}
 }
 
+impl From<Descriptor<crate::audio::packet::PcmDescriptor>> for Descriptor<DescriptorContent> {
+	fn from(value: Descriptor<crate::audio::packet::PcmDescriptor>) -> Self {
+		Self {
+			num_packets: value.num_packets,
+			rate: value.rate,
+			name: value.name,
+			content: DescriptorContent::Pcm(value.content),
+		}
+	}
+}
+
 #[derive(Debug, DekuWrite, DekuRead, EnumAsInner)]
 #[deku(id_type = "u8")]
 pub enum DescriptorContent {
 	#[deku(id = 0x00)] Video(crate::video::cmd::packet::Descriptor),
 	#[deku(id = 0x01)] Audio(crate::audio::packet::Descriptor),
+	#[deku(id = 0x02)] Pcm(crate::audio::packet::PcmDescriptor),
 }
 
 impl DescriptorContent {
@@ -46,6 +58,7 @@ impl DescriptorContent {
 		match self {
 			Self::Video(_) => 0x00,
 			Self::Audio(_) => 0x01,
+			Self::Pcm(_) => 0x02,
 		}
 	}
 }
@@ -83,6 +96,10 @@ pub struct MediaFile {
 		ctx = "stream_descs.as_slice()",
 	)]
 	pub packets: Vec<Packet>,
+
+	/// the DFPWM blocks of the pcm streams. pcm streams have no packets
+	#[deku(count = "stream_descs.iter().filter_map(|desc| desc.content.as_pcm()).map(|pcm| pcm.num_bytes as usize).sum::<usize>()")]
+	pub pcm_data: Vec<u8>,
 }
 
 impl MediaFile {
@@ -94,6 +111,44 @@ impl MediaFile {
 			},
 			stream_descs: Vec::new(),
 			packets: Vec::new(),
+			pcm_data: Vec::new(),
 		}
+	}
+
+	pub fn push_pcm(&mut self, stream_id: u8, data: Vec<u8>) {
+		let pcm = self.stream_descs[stream_id as usize].content.as_pcm_mut().unwrap();
+		pcm.offset = self.pcm_data.len() as u32; //relative for now, into_bytes makes it absolute
+		pcm.num_bytes = data.len() as u32;
+		self.pcm_data.extend(data);
+	}
+
+	pub fn get_pcm(&self, stream_id: u8) -> &[u8] {
+		let pcm = self.stream_descs[stream_id as usize].content.as_pcm().unwrap();
+		//the pcm data is the end of the file, so its blocks start at their offset minus where it starts
+		let start = pcm.offset as usize + self.pcm_data.len() - self.pcm_end();
+		&self.pcm_data[start..start + pcm.num_bytes as usize]
+	}
+
+	fn pcm_end(&self) -> usize {
+		self.stream_descs
+			.iter()
+			.filter_map(|desc| desc.content.as_pcm())
+			.map(|pcm| pcm.offset as usize + pcm.num_bytes as usize)
+			.max()
+			.unwrap_or(0)
+	}
+
+	/// serializes the file and points the pcm offsets at their blocks
+	pub fn into_bytes(mut self) -> Result<Vec<u8>, DekuError> {
+		if self.pcm_data.is_empty() {
+			return self.to_bytes();
+		}
+		let pcm_start = (self.to_bytes()?.len() - self.pcm_data.len()) as u32;
+		for desc in self.stream_descs.iter_mut() {
+			if let Some(pcm) = desc.content.as_pcm_mut() {
+				pcm.offset += pcm_start;
+			}
+		}
+		self.to_bytes()
 	}
 }

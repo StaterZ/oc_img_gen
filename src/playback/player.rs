@@ -191,6 +191,17 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 			next_frame_index: 0,
 		});
 
+	//a tape drive plays the pcm on its own, so the preview just runs through it next to the packets
+	let mut pcm = file.stream_descs
+		.iter()
+		.enumerate()
+		.find(|(_, desc)| desc.content.is_pcm())
+		.map(|(id, desc)| PcmStream {
+			samples: shared::decode_pcm(&file, id as u8),
+			sample_rate: desc.content.as_pcm().unwrap().sample_rate as f32,
+			pos: 0.0,
+		});
+
 	let voices = TripleBuffer::new(&vec![VoiceStateFlt::default(); audio_stream.as_ref().map_or(0, |audio_stream| file.stream_descs[audio_stream.id as usize].content.as_audio().unwrap().num_voices as usize)]);
 	let (voices_in, mut voices_out) = voices.split();
 
@@ -237,6 +248,9 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				for (voice, state) in voices.iter().zip_eq(voice_states.iter_mut()) {
 					sample += state.advance(voice, sample_rate, coefficient);
 				}
+				if let Some(pcm) = &mut pcm {
+					sample += pcm.advance(sample_rate);
+				}
 
 				frame.fill(sample);
 			}
@@ -249,6 +263,10 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 
 	'outer: loop {
 		render(&mut render_state, &args)?;
+		//without windows there is nothing to close, so stop once everything played
+		if render_state.video_streams.is_empty() && render_state.is_done && render_state.timer.elapsed() >= stream_length(&file) {
+			break;
+		}
 
 		for video_stream in render_state.video_streams.iter_mut() {
 			if !video_stream.window.is_open() || video_stream.window.is_key_down(Key::Escape) { break 'outer; }
@@ -262,6 +280,31 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		}
 	}
 	Ok(())
+}
+
+fn stream_length(file: &MediaFile) -> Duration {
+	file.stream_descs
+		.iter()
+		.map(|desc| match desc.content.as_pcm() {
+			Some(pcm) => shared::pcm_duration(pcm),
+			None => (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into(),
+		})
+		.max()
+		.unwrap_or(Duration::ZERO)
+}
+
+struct PcmStream {
+	samples: Vec<f32>,
+	sample_rate: f32,
+	pos: f64,
+}
+
+impl PcmStream {
+	fn advance(&mut self, out_sample_rate: f32) -> f32 {
+		let sample = self.samples.get(self.pos as usize).copied().unwrap_or(0.0);
+		self.pos += (self.sample_rate / out_sample_rate) as f64;
+		sample
+	}
 }
 
 struct RenderState<'a> {
@@ -286,11 +329,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	let elapsed = state.timer.elapsed();
 	let present_time = Frac::from(elapsed.as_secs()) + Frac::new(elapsed.subsec_nanos(), shared::NANOS_PER_SEC).cast();
 
-	let length = &state.file.stream_descs
-		.iter()
-		.map(|desc| (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into())
-		.max()
-		.unwrap_or(Duration::ZERO);
+	let length = &stream_length(state.file);
 
 	#[cfg(not(feature = "log"))]
 	state.progress.set_message(format!("{}/{}",

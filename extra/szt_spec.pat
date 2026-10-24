@@ -78,9 +78,16 @@ struct VideoDesc {
 struct AudioDesc {
 	u8 num_voices;
 };
+//one DFPWM block after the packets, for computronics tape drives
+struct PcmDesc {
+	u32 sample_rate;
+	u32 offset; //from the start of the file
+	u32 num_bytes;
+};
 enum DescKind: u8 {
 	Video = 0x00,
 	Audio = 0x01,
+	Pcm = 0x02,
 };
 struct Desc {
 	u32 num_packets;
@@ -90,6 +97,7 @@ struct Desc {
 	match (kind) {
 		(DescKind::Video): VideoDesc desc;
 		(DescKind::Audio): AudioDesc desc;
+		(DescKind::Pcm): PcmDesc desc;
 	}
 };
 
@@ -99,7 +107,7 @@ struct Header {
 	u8 num_streams;
 	
 	std::assert(magic == "sztb", "bad magic");
-	std::assert(version == 6, "bad version");
+	std::assert(version == 7, "bad version");
 };
 
 struct Frame<auto desc> {
@@ -147,6 +155,7 @@ struct File {
 	u64 start = $;
 	std::print("start: {}", start);
 	Packet packets[num_packets];
+	u8 pcm_data[std::mem::size() - $];
 };
 
 File file @ 0x00;

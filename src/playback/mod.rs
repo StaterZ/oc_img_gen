@@ -5,6 +5,7 @@ use palette::{FromColor, Srgb, rgb::channels::Argb};
 
 use crate::{
 	audio::{self, VoiceStateFlt},
+	encoder::media_container::MediaFile,
 	math::*,
 	video::{
 		Image, ImageIterator,
@@ -198,6 +199,18 @@ impl VoiceState {
 
 pub fn smooth_coefficient(sample_rate: f32, smooth_time: std::time::Duration) -> f32 {
 	(-1.0 / (sample_rate * smooth_time.as_secs_f32())).exp()
+}
+
+/// Decodes a pcm stream like the tape drive would play it, as -1..1 samples.
+pub fn decode_pcm(file: &MediaFile, stream_id: u8) -> Vec<f32> {
+	audio::dfpwm::decode(file.get_pcm(stream_id))
+		.into_iter()
+		.map(|sample| sample as f32 / 128.0)
+		.collect()
+}
+
+pub fn pcm_duration(pcm: &audio::packet::PcmDescriptor) -> std::time::Duration {
+	std::time::Duration::from_secs_f64(pcm.num_bytes as f64 * 8.0 / pcm.sample_rate as f64)
 }
 
 pub fn voice_target_from_sample(sample: &audio::packet::VoiceState) -> VoiceStateFlt {

@@ -53,7 +53,7 @@ pub struct Cli {
 
 fn pick_format(file: &MediaFile) -> anyhow::Result<ExportFormat> {
 	let has_video = file.stream_descs.iter().any(|desc| desc.content.is_video());
-	let has_audio = file.stream_descs.iter().any(|desc| desc.content.is_audio());
+	let has_audio = file.stream_descs.iter().any(|desc| desc.content.is_audio() || desc.content.is_pcm());
 	let is_one_frame = file.stream_descs
 		.iter()
 		.any(|desc| desc.content.is_video() && desc.num_packets == 1);
@@ -279,17 +279,34 @@ struct AudioTrack {
 	resampler: ffmpeg::software::resampling::Context,
 	frame: ffmpeg::util::frame::Audio,
 	frame_fill: usize,
+	pcm: Option<PcmSource>,
+}
+
+/// a decoded pcm stream, sampled at the export rate
+struct PcmSource {
+	samples: Vec<f32>,
+	sample_rate: f64,
+	duration: Duration,
+}
+
+fn is_audio_desc(desc: &Descriptor<DescriptorContent>) -> bool {
+	desc.content.is_audio() || desc.content.is_pcm()
 }
 
 fn open_audio_track(
 	octx: &mut ffmpeg::format::context::Output,
-	desc: &Descriptor<DescriptorContent>,
+	file: &MediaFile,
 	stream_id: u8,
 	args: &Cli,
 	codec_id: ffmpeg::codec::Id,
 ) -> anyhow::Result<AudioTrack> {
-	let audio_desc = desc.content.as_audio().unwrap();
-	let num_voices = audio_desc.num_voices as usize;
+	let desc = &file.stream_descs[stream_id as usize];
+	let num_voices = desc.content.as_audio().map_or(0, |audio_desc| audio_desc.num_voices as usize);
+	let pcm = desc.content.as_pcm().map(|pcm_desc| PcmSource {
+		samples: shared::decode_pcm(file, stream_id),
+		sample_rate: pcm_desc.sample_rate as f64,
+		duration: shared::pcm_duration(pcm_desc),
+	});
 
 	let codec = ffmpeg::encoder::find(codec_id)
 		.ok_or_else(|| anyhow::anyhow!("No encoder is available for {:?}.", codec_id))?;
@@ -348,6 +365,7 @@ fn open_audio_track(
 		resampler,
 		frame,
 		frame_fill: 0,
+		pcm,
 	})
 }
 
@@ -365,6 +383,10 @@ impl AudioTrack {
 			let mut sample = 0.0f32;
 			for (voice, target) in self.voices.iter_mut().zip_eq(&self.targets) {
 				sample += voice.advance(target, self.sample_rate, self.smooth_coefficient);
+			}
+			if let Some(pcm) = &self.pcm {
+				let index = (self.samples_written as f64 * pcm.sample_rate / self.sample_rate as f64) as usize;
+				sample += pcm.samples.get(index).copied().unwrap_or(0.0);
 			}
 
 			self.frame.plane_mut::<f32>(0)[self.frame_fill] = sample;
@@ -430,8 +452,8 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 	let mut audio_track = file.stream_descs
 		.iter()
 		.enumerate()
-		.find(|(_, desc)| desc.content.is_audio())
-		.map(|(index, desc)| open_audio_track(&mut octx, desc, index as u8, args, ffmpeg::codec::Id::AAC))
+		.find(|(_, desc)| is_audio_desc(desc))
+		.map(|(index, _)| open_audio_track(&mut octx, file, index as u8, args, ffmpeg::codec::Id::AAC))
 		.transpose()?;
 
 	octx.write_header()?;
@@ -446,6 +468,13 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 				if let Some(track) = video_tracks.iter_mut().find(|track| track.stream_id == packet.stream_id) {
 					track.push_frame(&opts, frame)?;
 					track.drain_packets(&mut octx)?;
+
+					//pcm has no packets, so keep it up with the video
+					if let Some(audio_track) = audio_track.as_mut().filter(|audio_track| audio_track.pcm.is_some()) {
+						let desc = &file.stream_descs[track.stream_id as usize];
+						let ts_end = Duration::from(desc.rate.cast::<u32>() * track.target.frame_index as u32);
+						audio_track.render_until(ts_end.as_secs_f64(), &mut octx)?;
+					}
 				}
 			},
 			PacketContent::Audio(sample) => {
@@ -466,6 +495,9 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 		track.finish(&mut octx)?;
 	}
 	if let Some(track) = audio_track.as_mut() {
+		if let Some(duration) = track.pcm.as_ref().map(|pcm| pcm.duration) {
+			track.render_until(duration.as_secs_f64(), &mut octx)?;
+		}
 		track.finish(&mut octx)?;
 	}
 
@@ -481,10 +513,10 @@ fn export_mp3(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 	let (stream_index, desc) = file.stream_descs
 		.iter()
 		.enumerate()
-		.find(|(_, desc)| desc.content.is_audio())
+		.find(|(_, desc)| is_audio_desc(desc))
 		.ok_or_else(|| anyhow::anyhow!("The input file has no audio stream."))?;
 
-	let mut audio_track = open_audio_track(&mut octx, desc, stream_index as u8, args, ffmpeg::codec::Id::MP3)?;
+	let mut audio_track = open_audio_track(&mut octx, file, stream_index as u8, args, ffmpeg::codec::Id::MP3)?;
 
 	octx.write_header()?;
 
@@ -505,6 +537,9 @@ fn export_mp3(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 		progress.inc(1);
 	}
 
+	if let Some(duration) = audio_track.pcm.as_ref().map(|pcm| pcm.duration) {
+		audio_track.render_until(duration.as_secs_f64(), &mut octx)?;
+	}
 	audio_track.finish(&mut octx)?;
 	octx.write_trailer()?;
 	progress.finish();
