@@ -2606,8 +2606,8 @@ dependencies = [
 
 [[package]]
 name = "szu"
-version = "0.2.2"
-source = "git+https://github.com/StaterZ/szu-rs?branch=master#a6575a7b4f89815f1087dd432ecbcae6e96d3256"
+version = "0.2.3"
+source = "git+https://github.com/StaterZ/szu-rs?branch=master#42b48725aa7f6be6f90fb402d1a43af7fc456a24"
 dependencies = [
  "arrayvec",
  "deku",

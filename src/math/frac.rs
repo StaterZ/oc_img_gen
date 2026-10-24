@@ -4,7 +4,7 @@ use integer_sqrt::IntegerSquareRoot;
 use itertools::Itertools;
 use num::{Num, NumCast, ToPrimitive};
 use num::traits::{ConstOne, ConstZero, Float, One, Zero};
-use szu::math::{GoodInt, GoodNum};
+use szu::math::GoodInt;
 
 pub trait IntoIntRound {
 	type Output;
@@ -72,7 +72,7 @@ impl<T: GoodInt> Frac<T> {
 
 	// divides out the gcd and moves the sign to the numerator
 	fn reduce(self) -> Self {
-		let mut gcd = T::gcd(self.numerator, self.denominator);
+		let mut gcd = self.numerator.gcd(&self.denominator);
 		if gcd == T::ZERO {
 			return self; // 0/0
 		}
@@ -94,8 +94,6 @@ impl<T: GoodInt + IntegerSquareRoot> Frac<T> {
 		}
 	}
 }
-
-impl<T: GoodInt> GoodNum for Frac<T> { }
 
 impl<T: GoodInt> NumCast for Frac<T> {
 	// floats are truncated
@@ -306,7 +304,7 @@ impl<T: GoodInt> Add for Frac<T> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self::Output {
-		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
 		Self {
 			numerator: self.numerator * (rhs.denominator / gcd) + rhs.numerator * (self.denominator / gcd),
 			denominator: self.denominator / gcd * rhs.denominator,
@@ -338,7 +336,7 @@ impl<T: GoodInt> Sub for Frac<T> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self::Output {
-		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
 		Self {
 			numerator: self.numerator * (rhs.denominator / gcd) - rhs.numerator * (self.denominator / gcd),
 			denominator: self.denominator / gcd * rhs.denominator,
@@ -432,7 +430,7 @@ impl<T: GoodInt> Rem for Frac<T> {
 	type Output = Self;
 
 	fn rem(self, rhs: Self) -> Self::Output {
-		let gcd = T::gcd(self.denominator, rhs.denominator).max(T::ONE);
+		let gcd = self.denominator.gcd(&rhs.denominator).max(T::ONE);
 		Self {
 			numerator: (self.numerator * (rhs.denominator / gcd)) % (rhs.numerator * (self.denominator / gcd)),
 			denominator: self.denominator / gcd * rhs.denominator,
