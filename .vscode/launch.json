@@ -19,15 +19,7 @@
 					"kind": "bin"
 				}
 			},
-			"args": [
-				"encode",
-				"-i=data/kill_v_maim.mp4",
-				"-m=single",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/",
-				"-e=1m",
-				"--loss=1",
-				"--budget=buffered"
-			],
+			"args": "${config:oc_img_gen.args}",
 			"cwd": "${workspaceFolder}"
 		},
 		{
@@ -46,15 +38,7 @@
 					"kind": "bin"
 				}
 			},
-			"args": [
-				"encode",
-				"-i=data/kill_v_maim.mp4",
-				"-m=single",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/",
-				"-e=1m",
-				"--loss=1",
-				"--budget=buffered"
-			],
+			"args": "${config:oc_img_gen.args}",
 			"cwd": "${workspaceFolder}"
 		},
 		{
@@ -62,15 +46,7 @@
 			"type": "cppvsdbg",
 			"request": "launch",
 			"program": "${workspaceRoot}/target/debug/oc_img_gen.exe",
-			"args": [
-				"encode",
-				"-i=data/kill_v_maim.mp4",
-				"-m=single",
-				"-o=C:/Users/admin/Desktop/Projects/Programming/Lua/ocealot/22e12f98-3ac0-4242-9d05-6097e3413203/home/",
-				"-e=1m",
-				"--loss=1",
-				"--budget=buffered"
-			],
+			"args": ["${config:oc_img_gen.args}"],
 			"cwd": "${workspaceFolder}",
 		}
 	]

@@ -2,17 +2,9 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "process",
-			"command": "cargo",
-			"args": [
-				"run",
-				"--features=rayon",
-				//"--features=debug-mode",
-				"--",
-				"play",
-				"-i=data/out/kill_v_maim.szt",
-				"--matrix-screen-size=4x4"
-			],
+			// Program arguments and features live in settings.json.
+			"type": "shell",
+			"command": "cargo run --features=${config:oc_img_gen.features} -- ${config:oc_img_gen.args}",
 			"problemMatcher": [
 				"$rustc"
 			],
@@ -21,6 +13,10 @@
 				"isDefault": true
 			},
 			"options": {
+				"shell": {
+					"executable": "cmd.exe",
+					"args": ["/d", "/c"]
+				},
 				"env": {
 					"RUST_BACKTRACE": "1"
 				}
