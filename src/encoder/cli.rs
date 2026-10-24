@@ -30,15 +30,7 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 	};
 
 	let machine = args.tier.into();
-
-	let video_config = args.video.as_ref().map(|video_args| {
-		let ictx = ffmpeg_next::format::input(&args.in_path).expect("failed to create decoder");
-		let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
-		let codec_ctx = ffmpeg_next::codec::Context::from_parameters(stream.parameters()).expect("failed to create codec context");
-		let decoder = codec_ctx.decoder().video().unwrap();
-		
-		build_video_config(video_args, &machine, &decoder)
-	});
+	let video_config = args.video.as_ref().map(|video_args| build_video_config(video_args, &machine, &args.in_path));
 	let audio_config = args.audio.as_ref().map(build_audio_config);
 	
 	EncoderConfig {
@@ -51,62 +43,82 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 	}
 }
 
-fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
+fn build_video_config(args: &VideoOpts, machine: &Machine, in_path: &Path) -> VideoConfig {
+	let stream_desc = |name: String, size: Size<u8>, source_area: Option<Rect<usize>>| VideoDescData {
+		name,
+		frame_rate: args.frame_rate.map(|x| x.inverse()),
+		size,
+		source_area,
+		filter: args.filter,
+		braille_strategy: args.braille_strategy,
+		color_diff_strategy: args.color_diff_strategy,
+		budget: args.budget,
+		acceptable_loss: args.acceptable_loss,
+		loss_step: args.loss_step,
+	};
+
 	match args.mode.unwrap() { //SAFETY: the video option group requires --mode
 		VideoMode::Single => {
 			let stream_size = args.stream_size.unwrap_or_else(|| {
-				let source_size = Size::<u32>::new(stream.width(), stream.height());
-				let max_screen_size = machine.compute_max_resolution(source_size.cast::<usize>().ratio() / video::braille::SIZE.ratio());
+				let source_size = read_video_size(in_path);
+				let max_screen_size = machine.compute_max_resolution(source_size.ratio() / video::braille::SIZE.ratio());
 				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
 				max_screen_size
 			});
+			let stream_size: Size<u8> = stream_size.try_cast().expect("stream size too large");
 
-			create_main_stream(
-				args.frame_rate.map(|x| x.inverse()),
-				*args.fill_color,
-				stream_size.try_cast().expect("stream size too large"),
-				args.filter,
-				args.braille_strategy,
-				args.color_diff_strategy,
-				args.budget,
-				args.acceptable_loss,
-				args.loss_step,
-			)
+			VideoConfig {
+				stream_descs_data: vec![stream_desc("main".to_string(), stream_size, None)],
+				container_size: stream_size.cast() * video::braille::SIZE,
+				fill_color: *args.fill_color,
+			}
 		},
 		VideoMode::Matrix => {
+			let matrix_size = args.matrix_size.unwrap(); //SAFETY: --mode matrix requires --matrix-size
 			let stream_size = args.stream_size.unwrap_or_else(|| {
 				let size = machine.compute_max_resolution(Frac::ONE / video::braille::SIZE.ratio());
 				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
 			});
-			
+			let stream_input_size = stream_size * video::braille::SIZE;
 			let gap_size = args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
-						let gap = compute_gap_size(stream_size * video::braille::SIZE, matrix_screen_size);
+						let gap = compute_gap_size(stream_input_size, matrix_screen_size);
 						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
 				.unwrap_or(Size::ZERO);
-			
-			create_matrix_streams(
-				args.frame_rate.map(|x| x.inverse()),
-				*args.fill_color,
-				stream_size.try_cast().expect("stream size too large"),
-				args.matrix_size.unwrap(), //SAFETY: --mode matrix requires --matrix-size
-				gap_size,
-				args.filter,
-				args.braille_strategy,
-				args.color_diff_strategy,
-				args.budget,
-				args.acceptable_loss,
-				args.loss_step,
-			)
+			let stream_size: Size<u8> = stream_size.try_cast().expect("stream size too large");
+
+			VideoConfig {
+				stream_descs_data: (0..matrix_size.h)
+					.flat_map(|y| (0..matrix_size.w).map(move |x| Point::new(x, y)))
+					.map(|cell| stream_desc(
+						format!("{},{}", cell.x, cell.y),
+						stream_size,
+						Some(Rect {
+							pos: cell * (stream_input_size + gap_size),
+							size: stream_input_size,
+						}),
+					))
+					.collect(),
+				container_size: matrix_size * stream_input_size + (matrix_size - 1) * gap_size,
+				fill_color: *args.fill_color,
+			}
 		},
 		VideoMode::Custom => create_streams_custom(
 			args.streams_config.as_ref().unwrap() //SAFETY: --mode custom requires --streams-config
 		),
 	}
+}
+
+fn read_video_size(in_path: &Path) -> Size<usize> {
+	let ictx = ffmpeg_next::format::input(in_path).expect("failed to create decoder");
+	let stream = ictx.streams().best(ffmpeg_next::media::Type::Video).unwrap();
+	let codec_ctx = ffmpeg_next::codec::Context::from_parameters(stream.parameters()).expect("failed to create codec context");
+	let decoder = codec_ctx.decoder().video().unwrap();
+	Size::new(decoder.width() as usize, decoder.height() as usize)
 }
 
 pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
@@ -115,79 +127,6 @@ pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
 	(stream_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
-}
-
-fn create_main_stream(
-	frame_rate: Option<Frac<u16>>,
-	fill_color: Srgb::<u8>,
-	stream_size: Size<u8>,
-	filter: Option<VideoFilter>,
-	braille_strategy: BrailleStrategy,
-	color_diff_strategy: ColorDiffStrategy,
-	budget: Option<Budget>,
-	acceptable_loss: Frac<u32>,
-	loss_step: Frac<u32>,
-) -> VideoConfig {
-	let stream_descs_data = vec![VideoDescData {
-		name: "main".to_string(),
-		frame_rate,
-		size: stream_size,
-		source_area: None,
-		filter,
-		braille_strategy,
-		color_diff_strategy,
-		budget,
-		acceptable_loss,
-		loss_step,
-	}];
-
-	VideoConfig {
-		stream_descs_data,
-		container_size: stream_size.cast() * video::braille::SIZE,
-		fill_color,
-	}
-}
-
-fn create_matrix_streams(
-	frame_rate: Option<Frac<u16>>,
-	fill_color: Srgb::<u8>,
-	stream_size: Size<u8>,
-	matrix_size: Size<usize>,
-	matrix_gap_size: Size<usize>,
-	filter: Option<VideoFilter>,
-	braille_strategy: BrailleStrategy,
-	color_diff_strategy: ColorDiffStrategy,
-	budget: Option<Budget>,
-	acceptable_loss: Frac<u32>,
-	loss_step: Frac<u32>,
-) -> VideoConfig {
-	let stream_input_size = stream_size.cast() * video::braille::SIZE;
-	let container_size = matrix_size * stream_input_size + (matrix_size - 1) * matrix_gap_size;
-
-	let stream_descs_data = (0..matrix_size.h)
-		.flat_map(move |y| (0..matrix_size.w)
-			.map(move |x| VideoDescData {
-				name: format!("{},{}", x, y),
-				frame_rate,
-				size: stream_size,
-				source_area: Some(Rect {
-					pos: Point::new(x, y) * (stream_input_size + matrix_gap_size),
-					size: stream_input_size,
-				}),
-				filter,
-				braille_strategy,
-				color_diff_strategy,
-				budget,
-				acceptable_loss,
-				loss_step,
-			}))
-		.collect();
-
-	VideoConfig {
-		stream_descs_data,
-		container_size,
-		fill_color,
-	}
 }
 
 fn create_streams_custom(_config_path: &Path) -> VideoConfig {
