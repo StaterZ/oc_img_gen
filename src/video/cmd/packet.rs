@@ -113,7 +113,51 @@ pub struct VideoEncoder<'a> {
 	machine: &'a Machine,
 	acceptable_loss: Frac<u32>,
 	loss_step: Frac<u32>,
+	pub stats: EncodeStats,
 	#[cfg(feature = "charts")] chart: charts_rs::MultiChart,
+}
+
+//running totals for the summary printed after encoding, use is cost / budget
+#[derive(Default)]
+pub struct EncodeStats {
+	pub num_frames: usize,
+	pub num_dropped: usize,
+	pub num_lossy: usize,
+	pub num_bytes: usize,
+	pub total_loss: f32,
+	pub peak_loss: f32,
+	pub total_gpu_use: f32,
+	pub peak_gpu_use: f32,
+	pub total_cpu_use: f32,
+	pub peak_cpu_use: f32,
+}
+
+//what the last budget step of a frame cost
+struct FrameSample {
+	set_cost: f32,
+	color_cost: f32,
+	bitblt_cost: f32,
+	gpu_cost: f32,
+	gpu_budget: f32,
+	cpu_cost: f32,
+	cpu_budget: f32,
+	loss: f32,
+}
+
+#[cfg(feature = "charts")]
+fn new_line_chart(title: &str, y_title: &str, series: &[&str]) -> charts_rs::LineChart {
+	let mut chart = charts_rs::LineChart::new_with_theme(
+		series.iter().map(|name| charts_rs::Series::new(name.to_string(), Vec::new())).collect(),
+		Vec::new(),
+		charts_rs::THEME_GRAFANA,
+	);
+	chart.width = 1200.0;
+	chart.height = 320.0;
+	chart.title.text = title.to_string();
+	chart.series.symbol = Some(charts_rs::Symbol::None);
+	chart.x_axis.title = "time (s)".to_string();
+	chart.y_axis_configs[0].title = Some(y_title.to_string());
+	chart
 }
 
 static VGA_PALETTE: LazyLock<[Lab; 1 << 3]> = LazyLock::new(|| [
@@ -140,31 +184,35 @@ impl<'a> VideoEncoder<'a> {
 		loss_step: Frac<u32>,
 	) -> Self {
 		#[cfg(feature = "charts")] let chart = {
-			let mut gpu_chart = charts_rs::LineChart::new_with_theme(vec![
-				charts_rs::Series::new("set".to_string(), Vec::new()),
-				charts_rs::Series::new("color".to_string(), Vec::new()),
-				charts_rs::Series::new("bitblt".to_string(), Vec::new()),
-				charts_rs::Series::new("cost".to_string(), Vec::new()),
-				charts_rs::Series::new("loss".to_string(), Vec::new()),
-				charts_rs::Series::new("budget".to_string(), Vec::new()),
-			], Vec::new(), charts_rs::THEME_GRAFANA);
-			gpu_chart.series.symbol = Some(charts_rs::Symbol::None);
+			let name: &str = &desc.name;
+			let gpu_chart = new_line_chart(&format!("{name} | GPU cost per frame"), "call budget", &["set", "color", "bitblt", "cost", "budget"]);
+			let cpu_chart = new_line_chart(&format!("{name} | CPU cost per frame"), "cpu time", &["cost", "budget"]);
 
-			let mut cpu_chart = charts_rs::LineChart::new_with_theme(vec![
-				charts_rs::Series::new("cost".to_string(), Vec::new()),
-				charts_rs::Series::new("budget".to_string(), Vec::new()),
-			], Vec::new(), charts_rs::THEME_GRAFANA);
-			cpu_chart.series.symbol = Some(charts_rs::Symbol::None);
-			
-			
+			let mut use_chart = new_line_chart(&format!("{name} | Budget use"), "% of budget", &["gpu", "cpu"]);
+			use_chart.series_list[0].mark_lines.push(charts_rs::MarkLine {
+				category: charts_rs::MarkLineCategory::Value(100.0),
+				..Default::default()
+			});
+
+			//loss on the left axis, packet size on the right one
+			let mut size_chart = new_line_chart(&format!("{name} | Loss & packet size"), "loss %", &["loss", "bytes"]);
+			let mut bytes_axis = size_chart.y_axis_configs[0].clone();
+			bytes_axis.title = Some("bytes".to_string());
+			size_chart.y_axis_configs.push(bytes_axis);
+			size_chart.series_list[1].y_axis_index = 1;
+
 			let mut multi_chart = charts_rs::MultiChart::new();
 			multi_chart.margin = (10.0).into();
+			multi_chart.gap = 20.0;
+			multi_chart.align_plots = true;
 			multi_chart.background_color = Some((31, 29, 29, 150).into());
 			multi_chart.add(charts_rs::ChildChart::Line(gpu_chart, None));
 			multi_chart.add(charts_rs::ChildChart::Line(cpu_chart, None));
+			multi_chart.add(charts_rs::ChildChart::Line(use_chart, None));
+			multi_chart.add(charts_rs::ChildChart::Line(size_chart, None));
 			multi_chart
 		};
-		
+
 		Self {
 			desc,
 			stream_id,
@@ -179,10 +227,46 @@ impl<'a> VideoEncoder<'a> {
 			machine,
 			acceptable_loss,
 			loss_step,
+			stats: EncodeStats::default(),
 			#[cfg(feature = "charts")] chart,
 		}
 	}
-	
+
+	pub fn report(&self) -> String {
+		let stats = &self.stats;
+		let num_emitted = (stats.num_frames - stats.num_dropped).max(1) as f32;
+		let percent = |n: usize| 100.0 * n as f32 / stats.num_frames.max(1) as f32;
+		let mut line = format!("{:>6} {} @ {:.2}fps | {} frames, {} dropped ({:.1}%), {} lossy ({:.1}%) | {} ({}/frame)",
+			&*self.desc.name,
+			self.desc.content.size,
+			self.desc.rate.inverse().into_flt::<f32>(),
+			stats.num_frames,
+			stats.num_dropped, percent(stats.num_dropped),
+			stats.num_lossy, percent(stats.num_lossy),
+			crate::format_bytes(stats.num_bytes),
+			crate::format_bytes(stats.num_bytes / stats.num_frames.max(1)),
+		);
+		if self.budget.is_some() {
+			line += &format!(" | loss avg {:.1}% peak {:.1}% | gpu avg {:.0}% peak {:.0}% | cpu avg {:.0}% peak {:.0}%",
+				stats.total_loss / num_emitted, stats.peak_loss,
+				stats.total_gpu_use / num_emitted, stats.peak_gpu_use,
+				stats.total_cpu_use / num_emitted, stats.peak_cpu_use,
+			);
+		}
+		line
+	}
+
+	//short live stats for the progress bar
+	pub fn progress_message(&self) -> String {
+		let stats = &self.stats;
+		let num_emitted = (stats.num_frames - stats.num_dropped).max(1) as f32;
+		let mut message = format!("{} | {} dropped", crate::format_bytes(stats.num_bytes), stats.num_dropped);
+		if self.budget.is_some() {
+			message += &format!(" | loss {:.1}% | gpu {:.0}%", stats.total_loss / num_emitted, stats.total_gpu_use / num_emitted);
+		}
+		message
+	}
+
 	pub fn process(&mut self, img: &Image<Srgb<u8>>, formatter: &HybridFormatter) {
 		let img = crate::stage("Stream | Preamble  | Crop", || img.crop(&self.source_area));
 		debug_assert_eq!(img.size(), self.desc.content.size.cast::<usize>() * braille::SIZE);
@@ -275,8 +359,8 @@ impl<'a> VideoEncoder<'a> {
 
 		self.num_frames_since_emit += 1;
 		let mut losses = None; //per pixel loss against prev_frame, only built once the loss rises above zero
-		let frame = loop {
-			if loss != Frac::ZERO && losses.is_none() && let Some(prev_frame) = self.prev_frame.as_ref() {
+		let (frame, sample, is_dropped) = loop {
+			if loss!= Frac::ZERO && losses.is_none() && let Some(prev_frame) = self.prev_frame.as_ref() {
 				losses = Some(Image::with_buffer(frame.size(), frame.buffer()
 					.iter()
 					.zip(prev_frame.buffer())
@@ -314,30 +398,24 @@ impl<'a> VideoEncoder<'a> {
 				},
 				None => Frac::ZERO,
 			};
-			let cpu_cost = Frac::new(stats.num_set_pixels, 120000);
+			let cpu_pixels_per_sec = Frac::new(1, 120000); //rough experimentally measured speed of lua playback engine
+			let cpu_cost = cpu_pixels_per_sec * stats.num_set_pixels;
 
 			let tick_rate = 20;
 			let time_since_emit = self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
 			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit;
 			let cpu_budget = self.machine.cpu_speed * time_since_emit;
 
-			#[cfg(feature = "charts")] {
-				let timestamp = format!("{:.2}s", (self.desc.rate.cast::<usize>() * self.frames.len()).into_flt::<f32>());
-
-				let charts_rs::ChildChart::Line(gpu_chart, _) = &mut self.chart.charts[0] else { unreachable!() };
-				gpu_chart.x_axis.data.push(timestamp.clone());
-				gpu_chart.series_list[0].data.push(Some(stats.get_set_cost(&self.machine).into_flt()));
-				gpu_chart.series_list[1].data.push(Some(stats.get_set_color_cost(&self.machine).into_flt()));
-				gpu_chart.series_list[2].data.push(Some(stats.get_bitblt_cost(&self.machine).into_flt()));
-				gpu_chart.series_list[3].data.push(Some(gpu_cost.into_flt()));
-				gpu_chart.series_list[4].data.push(Some((loss.try_cast().unwrap() * gpu_budget).into_flt()));
-				gpu_chart.series_list[5].data.push(Some(gpu_budget.into_flt()));
-
-				let charts_rs::ChildChart::Line(cpu_chart, _) = &mut self.chart.charts[1] else { unreachable!() };
-				cpu_chart.x_axis.data.push(timestamp.clone());
-				cpu_chart.series_list[0].data.push(Some(cpu_cost.into_flt()));
-				cpu_chart.series_list[1].data.push(Some(cpu_budget.into_flt()));
-			}
+			let sample = FrameSample {
+				set_cost: stats.get_set_cost(&self.machine).into_flt(),
+				color_cost: stats.get_set_color_cost(&self.machine).into_flt(),
+				bitblt_cost: stats.get_bitblt_cost(&self.machine).into_flt(),
+				gpu_cost: gpu_cost.into_flt(),
+				gpu_budget: gpu_budget.into_flt(),
+				cpu_cost: cpu_cost.into_flt(),
+				cpu_budget: cpu_budget.into_flt(),
+				loss: loss.into_flt::<f32>() * 100.0,
+			};
 
 			loss += self.loss_step;
 			let has_budget = self.budget.is_some();
@@ -345,11 +423,11 @@ impl<'a> VideoEncoder<'a> {
 			let is_loss_acceptable = loss <= acceptable_loss;
 			if !has_budget || can_afford || !is_loss_acceptable {
 				if has_budget && !can_afford && !is_loss_acceptable {
-					break Frame {
+					break (Frame {
 						commands_len: 0,
 						command_kind: CMD_KIND,
 						commands: Vec::new(),
-					};
+					}, sample, true);
 				}
 
 				self.num_frames_since_emit = 0;
@@ -358,17 +436,59 @@ impl<'a> VideoEncoder<'a> {
 				} else {
 					self.prev_frame = work_frame;
 				}
-				break renderer.into_inner().build();
+				break (renderer.into_inner().build(), sample, false);
 			}
 		};
 
+		self.record(&frame, &sample, is_dropped);
 		self.frames.push_back(frame);
+	}
+
+	fn record(&mut self, frame: &Frame, sample: &FrameSample, is_dropped: bool) {
+		let use_of = |cost: f32, budget: f32| if budget > 0.0 { 100.0 * cost / budget } else { 0.0 };
+		let gpu_use = use_of(sample.gpu_cost, sample.gpu_budget);
+		let cpu_use = use_of(sample.cpu_cost, sample.cpu_budget);
+		let num_bytes = 1 + 2 + 1 + frame.commands.len(); //stream id, commands_len, command_kind, commands
+
+		#[cfg(feature = "charts")] {
+			let time = (self.desc.rate.cast::<usize>() * self.stats.num_frames).into_flt::<f64>();
+			let mut push = |chart: usize, values: &[Option<f32>]| {
+				let charts_rs::ChildChart::Line(chart, _) = &mut self.chart.charts[chart] else { unreachable!() };
+				chart.x_axis.values.push(time);
+				for (series, value) in chart.series_list.iter_mut().zip(values) {
+					series.data.push(*value);
+				}
+			};
+			push(0, &[Some(sample.set_cost), Some(sample.color_cost), Some(sample.bitblt_cost), Some(sample.gpu_cost), Some(sample.gpu_budget)]);
+			push(1, &[Some(sample.cpu_cost), Some(sample.cpu_budget)]);
+			push(2, &[Some(gpu_use), Some(cpu_use)]);
+			push(3, &[Some(sample.loss), Some(num_bytes as f32)]); //dropped frames show the loss they gave up at
+		}
+
+		let stats = &mut self.stats;
+		stats.num_frames += 1;
+		stats.num_bytes += num_bytes;
+		if is_dropped {
+			stats.num_dropped += 1;
+			return;
+		}
+		if sample.loss > 0.0 { stats.num_lossy += 1; }
+		stats.total_loss += sample.loss;
+		stats.peak_loss = stats.peak_loss.max(sample.loss);
+		stats.total_gpu_use += gpu_use;
+		stats.peak_gpu_use = stats.peak_gpu_use.max(gpu_use);
+		stats.total_cpu_use += cpu_use;
+		stats.peak_cpu_use = stats.peak_cpu_use.max(cpu_use);
 	}
 }
 
 impl<'a> Drop for VideoEncoder<'a> {
 	fn drop(&mut self) {
-		#[cfg(feature = "charts")] std::fs::write("chart.svg", self.chart.svg().unwrap()).unwrap();
+		#[cfg(feature = "charts")] {
+			let path = format!("chart_{}.svg", self.desc.name.replace(',', "_"));
+			std::fs::write(&path, self.chart.svg().unwrap()).unwrap();
+			eprintln!("chart: {}", path);
+		}
 	}
 }
 

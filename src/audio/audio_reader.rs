@@ -261,5 +261,21 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 				voices: chunk.to_vec(),
 			})
 			.collect();
+
+		self.get_data().finish();
+	}
+
+	fn report(&self) -> Vec<String> {
+		let num_samples = self.encoder.samples.len() + self.encoder.desc.num_packets as usize;
+		let num_bytes = num_samples * (1 + self.config.num_voices * 3); //stream id, then volume u8 & frequency u16 per voice
+		vec![format!("{:>6} {} voices @ {:.2}Hz | {} samples | {} ({}/sample) | peak {:.3}",
+			self.config.name,
+			self.config.num_voices,
+			Frac::new(self.config.analysis_rate as usize, self.config.hop_length).into_flt::<f32>(),
+			num_samples,
+			crate::format_bytes(num_bytes),
+			crate::format_bytes(1 + self.config.num_voices * 3),
+			self.global_peak,
+		)]
 	}
 }

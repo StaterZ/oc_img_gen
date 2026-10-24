@@ -176,6 +176,16 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 			stream_timers,
 		})
 	}
+
+	//totals over all streams, the per stream breakdown is in the summary
+	fn progress_message(&self) -> String {
+		if let [encoder] = self.encoders.as_slice() {
+			return encoder.progress_message();
+		}
+		let num_bytes = self.encoders.iter().map(|encoder| encoder.stats.num_bytes).sum::<usize>();
+		let num_dropped = self.encoders.iter().map(|encoder| encoder.stats.num_dropped).sum::<usize>();
+		format!("{} streams | {} | {} dropped", self.encoders.len(), crate::format_bytes(num_bytes), num_dropped)
+	}
 }
 
 impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
@@ -193,6 +203,10 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 			.iter_mut()
 			.map(|encoder| encoder as &mut dyn PacketWriter)
 			.collect()
+	}
+
+	fn report(&self) -> Vec<String> {
+		self.encoders.iter().map(|encoder| encoder.report()).collect()
 	}
 
 	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool) {
@@ -233,25 +247,31 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 		let img = crate::stage("Frame  | Preamble  | Into Image", || Image::from(frame));
 		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color, Point::splat(Frac::half())));
 		
+		//only worth showing when a frame is split over several streams
 		let emit_streams_len = emit_streams.len();
-		let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_streams_len as u64)
-			.with_style(crate::build_progress_style())
-			.with_message("frame"));
-		if cfg!(not(feature = "log")) && emit_streams_len > 1 {
+		let frame_progress = (cfg!(not(feature = "log")) && emit_streams_len > 1).then(|| {
+			let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_streams_len as u64)
+				.with_style(crate::build_progress_style())
+				.with_prefix("frame"));
 			frame_progress.tick();
-		}
+			frame_progress
+		});
 
 		for (stream, emit_count) in emit_streams {
 			for _ in 0..emit_count {
 				stream.process(&img, &self.formatter);
 			}
 
-			if cfg!(not(feature = "log")) && emit_streams_len > 1 {
+			if let Some(frame_progress) = &frame_progress {
 				frame_progress.inc(1);
 			}
 		}
-		if cfg!(not(feature = "log")) && emit_streams_len > 1 {
+		if let Some(frame_progress) = frame_progress {
 			frame_progress.finish_and_clear();
+		}
+
+		if cfg!(not(feature = "log")) {
+			self.reader_data.progress.set_message(self.progress_message());
 		}
 	}
 }

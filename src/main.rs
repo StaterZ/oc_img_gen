@@ -10,7 +10,7 @@
 
 use std::io::Write;
 use std::time::Instant;
-use indicatif::ProgressStyle;
+use indicatif::{ProgressState, ProgressStyle};
 use szu::flush_print;
 use clap::{Parser, Subcommand};
 
@@ -56,16 +56,30 @@ pub fn stage<B>(title: &str, f: impl FnOnce() -> B) -> B {
 		flush_print!("{:<32}", title);
 		let start = Instant::now();
 		let output = f();
-		let e = start.elapsed();
-		eprintln!(" time: {}.{}ms", e.as_millis(), e.as_micros() - e.as_millis() * 1000);
+		eprintln!(" time: {:.3}ms", start.elapsed().as_secs_f64() * 1000.0);
 		output
 	} else {
 		f()
 	}
 }
 
+pub fn format_bytes(num_bytes: usize) -> String {
+	const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+	let mut value = num_bytes as f64;
+	let mut unit = 0;
+	while value >= 1024.0 && unit < UNITS.len() - 1 {
+		value /= 1024.0;
+		unit += 1;
+	}
+	if unit == 0 { format!("{}B", num_bytes) } else { format!("{:.1}{}", value, UNITS[unit]) }
+}
+
 fn build_progress_style() -> ProgressStyle {
-	ProgressStyle::with_template("{msg} [{bar}] {pos}/{len} {eta}")
+	ProgressStyle::with_template("{prefix:>5} {elapsed_precise} [{bar:32}] {counter} {percent:>3}% eta {eta:<4} {msg}")
 		.unwrap()
+		.with_key("counter", |state: &ProgressState, w: &mut dyn std::fmt::Write| { //pos padded to the digits of len
+			let len = state.len().unwrap_or(0);
+			let _ = write!(w, "{:>width$}/{}", state.pos(), len, width = len.to_string().len());
+		})
 		.progress_chars("█▉▊▋▌▍▎▏ ")
 }

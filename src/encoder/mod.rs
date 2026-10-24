@@ -79,10 +79,16 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	if cfg!(feature = "log") {
 		eprintln!();
 	}
-	crate::stage("Postamble  | Writing...  ", || std::fs::write(&config.out_path, media_file.to_bytes().unwrap())
+	let bytes = media_file.to_bytes().unwrap();
+	crate::stage("Postamble  | Writing...  ", || std::fs::write(&config.out_path, &bytes)
 		.map_err(AppError::WriteFailed))?;
 
-	eprintln!("All Done! saved to: {}", config.out_path.display());
+	eprintln!();
+	eprintln!("streams:");
+	for line in readers.iter().flat_map(|reader| reader.report()) {
+		eprintln!("  {}", line);
+	}
+	eprintln!("All Done! saved {} to: {}", crate::format_bytes(bytes.len()), config.out_path.display());
 	Ok(())
 }
 

@@ -22,7 +22,7 @@ pub struct ReaderData<'a, TDecoder: DecoderInterface> {
 	pub receive_buffer: TDecoder::Frame,
 	range_ts: RangeInclusive<i64>,
 	pub is_done: bool,
-	progress: ProgressBar,
+	pub progress: ProgressBar,
 	pub multi_progress: &'a MultiProgress,
 }
 
@@ -72,7 +72,7 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 
 		let progress = multi_progress.add(ProgressBar::new(num_frames as u64)
 			.with_style(crate::build_progress_style())
-			.with_message(name));
+			.with_prefix(name));
 
 		Self {
 			stream_index: stream.index(),
@@ -89,6 +89,14 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 	pub fn init(&mut self) {
 		if cfg!(not(feature = "log")) {
 			self.progress.tick();
+		}
+	}
+
+	//the frame count is only an estimate, so snap the bar to what was actually read
+	pub fn finish(&self) {
+		if cfg!(not(feature = "log")) {
+			self.progress.set_length(self.progress.position());
+			self.progress.finish();
 		}
 	}
 }
@@ -108,6 +116,11 @@ pub trait Reader<'a> {
 	}
 
 	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
+
+	//one line per stream for the summary printed after encoding
+	fn report(&self) -> Vec<String> {
+		Vec::new()
+	}
 
 	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool);
 
@@ -149,6 +162,7 @@ pub trait Reader<'a> {
 	fn process_eof(&mut self) {
 		self.get_data_mut().decoder.send_eof().unwrap();
 		self.process_frame(true);
+		self.get_data().finish();
 	}
 }
 
@@ -156,6 +170,7 @@ pub trait CommonReader {
 	fn is_done(&self) -> bool;
 	fn init(&mut self);
 	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
+	fn report(&self) -> Vec<String>;
 	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool;
 	fn process_eof(&mut self);
 }
@@ -171,6 +186,10 @@ impl<'a, T: Reader<'a>> CommonReader for T {
 
 	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter> {
 		Reader::get_writers(self)
+	}
+
+	fn report(&self) -> Vec<String> {
+		Reader::report(self)
 	}
 
 	fn try_process_packet(&mut self, stream: &ffmpeg_next::Stream, packet: &ffmpeg_next::Packet) -> bool {
