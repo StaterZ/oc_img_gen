@@ -52,7 +52,7 @@ pub fn process_args(args: Cli) -> EncoderConfig {
 }
 
 fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next::decoder::Video) -> VideoConfig {
-	match args.mode.unwrap() { //SAFETY: unwrap safe due to argument validation in caller
+	match args.mode.unwrap() { //SAFETY: the video option group requires --mode
 		VideoMode::Single => {
 			let stream_size = args.stream_size.unwrap_or_else(|| {
 				let source_size = Size::<u32>::new(stream.width(), stream.height());
@@ -93,7 +93,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 				args.frame_rate.map(|x| x.inverse()),
 				*args.fill_color,
 				stream_size.try_cast().expect("stream size too large"),
-				args.matrix_size.unwrap(),
+				args.matrix_size.unwrap(), //SAFETY: --mode matrix requires --matrix-size
 				gap_size,
 				args.filter,
 				args.braille_strategy,
@@ -104,7 +104,7 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, stream: &ffmpeg_next:
 			)
 		},
 		VideoMode::Custom => create_streams_custom(
-			args.streams_config.as_ref().unwrap()
+			args.streams_config.as_ref().unwrap() //SAFETY: --mode custom requires --streams-config
 		),
 	}
 }
@@ -300,8 +300,6 @@ struct VideoOpts {
 		help = "How to arrange and produce the streams",
 		requires_ifs([
 			("matrix", "matrix_size"),
-			("matrix", "matrix_gap_size"),
-			("matrix", "matrix_screen_size"),
 			("custom", "streams_config"),
 		]),
 	)]
@@ -333,15 +331,13 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-size",
 		help = "How many grid cells (streams) to create",
-		required_if_eq("mode", "Matrix"),
 		conflicts_with = "streams_config",
 	)]
 	pub matrix_size: Option<Size<usize>>,
 
 	#[arg(
 		long = "matrix-gap-size",
-		help = "sub-pixels to skip between matrix cells, defaults to 0 to omitted",
-		required_if_eq("mode", "Matrix"),
+		help = "sub-pixels to skip between matrix cells, defaults to 0 if omitted",
 		conflicts_with = "streams_config",
 		conflicts_with = "matrix_screen_size",
 	)]
@@ -350,9 +346,7 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-screen-size",
 		help = "screen size of matrix segments, this is used to derive the matrix gap size",
-		required_if_eq("mode", "Matrix"),
 		conflicts_with = "streams_config",
-		conflicts_with = "matrix_gap_size",
 	)]
 	pub matrix_screen_size: Option<Size<usize>>,
 	
