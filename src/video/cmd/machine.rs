@@ -1,3 +1,5 @@
+use num::traits::ConstZero;
+
 use crate::math::*;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -26,6 +28,33 @@ pub struct Machine {
 impl Machine {
 	pub fn bitblt_cost(&self, size: Size<usize>) -> Frac<usize> {
 		self.bitblt_cost * size.area() / self.max_screen_size.area()
+	}
+
+	//share of a tick's call budget that one direct call of `cost` effectively uses
+	//the budget refills to full every tick, unused budget does not carry over
+	//a call that doesn't fit in what is left throws LimitReachedException and machine.lua retries it as a synchronized call on the next tick
+	//synchronized calls never consume budget, so every tick fits floor(call_budget / cost) charged calls plus one free one
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/machine/Machine.scala#L281-L289
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/machine/Machine.scala#L519-L520
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/resources/assets/opencomputers/lua/machine.lua#L1080-L1103
+	pub fn effective_call_cost(&self, cost: Frac<usize>) -> Frac<usize> {
+		if cost == Frac::ZERO { return Frac::ZERO; }
+		if cost > self.call_budget { return self.call_budget; } //never fits, so it always runs synchronized and takes a whole tick
+		self.call_budget / ((self.call_budget / cost).into_int_trunc() + 1)
+	}
+
+	//share of a tick's call budget that bitblitting a dirty vram buffer of `size` to the screen effectively uses
+	//going over the gpu's tier credit (which equals call_budget on every tier) throws once, so the retry runs synchronized on the next tick
+	//there it costs no budget, but pauses for however far it went over a second tier credit, measured in tier credits (one per tick) and truncated to whole ticks
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L196-L208
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L233-L251
+	//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/machine/Machine.scala#L250-L251
+	pub fn present_cost(&self, size: Size<usize>) -> Frac<usize> {
+		let cost = self.bitblt_cost(size);
+		let credit = self.call_budget;
+		if cost <= credit { return self.effective_call_cost(cost); }
+		let pause_ticks = if cost > credit * 2 { ((cost - credit * 2) / credit).into_int_trunc() } else { 0 };
+		credit * (1 + pause_ticks)
 	}
 
 	pub fn compute_max_resolution(&self, ratio: Frac<usize>) -> Size<usize> {

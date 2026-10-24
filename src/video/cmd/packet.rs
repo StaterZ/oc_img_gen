@@ -290,24 +290,35 @@ impl<'a> VideoEncoder<'a> {
 			let renderer = renderer.into_inner();
 			let mut stats = renderer.get_stats();
 			let gpu_cost = match self.budget {
-				Some(Budget::Direct) => stats.get_cost(&self.machine),
+				Some(Budget::Direct) => {
+					//every set and color call goes straight to the screen and draws from the budget
+					//the szt format sets the resolution once before playback, never per frame
+					let num_calls = stats.num_color_commands + stats.num_set_commands;
+					if num_calls == 0 {
+						Frac::ZERO
+					} else {
+						let avg_call_cost = (stats.get_set_color_cost(&self.machine) + stats.get_set_cost(&self.machine)) / num_calls;
+						self.machine.effective_call_cost(avg_call_cost) * num_calls
+					}
+				},
 				Some(Budget::Buffered) => {
+					//set and color calls into a vram buffer cost no budget, only presenting the frame to the screen does
+					//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L100-L107
+					//https://github.com/MightyPirates/OpenComputers/blob/master-MC1.7.10/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L309-L311
 					if stats.num_set_commands > 0 {
 						stats.num_bitblt_pixels += frame.size().area();
-					};
-					let mut temp_stats = stats;
-					temp_stats.num_set_commands = 0;
-					//temp_stats.num_color_commands = 0;
-					temp_stats.get_cost(&self.machine)
+						self.machine.present_cost(frame.size())
+					} else {
+						Frac::ZERO
+					}
 				},
 				None => Frac::ZERO,
 			};
 			let cpu_cost = Frac::new(stats.num_set_pixels, 120000);
 
 			let tick_rate = 20;
-			let gpu_cost_fudge = 3; //for some reason the gpu can handle more than what theory seems to imply... very odd...
 			let time_since_emit = self.desc.rate.cast::<usize>() * self.num_frames_since_emit;
-			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit * gpu_cost_fudge;
+			let gpu_budget = (self.machine.call_budget * tick_rate) * time_since_emit;
 			let cpu_budget = self.machine.cpu_speed * time_since_emit;
 
 			#[cfg(feature = "charts")] {
