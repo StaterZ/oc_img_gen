@@ -725,10 +725,10 @@ local function play(gpu, file, surfaces)
 		for _, stream in ipairs(streams) do
 			stream.packet_index = 0
 			stream.presented_packet_index = 0
-			if stream.kind == 0x00 and has_video then --video
+			if stream.kind == 0x00 and play_video then --video
 				stream.swap_chain = {}
 				num_live_streams = num_live_streams + 1
-			elseif stream.kind == 0x01 and has_audio then --audio
+			elseif stream.kind == 0x01 and play_audio then --audio
 				num_live_streams = num_live_streams + 1
 			else
 				--we probably just wanna skip unknowns rather than get mad about it
