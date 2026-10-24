@@ -457,6 +457,7 @@ do --audio player
 	local buffered_time_exact
 	local buffered_time
 	local committed_time
+	local voice_cards, voice_channels = {}, {}
 	function audio.init(num_voices)
 		sound_cards = {}
 		for addr, _ in pairs(component.list("sound")) do
@@ -480,6 +481,8 @@ do --audio player
 			card.resetFM(channel)
 			card.resetAM(channel)
 			card.resetEnvelope(channel)
+			voice_cards[voice] = card
+			voice_channels[voice] = channel
 		end
 
 		num_buffered_instructions = 0
@@ -504,9 +507,7 @@ do --audio player
 
 	function audio.queue(file, stream)
 		for voice = 1, stream.num_voices do
-			local card_index = math.floor((voice - 1) / channels_per_card)
-			local card = sound_cards[card_index + 1]
-			local channel = voice - card_index * channels_per_card
+			local card, channel = voice_cards[voice], voice_channels[voice]
 			card.setVolume(channel, read_u8(file) / 0xff * ops.volume)
 			card.setFrequency(channel, read_u16(file) / 0xffff * 20000)
 		end
