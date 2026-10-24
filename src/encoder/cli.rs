@@ -231,7 +231,6 @@ pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version)]
 pub struct Cli {
 	#[arg(
 		short = 'i',
