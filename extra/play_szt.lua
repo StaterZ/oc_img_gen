@@ -12,6 +12,22 @@ local version = "4.3"
 --the player names the tape it burns pcm audio onto, so it can find it again
 local burner_label = "szt pcm burner"
 
+--the primary drive, unless it holds the burner tape, then another drive
+local function default_tape_drive()
+	if not component.isAvailable("tape_drive") then
+		return nil, "no tape drive found"
+	end
+	if component.tape_drive.getLabel() == burner_label then
+		for candidate in component.list("tape_drive") do
+			local d = component.proxy(candidate)
+			if d.isReady() and d.getLabel() ~= burner_label then
+				return candidate
+			end
+		end
+	end
+	return component.tape_drive.address
+end
+
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
 do
@@ -24,22 +40,10 @@ do
 		local addr, reason
 		if address then
 			addr, reason = component.get(address, "tape_drive")
-			if not addr then return nil, reason end
-		elseif component.isAvailable("tape_drive") then
-			addr = component.tape_drive.address
-			--the primary may hold the burner tape, then take another drive
-			if component.tape_drive.getLabel() == burner_label then
-				for candidate in component.list("tape_drive") do
-					local d = component.proxy(candidate)
-					if d.isReady() and d.getLabel() ~= burner_label then
-						addr = candidate
-						break
-					end
-				end
-			end
 		else
-			return nil, "no tape drive found"
+			addr, reason = default_tape_drive()
 		end
+		if not addr then return nil, reason end
 		local drive = component.proxy(addr)
 		if not drive.isReady() then return nil, "no tape in drive" end
 		drive.stop() --a playing tape moves under us
@@ -1319,10 +1323,80 @@ local function play(gpu, file, surfaces)
 	end
 end
 
+--'burn' writes a szt file to the start of data tapes
+local function burn_command()
+	if ops.h or ops.help or not args[2] then
+		print("burn <file> [drive address...]")
+		print("writes a szt file to the start of tapes so '--tape' can play it")
+		print("default drive is the primary. give several to fill tapes for 'play_szt_par.lua --tape'")
+		print("   --no-label", "don't set the tape label to the file name")
+		return
+	end
+
+	local path = shell.resolve(args[2])
+	local file_size = fs.size(path)
+
+	local drives = {}
+	if #args > 2 then
+		for i = 3, #args do
+			local addr = assert(component.get(args[i], "tape_drive"))
+			table.insert(drives, component.proxy(addr))
+		end
+	else
+		local addr = assert(default_tape_drive())
+		table.insert(drives, component.proxy(addr))
+	end
+
+	for _, drive in ipairs(drives) do
+		assert(drive.isReady(), ("no tape in drive %s"):format(drive.address))
+		local tape_size = drive.getSize()
+		assert(file_size <= tape_size, ("file is %i bytes but the tape in %s only holds %i"):format(file_size, drive.address, tape_size))
+	end
+
+	--each drive.write costs a tick, so write big chunks
+	local chunk_size = math.floor(math.max(512, math.min(64 * 1024, computer.freeMemory() / 4)))
+
+	for _, drive in ipairs(drives) do
+		print(("writing to %s"):format(drive.address))
+		drive.stop()
+		drive.seek(-drive.getPosition())
+
+		local file = assert(io.open(path, "rb"))
+		local written = 0
+		while true do
+			local chunk = file:read(chunk_size)
+			if not chunk then break end
+			drive.write(chunk)
+			written = written + #chunk
+			io.write(("\r%i/%i bytes (%3.f%%)"):format(written, file_size, written / file_size * 100))
+		end
+		file:close()
+
+		--the drive plays 250ms at a time, so it can overshoot pcm audio played in place at the end. make that silence
+		local pad = math.min(3000, drive.getSize() - written)
+		if pad > 0 then
+			drive.write(string.rep("\x55", pad)) --alternating DFPWM bits hold the level
+		end
+		print()
+
+		drive.seek(-drive.getPosition())
+		if not ops["no-label"] then
+			drive.setLabel(fs.name(path))
+		end
+	end
+
+	print("Done!")
+end
+if args[1] == "burn" then
+	burn_command()
+	return
+end
+
 if ops.h or ops.help then
 	print("-h --help", "show this help")
 	print("-v --version", "show player version")
 	print("-p --probe", "show the header info")
+	print("burn <file> [drive...]", "write a szt file to data tapes. see 'burn --help'")
 	print("   --fps", "show performance stats during playback")
 	print("   --loop", "loop video like a gif")
 	print("   --hold", "hold image on screen")
@@ -1336,7 +1410,7 @@ if ops.h or ops.help then
 	print("   --batch-check", "debug the batches")
 	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. burner_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a burner tape")
-	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'write_szt_tape.lua'")
+	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
 	return
 end
 if ops.v or ops.version then
