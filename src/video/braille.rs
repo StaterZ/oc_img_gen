@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use itertools::Itertools;
-use palette::{Lab, color_difference::ImprovedCiede2000};
+use palette::{Lab, LinSrgb, FromColor, color_difference::ImprovedCiede2000};
 use ordered_float::OrderedFloat;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -289,6 +289,76 @@ impl Braille<PackedColor> {
 			.filter(|&i| errors[fg][i] < errors[bg][i])
 			.fold(0u8, |acc, i| acc | (1 << i));
 
+		Self {
+			id,
+			bg: candidates.colors[bg],
+			fg: candidates.colors[fg],
+		}
+	}
+
+	/// same palette pairs as from_pixels_palette_pair, but also tries every count of fg dots,
+	/// so the average color of the cell, mixed in linear light, gets close to the average of the pixels.
+	/// in flat areas this dithers between two palette colors to show shades the palette lacks
+	pub fn from_pixels_palette_dither(pixels: &[[Lab; WIDTH]; HEIGHT], formatter: &HybridFormatter) -> Self {
+		/// scales the linear rgb distance of the cell average to about the size of a ciede2000 difference
+		const MIX_WEIGHT: f32 = 100.0;
+		/// pulls dots that are close to a tie into a dispersed order, so flat areas get an even pattern instead of streaks
+		const ORDER_BIAS: f32 = 1.0;
+		const DISPERSED_RANK: [f32; BITS] = [0.0, 4.0, 6.0, 2.0, 1.0, 5.0, 7.0, 3.0];
+
+		let pixels: &[Lab; BITS] = unsafe { std::mem::transmute(pixels) };
+		let candidates = PaletteCandidates::new(pixels, formatter);
+		let errors = &candidates.errors;
+
+		let to_linear = |color: Lab| {
+			let color = LinSrgb::from_color(color);
+			[color.red, color.green, color.blue]
+		};
+		let linears: [[f32; 3]; PaletteCandidates::MAX] = std::array::from_fn(|i| to_linear(candidates.labs[i]));
+		let target = pixels
+			.iter()
+			.map(|p| to_linear(*p))
+			.fold([0.0; 3], |acc, p| std::array::from_fn(|j| acc[j] + p[j] / BITS as f32));
+		let mix_error = |a: usize, b: usize, k: usize| {
+			let t = k as f32 / BITS as f32;
+			let distance_squared: f32 = (0..3)
+				.map(|j| linears[a][j] + (linears[b][j] - linears[a][j]) * t - target[j])
+				.map(|d| d * d)
+				.sum();
+			MIX_WEIGHT * BITS as f32 * distance_squared.sqrt()
+		};
+
+		let mut best = (0, 0, 0u8);
+		let mut best_score = f32::INFINITY;
+		for a in 0..candidates.len {
+			let error_a: f32 = errors[a].iter().sum();
+			let score = error_a + mix_error(a, a, 0);
+			if score < best_score {
+				best_score = score;
+				best = (a, a, 0);
+			}
+
+			for b in (a + 1)..candidates.len {
+				//the k dots that lose the least by moving from a to b become fg
+				let preference = |i: usize| errors[b][i] - errors[a][i];
+				let mut order: [usize; BITS] = std::array::from_fn(|i| i);
+				order.sort_unstable_by_key(|&i| OrderedFloat(preference(i) + ORDER_BIAS * (DISPERSED_RANK[i] - 3.5)));
+
+				let mut error = error_a;
+				let mut id = 0u8;
+				for (k, &i) in order.iter().enumerate() {
+					error += preference(i);
+					id |= 1 << i;
+					let score = error + mix_error(a, b, k + 1);
+					if score < best_score {
+						best_score = score;
+						best = (a, b, id);
+					}
+				}
+			}
+		}
+
+		let (bg, fg, id) = best;
 		Self {
 			id,
 			bg: candidates.colors[bg],

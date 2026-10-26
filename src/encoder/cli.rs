@@ -214,6 +214,7 @@ pub enum BrailleStrategy {
 	CentroidCohesion,
 	PolarPair,
 	PalettePair,
+	PaletteDither,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]

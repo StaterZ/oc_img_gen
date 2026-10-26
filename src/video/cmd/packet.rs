@@ -313,6 +313,7 @@ impl<'a> VideoEncoder<'a> {
 			BrailleStrategy::CentroidCohesion => deflate(Braille::from_pixels_centroid_cohesion(&cluster)),
 			BrailleStrategy::PolarPair => deflate(Braille::from_pixels_polar_pair(&cluster)),
 			BrailleStrategy::PalettePair => Braille::from_pixels_palette_pair(&cluster, formatter),
+			BrailleStrategy::PaletteDither => Braille::from_pixels_palette_dither(&cluster, formatter),
 		};
 
 		const UBER_MODE: bool = true;
