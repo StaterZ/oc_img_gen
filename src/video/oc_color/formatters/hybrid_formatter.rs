@@ -52,6 +52,23 @@ impl HybridFormatter {
 		}
 	}
 
+	/// the static colors on the corners of the rgb grid cell that holds `color`, and the nearest palette color
+	pub fn neighbors(&self, color: Lab) -> impl Iterator<Item = PackedColor> {
+		let rgb = Srgb::from_color(color);
+		let bracket = |v: f32, n: usize| {
+			let lo = ((v.clamp(0.0, 1.0) * 255.0) as usize * (n - 1) / 0x100).min(n - 1);
+			[lo, (lo + 1).min(n - 1)]
+		};
+		let rs = bracket(rgb.red, StaticColor::NUM_REDS);
+		let gs = bracket(rgb.green, StaticColor::NUM_GREENS);
+		let bs = bracket(rgb.blue, StaticColor::NUM_BLUES);
+		let palette_color = PackedColor::new(PaletteOr::Palette(self.palette.deflate(color)));
+
+		itertools::iproduct!(rs, gs, bs)
+			.map(|(r, g, b)| PackedColor::new(PaletteOr::NonPalette(StaticColor::from_rgb(r, g, b))))
+			.chain(std::iter::once(palette_color))
+	}
+
 	fn inflate_impl(&self, color: PaletteOr<StaticColor>) -> Lab {
 		match color {
 			PaletteOr::Palette(color) => self.palette.inflate(color),
@@ -116,6 +133,10 @@ impl StaticColor {
 	pub fn new(value: u8) -> Self {
 		debug_assert_lt!(value as usize, Self::PALETTE_SIZE);
 		Self(value)
+	}
+
+	pub fn from_rgb(r: usize, g: usize, b: usize) -> Self {
+		Self::new((r * Self::NUM_GREENS * Self::NUM_BLUES + g * Self::NUM_BLUES + b) as u8)
 	}
 
 	pub fn into_inner(self) -> u8 {

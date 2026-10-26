@@ -213,6 +213,7 @@ pub enum Budget {
 pub enum BrailleStrategy {
 	CentroidCohesion,
 	PolarPair,
+	PalettePair,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]

@@ -8,6 +8,7 @@ use szu::iter::MultiZipExt;
 
 use crate::math::*;
 use crate::video::rgb;
+use crate::video::oc_color::{PackedColor, formatters::{Formatter, HybridFormatter}};
 #[cfg(not(feature = "rayon"))]
 use super::image_iter::ImageIterator;
 #[cfg(feature = "rayon")]
@@ -228,6 +229,74 @@ impl Braille<Lab> {
 	}
 }
 
+/// the palette colors near a cell's pixels, with each one's error against every pixel
+struct PaletteCandidates {
+	colors: [PackedColor; Self::MAX],
+	labs: [Lab; Self::MAX],
+	errors: [[f32; BITS]; Self::MAX],
+	len: usize,
+}
+
+impl PaletteCandidates {
+	const MAX: usize = BITS * 9;
+
+	fn new(pixels: &[Lab; BITS], formatter: &HybridFormatter) -> Self {
+		let mut result = Self {
+			colors: [PackedColor(0); Self::MAX],
+			labs: [*rgb::ZERO_LAB; Self::MAX],
+			errors: [[0.0; BITS]; Self::MAX],
+			len: 0,
+		};
+		let mut seen = [false; 1 << PackedColor::BITS];
+		for pixel in pixels {
+			for color in formatter.neighbors(*pixel) {
+				if std::mem::replace(&mut seen[color.0 as usize], true) { continue; }
+				let color_lab = formatter.inflate(color);
+				result.colors[result.len] = color;
+				result.labs[result.len] = color_lab;
+				result.errors[result.len] = pixels.map(|p| p.improved_difference(color_lab));
+				result.len += 1;
+			}
+		}
+		result
+	}
+}
+
+impl Braille<PackedColor> {
+	/// picks bg and fg straight from the screen palette, so the error is measured after quantization instead of before it.
+	/// every pair of palette colors near the pixels is tried, and each pixel takes the closer color of the pair
+	pub fn from_pixels_palette_pair(pixels: &[[Lab; WIDTH]; HEIGHT], formatter: &HybridFormatter) -> Self {
+		let pixels: &[Lab; BITS] = unsafe { std::mem::transmute(pixels) };
+		let candidates = PaletteCandidates::new(pixels, formatter);
+		let errors = &candidates.errors;
+
+		let mut best = (0, 0);
+		let mut best_error = f32::INFINITY;
+		for a in 0..candidates.len {
+			'pairs: for b in a..candidates.len {
+				let mut error = 0.0;
+				for i in 0..BITS {
+					error += errors[a][i].min(errors[b][i]);
+					if error >= best_error { continue 'pairs; } //error only grows
+				}
+				best_error = error;
+				best = (a, b);
+			}
+		}
+
+		let (bg, fg) = best;
+		let id = (0..BITS)
+			.filter(|&i| errors[fg][i] < errors[bg][i])
+			.fold(0u8, |acc, i| acc | (1 << i));
+
+		Self {
+			id,
+			bg: candidates.colors[bg],
+			fg: candidates.colors[fg],
+		}
+	}
+}
+
 impl<T: PartialEq> PartialEq for Braille<T> {
 	fn eq(&self, other: &Self) -> bool {
 		for i in 0..BITS {
@@ -240,7 +309,7 @@ impl<T: PartialEq> PartialEq for Braille<T> {
 }
 
 #[cfg(feature = "rayon")]
-pub fn as_braille<T: Copy + Sync + Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> Braille<T> + Sync + Send) -> ParallelImageIterator<impl ParallelIterator<Item = Braille<T>>> {
+pub fn as_braille<T: Copy + Sync + Send, U: Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> U + Sync + Send) -> ParallelImageIterator<impl ParallelIterator<Item = U>> {
 	let row_len = input.size().w as usize;
 	ParallelImageIterator {
 		size: input.size() / SIZE,
@@ -259,7 +328,7 @@ pub fn as_braille<T: Copy + Sync + Send>(input: &Image<T>, from_pixels: impl Fn(
 	}
 }
 #[cfg(not(feature = "rayon"))]
-pub fn as_braille<T: Copy + Sync + Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> Braille<T> + Sync + Send) -> ImageIterator<impl Iterator<Item = Braille<T>>> {
+pub fn as_braille<T: Copy + Sync + Send, U: Send>(input: &Image<T>, from_pixels: impl Fn([[T; WIDTH]; HEIGHT]) -> U + Sync + Send) -> ImageIterator<impl Iterator<Item = U>> {
 	let row_len = input.size().w as usize;
 	ImageIterator {
 		size: input.size() / SIZE,

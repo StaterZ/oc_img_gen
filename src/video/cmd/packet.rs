@@ -307,16 +307,18 @@ impl<'a> VideoEncoder<'a> {
 		// 	BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster, color_diff),
 		// };
 
-		let braille_from_pixels = match self.braille_strategy {
-			BrailleStrategy::CentroidCohesion => |cluster| Braille::from_pixels_centroid_cohesion(&cluster),
-			BrailleStrategy::PolarPair => |cluster| Braille::from_pixels_polar_pair(&cluster),
+		let deflate = |braille: Braille<Lab>| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p)));
+		let braille_strategy = self.braille_strategy;
+		let braille_from_pixels = |cluster| match braille_strategy {
+			BrailleStrategy::CentroidCohesion => deflate(Braille::from_pixels_centroid_cohesion(&cluster)),
+			BrailleStrategy::PolarPair => deflate(Braille::from_pixels_polar_pair(&cluster)),
+			BrailleStrategy::PalettePair => Braille::from_pixels_palette_pair(&cluster, formatter),
 		};
 
 		const UBER_MODE: bool = true;
 		let img = if UBER_MODE {
 			crate::stage("Stream | Process   | Uber", || {
 				braille::as_braille(&img, braille_from_pixels)
-					.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))))
 					.map(|braille| braille.into())
 					.collect()
 			})
@@ -326,12 +328,7 @@ impl<'a> VideoEncoder<'a> {
 			//let img2 = crate::stage("Stream | Process   | Inflate", || img2.into_iter().map(|p| formatter.inflate(p)).collect());
 			//img2.debug_export("raw_deflate".into()).unwrap();
 
-			let img = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img, braille_from_pixels).collect());
-			//braille::raster(&img).debug_export("raw_braille".into()).unwrap();
-			let img = crate::stage("Stream | Process   | Deflate", || img
-				.into_iter()
-				.map(|braille| braille.map(|p| formatter.deflate(PaletteOr::NonPalette(*p))))
-				.collect());
+			let img: Image<_> = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img, braille_from_pixels).collect());
 			crate::stage("Stream | Process   | Into Text", || img.into_iter().map(|braille| braille.into()).collect())
 		};
 
