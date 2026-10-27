@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "4.3"
+local version = "4.4"
 
 --the player names the tape it burns pcm audio onto, so it can find it again
 local burner_label = "szt pcm burner"
@@ -31,6 +31,9 @@ end
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
 do
+	--several handles can read one drive, one per szt stream, so they share where its head is
+	local drive_positions = {}
+
 	local mt = {
 		__index = tape_stream,
 		__metatable = "TapeStream"
@@ -48,10 +51,11 @@ do
 		if not drive.isReady() then return nil, "no tape in drive" end
 		drive.stop() --a playing tape moves under us
 
+		drive_positions[addr] = drive.getPosition()
+
 		return setmetatable({
 			drive = drive,
 			pos = 0,
-			drive_pos = drive.getPosition(),
 			size = drive.getSize(),
 		}, mt)
 	end
@@ -74,13 +78,14 @@ do
 		local left = self.size - self.pos
 		if left <= 0 then return nil end
 		n = math.floor(math.min(n, left)) --the drive wants an integer
-		if self.pos ~= self.drive_pos then
-			self.drive.seek(self.pos - self.drive_pos)
+		local addr = self.drive.address
+		if self.pos ~= drive_positions[addr] then
+			self.drive.seek(self.pos - drive_positions[addr])
 		end
 		local data = self.drive.read(n)
 		if not data then return nil, "no tape in drive" end
 		self.pos = self.pos + #data
-		self.drive_pos = self.pos
+		drive_positions[addr] = self.pos
 		return data
 	end
 end
@@ -226,7 +231,7 @@ end
 
 local szt = {
 	magic = "sztb",
-	version = 7,
+	version = 8,
 }
 
 local args, ops = shell.parse(...)
@@ -715,11 +720,13 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	local start_time
 
 	--a drive that the packets are read from can't play at the same time, since a drive has one head
-	local function video_drives(file)
+	local function video_drives(files)
 		local used = {}
-		for _, stream in ipairs(file.streams or {file.stream}) do
-			if stream.drive then
-				used[stream.drive.address] = true
+		for _, file in ipairs(files) do
+			for _, stream in ipairs(file.streams or {file.stream}) do
+				if stream.drive then
+					used[stream.drive.address] = true
+				end
 			end
 		end
 		return used
@@ -762,7 +769,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	end
 
 	--copies the block from the szt file onto the burner tape, unless the tape holds it already. returns where it starts
-	local function burn(d, file, track, frames_begin_pos)
+	local function burn(d, file, track)
 		local entries = read_index(d)
 		if not entries then
 			if not ops.pcm_format then
@@ -804,7 +811,6 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		end
 		print()
 		d.write(string.rep("\x55", pad_size)) --alternating DFPWM bits hold the level
-		file:seek("set", frames_begin_pos)
 
 		entries[#entries + 1] = {
 			checksum = track.checksum,
@@ -816,9 +822,10 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		return offset
 	end
 
-	--picks the drive to play from and gets the block onto it. returns false and why not when it can't
-	function pcm.prepare(file, track, frames_begin_pos, reads_packets)
-		local used = video_drives(file)
+	--picks the drive to play from and gets the block onto it. returns false and why not when it can't.
+	--files are the open handles, the first one is used to burn
+	function pcm.prepare(files, track, reads_packets)
+		local used = video_drives(files)
 		local addr
 		if type(ops.pcm_tape) == "string" then
 			local reason
@@ -847,7 +854,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 					end
 				end
 			end
-			--with no packets to read, the drive that holds the file can play it
+			--with no packets to read, the drive that holds the file can play the pcm stream in place
 			if not addr and not reads_packets then
 				addr = next(used)
 			end
@@ -867,7 +874,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			block_offset = track.offset --it holds the file, so play the block in place
 		else
 			found.stop()
-			local offset, reason = burn(found, file, track, frames_begin_pos)
+			local offset, reason = burn(found, files[1], track)
 			if not offset then return false, reason end
 			block_offset = offset
 			if found.getLabel() ~= burner_label then
@@ -936,6 +943,7 @@ local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
 	local num_tracks = read_u8(file)
+	local num_streams = read_u8(file)
 	local settings = file:read(read_u16(file))
 
 	local tracks = {}
@@ -945,6 +953,7 @@ local function read_header(file)
 			time_base_num = read_u16(file),
 			time_base_denom = read_u16(file),
 			name = file:read(read_u8(file)),
+			stream_id = read_u8(file),
 			kind = read_u8(file),
 		}
 
@@ -955,11 +964,34 @@ local function read_header(file)
 			track.num_voices = read_u8(file)
 		elseif track.kind == 0x02 then
 			track.sample_rate = read_u32(file)
-			track.offset = read_u32(file)
-			track.num_bytes = read_u32(file)
 			track.checksum = read_u32(file)
 		end
 		table.insert(tracks, track)
+	end
+
+	--a stream is the interleaved packets of its tracks, or the DFPWM block of one pcm track
+	local streams = {}
+	for i = 1, num_streams do
+		local stream = {
+			index = i - 1,
+			offset = read_u32(file),
+			num_bytes = read_u32(file),
+			tracks = {},
+			num_packets = 0,
+		}
+		table.insert(streams, stream)
+	end
+
+	for _, track in ipairs(tracks) do
+		local stream = streams[track.stream_id + 1] or error(("track '%s' is on stream %i, but there are only %i"):format(track.name, track.stream_id, num_streams))
+		table.insert(stream.tracks, track)
+		stream.num_packets = stream.num_packets + track.num_packets
+		if track.kind == 0x02 then
+			--the pcm track is the whole stream
+			stream.is_pcm = true
+			track.offset = stream.offset
+			track.num_bytes = stream.num_bytes
+		end
 	end
 
 	return {
@@ -967,6 +999,7 @@ local function read_header(file)
 		version = version,
 		settings = settings,
 		tracks = tracks,
+		streams = streams,
 	}
 end
 
@@ -992,7 +1025,7 @@ local function probe_header(file)
 			track.kind == 0x02 and "pcm" or
 			"unknown"
 
-		print(("  %i: %s | '%s'"):format(i - 1, kind_text, track.name))
+		print(("  %i: %s | '%s' | stream %i"):format(i - 1, kind_text, track.name, track.stream_id))
 		print(("    time_base: %i/%i"):format(track.time_base_num, track.time_base_denom))
 		print(("    num_packets: %i"):format(track.num_packets))
 		if track.kind == 0x00 then
@@ -1006,30 +1039,30 @@ local function probe_header(file)
 		end
 	end
 
-	local frames_begin_pos = file:seek()
-	print(("headers done at byte: %i"):format(frames_begin_pos))
+	print(("found %i streams:"):format(#header.streams))
+	for _, stream in ipairs(header.streams) do
+		print(("  %i: %s | %i bytes at byte %i | %i tracks"):format(
+			stream.index,
+			stream.is_pcm and "pcm" or ("%i packets"):format(stream.num_packets),
+			stream.num_bytes,
+			stream.offset,
+			#stream.tracks
+		))
+	end
 
-	--pcm blocks end the file, otherwise walk the packets to find the end
-	local file_size = frames_begin_pos
+	local headers_end = file:seek()
+	print(("headers done at byte: %i"):format(headers_end))
+
+	--the streams say where they end, so the file ends after the last one
+	local file_size = headers_end
 	local pcm_tracks = {}
-	local num_packets = 0
+	for _, stream in ipairs(header.streams) do
+		file_size = math.max(file_size, stream.offset + stream.num_bytes)
+	end
 	for _, track in ipairs(header.tracks) do
-		num_packets = num_packets + track.num_packets
 		if track.kind == 0x02 then
-			file_size = math.max(file_size, track.offset + track.num_bytes)
 			table.insert(pcm_tracks, track)
 		end
-	end
-	if #pcm_tracks == 0 then
-		for _ = 1, num_packets do
-			local track = header.tracks[read_u8(file) + 1]
-			if track.kind == 0x00 then
-				file:read(read_u16(file) + 1) --command_kind = 1b
-			elseif track.kind == 0x01 then
-				file:read(track.num_voices * 3)
-			end
-		end
-		file_size = file:seek()
 	end
 
 	--tapes hold 6000 bytes per second of play time (computronics' 'tapeLengths' are in minutes)
@@ -1053,7 +1086,8 @@ local function probe_header(file)
 	end
 end
 
-local function play(gpu, file, surfaces)
+--open_file opens the file again, for streams read next to the first one
+local function play(gpu, file, surfaces, open_file)
 	local header = read_header(file)
 	assertEq(header.magic, szt.magic, "bad magic")
 	print("magic: OK")
@@ -1065,7 +1099,6 @@ local function play(gpu, file, surfaces)
 	end
 	local max_size_x, max_size_y = 0, 0
 	local max_num_voices = 0
-	local num_total_packets = 0
 	local has_video, has_audio = false, false
 	local pcm_track
 	local tracks = {}
@@ -1077,7 +1110,6 @@ local function play(gpu, file, surfaces)
 			time_base = track_desc.time_base_num / track_desc.time_base_denom,
 			name = track_desc.name,
 		}
-		num_total_packets = num_total_packets + track.num_packets
 		if track_desc.kind == 0x00 then
 			has_video = true
 			
@@ -1114,10 +1146,41 @@ local function play(gpu, file, surfaces)
 	local play_video = has_video and not ops.no_video
 	local play_audio = has_audio and not ops.no_audio
 
-	local frames_begin_pos = file:seek()
+	--a stream is read when it holds a played track. it gets its own handle, so streams don't seek each other away.
+	--the pcm stream isn't read, a tape drive plays it
+	local packet_streams = {}
+	local num_total_packets = 0
+	for _, stream_desc in ipairs(header.streams) do
+		local is_read = false
+		for _, track_desc in ipairs(stream_desc.tracks) do
+			if (track_desc.kind == 0x00 and play_video) or (track_desc.kind == 0x01 and play_audio) then
+				is_read = true
+			end
+		end
+		if is_read and not stream_desc.is_pcm and stream_desc.num_packets > 0 then
+			table.insert(packet_streams, {
+				index = stream_desc.index,
+				offset = stream_desc.offset,
+				num_packets = stream_desc.num_packets,
+			})
+			num_total_packets = num_total_packets + stream_desc.num_packets
+		end
+	end
+	local files = {file}
+	for i, stream in ipairs(packet_streams) do
+		if i == 1 then
+			stream.file = file
+		else
+			local reason
+			stream.file, reason = open_file()
+			if not stream.file then error(("can't open the file again for stream %i: %s"):format(stream.index, reason)) end
+			table.insert(files, stream.file)
+		end
+	end
+
 	local play_pcm = false
 	if pcm_track and not ops.no_audio then
-		local ok, reason = pcm.prepare(file, pcm_track, frames_begin_pos, num_total_packets > 0)
+		local ok, reason = pcm.prepare(files, pcm_track, num_total_packets > 0)
 		if ok then
 			play_pcm = true
 			print(("pcm audio plays from tape drive %s"):format(reason))
@@ -1137,6 +1200,12 @@ local function play(gpu, file, surfaces)
 	end
 
 	local function play_impl()
+		for _, stream in ipairs(packet_streams) do
+			stream.file:seek("set", stream.offset)
+			stream.packet_index = 0
+			stream.next_track = nil
+		end
+
 		local video_begin_time_up = computer.uptime()
 		local num_live_tracks = 0
 		for _, track in ipairs(tracks) do
@@ -1168,8 +1237,24 @@ local function play(gpu, file, surfaces)
 
 			local track = nil
 			if packet_index < num_total_packets then
-				local track_id = read_u8(file)
-				track = tracks[track_id + 1]
+				--each stream is in play order already, so take the packet that ends first, like the encoder did
+				local stream, best_end_time
+				for _, candidate in ipairs(packet_streams) do
+					if candidate.packet_index < candidate.num_packets then
+						if not candidate.next_track then
+							candidate.next_track = tracks[read_u8(candidate.file) + 1]
+						end
+						local end_time = (candidate.next_track.packet_index + 1) * candidate.next_track.time_base
+						if not best_end_time or end_time < best_end_time then
+							stream, best_end_time = candidate, end_time
+						end
+					end
+				end
+				track = stream.next_track
+				stream.next_track = nil
+				stream.packet_index = stream.packet_index + 1
+
+				local file = stream.file
 				if track.kind == 0x00 then --video
 					local commands_len = read_u16(file)
 					if play_video then
@@ -1299,9 +1384,7 @@ local function play(gpu, file, surfaces)
 	end
 
 	if ops.loop then
-		while play_impl() do
-			file:seek("set", frames_begin_pos)
-		end
+		while play_impl() do end
 	else
 		play_impl()
 		if ops.hold then
@@ -1320,6 +1403,9 @@ local function play(gpu, file, surfaces)
 	end
 	if play_pcm then
 		pcm.deinit()
+	end
+	for i = 2, #files do
+		files[i]:close()
 	end
 end
 
@@ -1446,7 +1532,10 @@ end
 
 --do playback
 local path = args[1] or type(ops.tape) == "string" and ops.tape or nil --'--tape=<addr>' names the drive too
-local file, reason = linear_stream.open(path, "rb", ops.tape)
+local function open_file()
+	return linear_stream.open(path, "rb", ops.tape)
+end
+local file, reason = open_file()
 if not file then
 	error("Failed to open file: " .. reason)
 end
@@ -1457,7 +1546,7 @@ local function run()
 		return
 	end
 
-	play(gpu, file, surfaces)
+	play(gpu, file, surfaces, open_file)
 end
 
 local res_x, res_y = gpu.getResolution()

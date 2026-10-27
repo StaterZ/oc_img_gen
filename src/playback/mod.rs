@@ -209,8 +209,8 @@ pub fn decode_pcm(file: &MediaFile, track_id: u8) -> Vec<f32> {
 		.collect()
 }
 
-pub fn pcm_duration(pcm: &audio::packet::PcmDescriptor) -> std::time::Duration {
-	std::time::Duration::from_secs_f64(pcm.num_bytes as f64 * 8.0 / pcm.sample_rate as f64)
+pub fn pcm_duration(pcm: &audio::packet::PcmDescriptor, data: &[u8]) -> std::time::Duration {
+	std::time::Duration::from_secs_f64(data.len() as f64 * 8.0 / pcm.sample_rate as f64)
 }
 
 pub fn voice_target_from_sample(sample: &audio::packet::VoiceState) -> VoiceStateFlt {

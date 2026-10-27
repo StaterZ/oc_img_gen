@@ -92,6 +92,7 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
 			},
 			AudioMode::Pcm => {
 				lines.push(format!("  sample rate: {}Hz (tape speed {:.2})", audio.pcm_rate, dfpwm::tape_speed(audio.pcm_rate)));
+				lines.push(format!("  stream align: {} bytes", audio.pcm_align));
 			},
 		}
 	}
@@ -228,6 +229,7 @@ pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 		name: "main".to_string(),
 		mode: args.audio_mode,
 		pcm_rate: args.pcm_rate,
+		pcm_align: args.pcm_align,
 		analysis_rate: args.analysis_rate,
 		fft_window_size: args.fft_window_size,
 		hop_length: args.hop_length.unwrap_or(args.fft_window_size / 2),
@@ -467,6 +469,14 @@ pub struct AudioOpts {
 		value_parser = parse_pcm_rate,
 	)]
 	pub pcm_rate: u32,
+
+	#[arg(
+		long = "pcm-align",
+		default_value_t = 4096,
+		help = "the pcm track gets its own stream, which starts on a multiple of this many bytes",
+		value_parser = clap::value_parser!(u32).range(1..),
+	)]
+	pub pcm_align: u32,
 
 	#[arg(
 		long = "analysis-rate",

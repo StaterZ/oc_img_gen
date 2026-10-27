@@ -24,6 +24,8 @@ pub struct Config {
 	pub name: String,
 	pub mode: Mode,
 	pub pcm_rate: u32,
+	/// the pcm stream starts on a multiple of this many bytes
+	pub pcm_align: u32,
 	pub analysis_rate: u32,
 	pub fft_window_size: usize,
 	pub hop_length: usize,

@@ -2,7 +2,6 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use deku::DekuContainerRead;
 use indicatif::ProgressBar;
 use itertools::Itertools;
 use minifb::{Key, Scale, Window, WindowOptions};
@@ -12,7 +11,7 @@ use triple_buffer::TripleBuffer;
 use display_info::DisplayInfo;
 
 use crate::{
-	audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, PacketContent}, math::*, video::{braille, cmd::packet::Frame},
+	audio::{VoiceStateFlt, packet::Sample}, encoder::media_container::{MediaFile, Packet, PacketContent}, math::*, video::{braille, cmd::packet::Frame},
 };
 use super::{self as shared, DrawOptions, DrawTarget, Gpu, VoiceState};
 
@@ -109,7 +108,7 @@ fn remove_title_bar(window: &Window) {
 
 pub fn play(args: Cli) -> anyhow::Result<()> {
 	let file = std::fs::read(&args.in_path)?;
-	let file = MediaFile::from_bytes((file.as_slice(), 0))?.1;
+	let file = MediaFile::from_bytes(&file)?;
 
 	if file.header.num_tracks == 0 {
 		eprintln!("No tracks");
@@ -205,11 +204,13 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let voices = TripleBuffer::new(&vec![VoiceStateFlt::default(); audio_track.as_ref().map_or(0, |audio_track| file.track_descs[audio_track.id as usize].content.as_audio().unwrap().num_voices as usize)]);
 	let (voices_in, mut voices_out) = voices.split();
 
-	let progress = ProgressBar::new(file.packets.len() as u64)
+	let packets = file.packets();
+	let progress = ProgressBar::new(packets.len() as u64)
 		.with_style(shared::progress_style());
 
 	let mut render_state = RenderState {
 		file: &file,
+		packets,
 		timer: std::time::Instant::now(),
 		next_packet_index: 0,
 		is_done: false,
@@ -285,8 +286,9 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 fn file_length(file: &MediaFile) -> Duration {
 	file.track_descs
 		.iter()
-		.map(|desc| match desc.content.as_pcm() {
-			Some(pcm) => shared::pcm_duration(pcm),
+		.enumerate()
+		.map(|(track_id, desc)| match desc.content.as_pcm() {
+			Some(pcm) => shared::pcm_duration(pcm, file.get_pcm(track_id as u8)),
 			None => (Frac::from(desc.num_packets) * desc.rate.cast::<u32>()).into(),
 		})
 		.max()
@@ -309,6 +311,8 @@ impl PcmTrack {
 
 struct RenderState<'a> {
 	file: &'a MediaFile,
+	/// the packets of all streams, in play order
+	packets: Vec<&'a Packet>,
 	timer: std::time::Instant,
 	next_packet_index: usize,
 	is_done: bool,
@@ -342,13 +346,13 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 			humantime::Duration::from(shared::clean_duration(elapsed)),
 			humantime::Duration::from(shared::clean_duration(*length)),
 			state.next_packet_index,
-			state.file.packets.len(),
+			state.packets.len(),
 		);
 	}
 
 	let opts = DrawOptions { diff: args.diff, show_raw: args.show_raw };
 
-	for packet in state.file.packets
+	for packet in state.packets
 		.iter()
 		.skip(state.next_packet_index)
 	{
@@ -399,7 +403,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 		state.next_packet_index += 1;
 	}
 
-	if state.next_packet_index + 1 >= state.file.packets.len() {
+	if state.next_packet_index + 1 >= state.packets.len() {
 		state.is_done = true;
 		for voice in state.sound_card.voices.input_buffer_publisher().iter_mut() {
 			voice.frequency = 0.0;

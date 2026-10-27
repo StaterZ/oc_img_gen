@@ -21,7 +21,7 @@ mod encoder;
 mod playback;
 
 const EXT: &str = "szt";
-const FORMAT_VERSION: u16 = 7;
+const FORMAT_VERSION: u16 = 8;
 
 #[derive(Parser, Debug)]
 #[command(author, version)]

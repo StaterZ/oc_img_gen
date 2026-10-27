@@ -1,7 +1,6 @@
 use std::{path::{Path, PathBuf}, time::Duration};
 
 use clap::Parser;
-use deku::DekuContainerRead;
 use ffmpeg_next as ffmpeg;
 use itertools::Itertools;
 use palette::{Srgb, rgb::channels::Argb};
@@ -79,7 +78,7 @@ fn default_out_path(in_path: &Path, format: ExportFormat) -> PathBuf {
 
 pub fn export(args: Cli) -> anyhow::Result<()> {
 	let raw = std::fs::read(&args.in_path)?;
-	let file = MediaFile::from_bytes((raw.as_slice(), 0))?.1;
+	let file = MediaFile::from_bytes(&raw)?;
 	anyhow::ensure!(file.header.num_tracks > 0, "The input file has no tracks.");
 
 	let format = match args.format {
@@ -113,8 +112,8 @@ fn export_png(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 	let opts = DrawOptions { diff: args.diff, show_raw: args.show_raw };
 	let mut target = DrawTarget::new(size_pixels, size_cells, 0xff00ff);
 
-	let frame = file.packets
-		.iter()
+	let frame = file.packets()
+		.into_iter()
 		.filter(|packet| packet.track_id as usize == track_index)
 		.find_map(|packet| match &packet.content {
 			PacketContent::Video(frame) => Some(frame),
@@ -305,7 +304,7 @@ fn open_audio_track(
 	let pcm = desc.content.as_pcm().map(|pcm_desc| PcmSource {
 		samples: shared::decode_pcm(file, track_id),
 		sample_rate: pcm_desc.sample_rate as f64,
-		duration: shared::pcm_duration(pcm_desc),
+		duration: shared::pcm_duration(pcm_desc, file.get_pcm(track_id)),
 	});
 
 	let codec = ffmpeg::encoder::find(codec_id)
@@ -458,11 +457,12 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 	octx.write_header()?;
 
-	let progress = indicatif::ProgressBar::new(file.packets.len() as u64)
+	let packets = file.packets();
+	let progress = indicatif::ProgressBar::new(packets.len() as u64)
 		.with_style(shared::progress_style());
 	let opts = DrawOptions { diff: args.diff, show_raw: args.show_raw };
 
-	for packet in &file.packets {
+	for packet in packets {
 		match &packet.content {
 			PacketContent::Video(frame) => {
 				if let Some(track) = video_tracks.iter_mut().find(|track| track.track_id == packet.track_id) {
@@ -520,11 +520,12 @@ fn export_mp3(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 	octx.write_header()?;
 
-	let progress = indicatif::ProgressBar::new(file.packets.len() as u64)
+	let packets = file.packets();
+	let progress = indicatif::ProgressBar::new(packets.len() as u64)
 		.with_style(shared::progress_style());
 
-	for packet in file.packets
-		.iter()
+	for packet in packets
+		.into_iter()
 		.filter(|packet| packet.track_id as usize == track_index)
 	{
 		if let PacketContent::Audio(sample) = &packet.content {

@@ -141,12 +141,13 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 					num_packets: 0,
 					rate: track_data.frame_rate.unwrap_or(in_frame_rate.try_cast::<u16>().unwrap()),
 					name: track_data.name.into(),
+					stream_id: muxer.packet_stream(),
 					content: Descriptor {
 						size,
 					},
 				};
 
-				let track_id = muxer.create_track(desc.clone().into());
+				let track_id = muxer.create_track(desc.clone().into(), desc.stream_id);
 
 				packet::VideoEncoder::new(
 					desc,

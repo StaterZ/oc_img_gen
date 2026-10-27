@@ -65,14 +65,14 @@ impl<'a> PcmReader<'a> {
 			num_packets: 0,
 			rate: Frac::new(1, config.pcm_rate / 8).try_cast::<u16>().unwrap(), //seconds per byte
 			name: config.name.clone().into(),
+			stream_id: 0,
 			content: PcmDescriptor {
 				sample_rate: config.pcm_rate,
-				offset: 0,
-				num_bytes: 0,
 				checksum: 0,
 			},
 		};
-		let track_id = muxer.create_track(desc.into());
+		let stream_id = muxer.create_pcm_stream(config.pcm_align);
+		let track_id = muxer.create_track(desc.into(), stream_id);
 
 		Some(Self {
 			reader_data,

@@ -105,12 +105,13 @@ impl<'a> AudioReader<'a> {
 			num_packets: 0,
 			rate: Frac::new(config.hop_length, config.analysis_rate as usize).try_cast::<u16>().unwrap(),
 			name: config.name.clone().into(),
+			stream_id: muxer.packet_stream(),
 			content: Descriptor {
 				num_voices: config.num_voices as u8,
 			},
 		};
 		
-		let track_id = muxer.create_track(desc.clone().into());
+		let track_id = muxer.create_track(desc.clone().into(), desc.stream_id);
 		
 		let encoder = AudioEncoder::new(desc, track_id);
 		
