@@ -1279,17 +1279,15 @@ local function play(gpu, file, surfaces, open_file)
 						if ops.fps then
 							video.update_stats(track, frame_begin_time, video_begin_time_up, commands_len, command_count)
 						end
-
-						if ops.no_back then
-							track.presented_packet_index = track.presented_packet_index + 1
-							if track.presented_packet_index == track.num_packets then
-								num_live_tracks = num_live_tracks - 1
-							end
-						end
 					else
 						file:seek("cur", commands_len + 1) --command_kind = 1b
 					end
 					if ops.no_back then
+						track.presented_packet_index = track.presented_packet_index + 1
+						if play_video and track.presented_packet_index == track.num_packets then
+							num_live_tracks = num_live_tracks - 1
+						end
+
 						--this won't play nice with audio tracks,
 						--but we can't really help it without buffers
 						if not ops.fast then
@@ -1301,7 +1299,6 @@ local function play(gpu, file, surfaces, open_file)
 								os.sleep(time_left) --sleep is no-op when time<=0
 							until time_left <= 0
 						end
-						track.presented_packet_index = track.presented_packet_index + 1
 					end
 				elseif track.kind == 0x01 then --audio
 					if play_audio then
