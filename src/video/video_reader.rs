@@ -212,27 +212,21 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 		self.encoders.iter().map(|encoder| encoder.report()).collect()
 	}
 
-	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool) {
+	fn process(&mut self, stream_time_s: Frac<i64>, _should_force_emit: bool) {
 		let frame = &self.reader_data.receive_buffer;
 
 		let emit_tracks = self.encoders
 			.iter_mut()
 			.zip_eq(self.track_timers.iter_mut())
-			.filter_map(|(track, last_frame_time)| {
-				if should_force_emit {
-					return Some((track, 1));
-				}
+			.filter_map(|(track, next_frame_time)| {
+				if stream_time_s < *next_frame_time { return None; }
 
-				if stream_time_s < *last_frame_time { return None; }
-
-				let delta = stream_time_s - *last_frame_time;
+				//every track frame that starts at or before this source frame shows it
+				let delta = stream_time_s - *next_frame_time;
 				let frame_rate = track.desc.rate.cast::<i64>();
-				let mut emit_count = (delta / frame_rate).into_int_trunc();
-				if stream_time_s == 0.into() {
-					emit_count = emit_count.max(1);
-				}
-				*last_frame_time += Frac::from(emit_count) * frame_rate;
-				(emit_count > 0).then_some((track, emit_count))
+				let emit_count = (delta / frame_rate).into_int_trunc() + 1;
+				*next_frame_time += Frac::from(emit_count) * frame_rate;
+				Some((track, emit_count))
 			}).collect_vec();
 
 		if cfg!(feature = "log") {
