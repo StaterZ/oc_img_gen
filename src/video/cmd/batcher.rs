@@ -257,6 +257,17 @@ impl WorkBatch {
 fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losses: Option<&Image<Frac<u32>>>, max_batch_size: usize, loss: Frac<u32>, formatter: &impl Formatter) -> Vec<Batch> {
 	let mut output = Vec::new();
 
+	//a batch also draws the cells inside it that were close enough to keep, so prev_frame takes every cell the batch covers
+	fn push_batch(output: &mut Vec<Batch>, prev_frame: &mut Option<TermFrame>, frame: &TermFrame, batch: Batch) {
+		if let Some(prev_frame) = prev_frame.as_mut() {
+			for x in batch.pos.x..batch.pos.x + batch.chars.chars().count() {
+				let pos = Point::new(x, batch.pos.y);
+				prev_frame[pos] = frame[pos];
+			}
+		}
+		output.push(batch);
+	}
+
 	fn compute_char_batch_kind(c: &TermPixel) -> BatchKind {
 		if c.bg == c.fg {
 			debug_assert_eq!(c.sym, ' '.into());
@@ -290,12 +301,6 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 			} else {
 				false
 			};
-
-			if let Some(prev_frame) = prev_frame.as_mut() {
-				if !is_same_as_prev_frame {
-					prev_frame[pos] = *char;
-				}
-			}
 
 			if is_same_as_prev_frame && work_batch.is_none() { continue; }
 
@@ -388,7 +393,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 			}
 			
 			if let Some(work_batch) = work_batch.take() {
-				output.push(work_batch.last_with_change);
+				push_batch(&mut output, prev_frame, frame, work_batch.last_with_change);
 			}
 			if !is_same_as_prev_frame {
 				debug_assert_lt!(x, frame.size().w);
@@ -403,7 +408,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 			}
 		}
 		if let Some(work_batch) = work_batch {
-			output.push(work_batch.last_with_change);
+			push_batch(&mut output, prev_frame, frame, work_batch.last_with_change);
 		}
 	}
 
