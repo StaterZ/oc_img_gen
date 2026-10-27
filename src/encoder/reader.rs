@@ -3,7 +3,6 @@ use std::{
 	time::Duration,
 };
 use indicatif::{MultiProgress, ProgressBar};
-use itertools::Itertools;
 use ffmpeg_next::{
 	codec::Context as CodecCtx,
 	util::error::Error as FfmpegError,
@@ -60,17 +59,46 @@ impl<'a, TDecoder: DecoderInterface> ReaderData<'a, TDecoder> {
 		let time_base = Frac::from(time_base).cast::<i64>();
 		let mut start_ts = stream.start_time();
 		if start_ts == AV_NOPTS_VALUE { start_ts = 0; }
-		let mut duration_ts = stream.duration();
-		if duration_ts == AV_NOPTS_VALUE || duration_ts <= 0 { duration_ts = ictx.duration(); }
-		if duration_ts == AV_NOPTS_VALUE || duration_ts <= 0 { duration_ts = 1; }
-		let end_ts = start_ts + duration_ts;
-		
 		let ns_to_ts = |ns: u128| (Frac::new(ns, std::time::Duration::SECOND.as_nanos()) / time_base.try_cast::<u128>().unwrap()).into_int_round() as i64;
+
+		let mut duration_ts = stream.duration();
+		if duration_ts == AV_NOPTS_VALUE || duration_ts <= 0 {
+			//the container duration is in microseconds, not in stream ticks
+			duration_ts = ns_to_ts(ictx.duration().max(0) as u128 * 1000);
+		}
+
+		let duration_ts = (duration_ts > 0).then_some(duration_ts);
+		//with no known length, read until eof
+		let end_ts = duration_ts.map_or(i64::MAX, |duration_ts| start_ts + duration_ts);
+
 		let range_ts = range.start().map_or(start_ts, |start| ns_to_ts(start.as_nanos()))..=range.end().map_or(end_ts, |end| ns_to_ts(end.as_nanos()));
 
-		let num_frames = (Frac::new(stream.frames(), duration_ts) * range_ts.try_len().unwrap() as i64).into_int_round();
+		//frames per stream tick. nb_frames is often not set (mkv, webm), so fall back to the frame rate
+		let frames_per_ts = match duration_ts {
+			Some(duration_ts) if stream.frames() > 0 => Some(Frac::new(stream.frames(), duration_ts)),
+			_ => {
+				let rate = stream.avg_frame_rate();
+				let (sample_rate, frame_size) = unsafe {
+					let params = stream.parameters().as_ptr();
+					((*params).sample_rate, (*params).frame_size)
+				};
+				let frame_rate = if rate.numerator() > 0 && rate.denominator() > 0 {
+					Some(Frac::from(rate).cast::<i64>())
+				} else if sample_rate > 0 && frame_size > 0 {
+					Some(Frac::new(sample_rate as i64, frame_size as i64))
+				} else {
+					None
+				};
+				frame_rate.map(|frame_rate| frame_rate * time_base)
+			}
+		};
+		//a length of 0 means unknown, the bar still counts frames but has no eta
+		let num_frames = match frames_per_ts {
+			Some(frames_per_ts) if *range_ts.end() != i64::MAX => (frames_per_ts * (range_ts.end() - range_ts.start()).max(0)).into_int_round().max(0) as u64,
+			_ => 0,
+		};
 
-		let progress = multi_progress.add(ProgressBar::new(num_frames as u64)
+		let progress = multi_progress.add(ProgressBar::new(num_frames)
 			.with_style(crate::build_progress_style())
 			.with_prefix(name));
 
