@@ -16,7 +16,7 @@ use palette::Srgb;
 
 use crate::{
 	encoder::{
-		cli::{BrailleStrategy, Budget, ColorDiffStrategy, VideoFilter}, media_container::Descriptor as StreamDescriptor, muxer::{Muxer, PacketWriter}, reader::{DecoderInterface, FrameInterface, Reader, ReaderData}
+		cli::{BrailleStrategy, Budget, ColorDiffStrategy, VideoFilter}, media_container::Descriptor as TrackDescriptor, muxer::{Muxer, PacketWriter}, reader::{DecoderInterface, FrameInterface, Reader, ReaderData}
 	}, math::*, video::cmd::machine::Machine
 };
 
@@ -28,7 +28,7 @@ use super::{
 };
 
 pub struct VideoConfig {
-	pub stream_descs_data: Vec<VideoDescData>,
+	pub track_descs_data: Vec<VideoDescData>,
 	pub container_size: Size<usize>,
 	pub fill_color: Srgb<u8>,
 }
@@ -55,7 +55,7 @@ pub struct VideoReader<'a, 'b> {
 	in_frame_rate: Frac<i64>,
 	formatter: oc_color::formatters::HybridFormatter,
 	pub encoders: Vec<packet::VideoEncoder<'b>>,
-	stream_timers: Vec<Frac<i64>>,
+	track_timers: Vec<Frac<i64>>,
 }
 
 impl DecoderInterface for VideoDecoder {
@@ -121,50 +121,50 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 		).unwrap();
 
 		
-		//setup SZT stream encoders
-		let streams = config.stream_descs_data
+		//setup SZT track encoders
+		let tracks = config.track_descs_data
 			.into_iter()
-			.map(|stream_data| {
-				let (source_area, size) = if let Some(source_area) = stream_data.source_area {
-					debug_assert_eq!(source_area.size, stream_data.size.cast() * braille::SIZE);
-					(source_area, stream_data.size)
+			.map(|track_data| {
+				let (source_area, size) = if let Some(source_area) = track_data.source_area {
+					debug_assert_eq!(source_area.size, track_data.size.cast() * braille::SIZE);
+					(source_area, track_data.size)
 				} else {
 					let size = szu::int_div_ceil!(fit_size, braille::SIZE).try_cast().unwrap();
-					eprintln!("auto-size-fit: {} (smallest possible resolution for stream that fits largest possible source resolution)", size);
+					eprintln!("auto-size-fit: {} (smallest possible resolution for track that fits largest possible source resolution)", size);
 					(Rect {
 						pos: (config.container_size - fit_size) / 2,
 						size: size * braille::SIZE,
 					}, size.cast())
 				};
 				
-				let desc = StreamDescriptor::<Descriptor> {
+				let desc = TrackDescriptor::<Descriptor> {
 					num_packets: 0,
-					rate: stream_data.frame_rate.unwrap_or(in_frame_rate.try_cast::<u16>().unwrap()),
-					name: stream_data.name.into(),
+					rate: track_data.frame_rate.unwrap_or(in_frame_rate.try_cast::<u16>().unwrap()),
+					name: track_data.name.into(),
 					content: Descriptor {
 						size,
 					},
 				};
 
-				let stream_id = muxer.create_stream(desc.clone().into());
+				let track_id = muxer.create_track(desc.clone().into());
 
 				packet::VideoEncoder::new(
 					desc,
-					stream_id,
+					track_id,
 					source_area,
-					stream_data.filter,
-					stream_data.braille_strategy,
-					stream_data.color_diff_strategy,
-					stream_data.budget,
+					track_data.filter,
+					track_data.braille_strategy,
+					track_data.color_diff_strategy,
+					track_data.budget,
 					&machine,
-					stream_data.acceptable_loss,
-					stream_data.loss_step,
+					track_data.acceptable_loss,
+					track_data.loss_step,
 					out_path,
 				)
 			})
 			.collect_vec();
 		
-		let stream_timers = streams.iter().map(|_| Frac::ZERO).collect_vec();
+		let track_timers = tracks.iter().map(|_| Frac::ZERO).collect_vec();
 		
 		Some(Self {
 			reader_data,
@@ -174,19 +174,19 @@ impl<'a, 'b> VideoReader<'a, 'b> {
 			fill_color: config.fill_color,
 			in_frame_rate,
 			formatter: oc_color::formatters::HybridFormatter::new(),
-			encoders: streams,
-			stream_timers,
+			encoders: tracks,
+			track_timers,
 		})
 	}
 
-	//totals over all streams, the per stream breakdown is in the summary
+	//totals over all tracks, the per track breakdown is in the summary
 	fn progress_message(&self) -> String {
 		if let [encoder] = self.encoders.as_slice() {
 			return encoder.progress_message();
 		}
 		let num_bytes = self.encoders.iter().map(|encoder| encoder.stats.num_bytes).sum::<usize>();
 		let num_dropped = self.encoders.iter().map(|encoder| encoder.stats.num_dropped).sum::<usize>();
-		format!("{} streams | {} | {} dropped", self.encoders.len(), crate::format_bytes(num_bytes), num_dropped)
+		format!("{} tracks | {} | {} dropped", self.encoders.len(), crate::format_bytes(num_bytes), num_dropped)
 	}
 }
 
@@ -214,32 +214,32 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 	fn process(&mut self, stream_time_s: Frac<i64>, should_force_emit: bool) {
 		let frame = &self.reader_data.receive_buffer;
 
-		let emit_streams = self.encoders
+		let emit_tracks = self.encoders
 			.iter_mut()
-			.zip_eq(self.stream_timers.iter_mut())
-			.filter_map(|(stream, last_frame_time)| {
+			.zip_eq(self.track_timers.iter_mut())
+			.filter_map(|(track, last_frame_time)| {
 				if should_force_emit {
-					return Some((stream, 1));
+					return Some((track, 1));
 				}
 
 				if stream_time_s < *last_frame_time { return None; }
 
 				let delta = stream_time_s - *last_frame_time;
-				let frame_rate = stream.desc.rate.cast::<i64>();
+				let frame_rate = track.desc.rate.cast::<i64>();
 				let mut emit_count = (delta / frame_rate).into_int_trunc();
 				if stream_time_s == 0.into() {
 					emit_count = emit_count.max(1);
 				}
 				*last_frame_time += Frac::from(emit_count) * frame_rate;
-				(emit_count > 0).then_some((stream, emit_count))
+				(emit_count > 0).then_some((track, emit_count))
 			}).collect_vec();
 
 		if cfg!(feature = "log") {
 			eprintln!();
-			eprintln!("emit: {}", if !emit_streams.is_empty() { format!("yes ({})", emit_streams.iter().map(|s| s.1.to_string()).join(",")) } else { "no".to_string() });
+			eprintln!("emit: {}", if !emit_tracks.is_empty() { format!("yes ({})", emit_tracks.iter().map(|s| s.1.to_string()).join(",")) } else { "no".to_string() });
 		}
 
-		if emit_streams.is_empty() { return; }
+		if emit_tracks.is_empty() { return; }
 		
 		let frame = crate::stage("Frame  | Preamble  | Scale", || {
 			self.scaler.run(frame, &mut self.scaler_buffer).unwrap();
@@ -249,19 +249,19 @@ impl<'a, 'b> Reader<'a> for VideoReader<'a, 'b> {
 		let img = crate::stage("Frame  | Preamble  | Into Image", || Image::from(frame));
 		let img = crate::stage("Frame  | Preamble  | Resize", || img.resize(self.container_size, self.fill_color, Point::splat(Frac::half())));
 		
-		//only worth showing when a frame is split over several streams
-		let emit_streams_len = emit_streams.len();
-		let frame_progress = (cfg!(not(feature = "log")) && emit_streams_len > 1).then(|| {
-			let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_streams_len as u64)
+		//only worth showing when a frame is split over several tracks
+		let emit_tracks_len = emit_tracks.len();
+		let frame_progress = (cfg!(not(feature = "log")) && emit_tracks_len > 1).then(|| {
+			let frame_progress = self.reader_data.multi_progress.add(ProgressBar::new(emit_tracks_len as u64)
 				.with_style(crate::build_progress_style())
 				.with_prefix("frame"));
 			frame_progress.tick();
 			frame_progress
 		});
 
-		for (stream, emit_count) in emit_streams {
+		for (track, emit_count) in emit_tracks {
 			for _ in 0..emit_count {
-				stream.process(&img, &self.formatter);
+				track.process(&img, &self.formatter);
 			}
 
 			if let Some(frame_progress) = &frame_progress {

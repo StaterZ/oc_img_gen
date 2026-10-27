@@ -105,7 +105,7 @@ struct Desc {
 struct Header {
 	char magic[4];
 	u16 version;
-	u8 num_streams;
+	u8 num_tracks;
 	std::string::SizedString<u16> settings; //"key: value" lines
 	
 	std::assert(magic == "sztb", "bad magic");
@@ -134,25 +134,25 @@ struct Sample<auto desc> {
 };
 
 struct Packet {
-	u8 stream_id;
-	match (parent.stream_descs[stream_id].kind) {
-		(DescKind::Video): Frame<parent.stream_descs[stream_id].desc> content;
-		(DescKind::Audio): Sample<parent.stream_descs[stream_id].desc> content;
+	u8 track_id;
+	match (parent.track_descs[track_id].kind) {
+		(DescKind::Video): Frame<parent.track_descs[track_id].desc> content;
+		(DescKind::Audio): Sample<parent.track_descs[track_id].desc> content;
 	}
 };
 
-fn calculate_total_packets(ref auto stream_descs, u32 num_streams) {
+fn calculate_total_packets(ref auto track_descs, u32 num_tracks) {
 	u32 total = 0;
-	for (u32 i = 0, i < num_streams, i += 1) {
-		total += stream_descs[i].num_packets;
+	for (u32 i = 0, i < num_tracks, i += 1) {
+		total += track_descs[i].num_packets;
 	}
 	return total;
 };
 
 struct File {
 	Header header;
-	Desc stream_descs[header.num_streams];
-	u32 num_packets = calculate_total_packets(stream_descs, header.num_streams);
+	Desc track_descs[header.num_tracks];
+	u32 num_packets = calculate_total_packets(track_descs, header.num_tracks);
 	
 	u64 start = $;
 	std::print("start: {}", start);

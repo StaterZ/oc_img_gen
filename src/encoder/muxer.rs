@@ -18,10 +18,10 @@ impl Muxer {
 		}
 	}
 
-	pub fn create_stream(&mut self, desc: Descriptor<DescriptorContent>) -> u8 {
-		let stream_id = self.output.stream_descs.len() as u8;
-		self.output.stream_descs.push(desc);
-		stream_id
+	pub fn create_track(&mut self, desc: Descriptor<DescriptorContent>) -> u8 {
+		let track_id = self.output.track_descs.len() as u8;
+		self.output.track_descs.push(desc);
+		track_id
 	}
 
 	pub fn process(&mut self, writers: &mut [&mut dyn PacketWriter]) {
@@ -30,7 +30,7 @@ impl Muxer {
 			.min_by_key_while(|writer| writer.get_next_packet_end_time())
 		{
 			let packet = writer.get_next_packet().unwrap(); //SAFETY: unwrap is safe due to while condition
-			self.output.stream_descs[packet.stream_id as usize].num_packets += 1;
+			self.output.track_descs[packet.track_id as usize].num_packets += 1;
 			self.output.packets.push(packet);
 		}
 	}
@@ -45,10 +45,10 @@ impl Muxer {
 			.map(|(_, writer)| writer)
 		{
 			let packet = writer.get_next_packet().unwrap(); //SAFETY: unwrap is safe due to while condition
-			self.output.stream_descs[packet.stream_id as usize].num_packets += 1;
+			self.output.track_descs[packet.track_id as usize].num_packets += 1;
 			self.output.packets.push(packet);
 		}
-		self.output.header.num_streams = self.output.stream_descs.len() as u8;
+		self.output.header.num_tracks = self.output.track_descs.len() as u8;
 		self.output
 	}
 }

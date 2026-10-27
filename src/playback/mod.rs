@@ -201,9 +201,9 @@ pub fn smooth_coefficient(sample_rate: f32, smooth_time: std::time::Duration) ->
 	(-1.0 / (sample_rate * smooth_time.as_secs_f32())).exp()
 }
 
-/// Decodes a pcm stream like the tape drive would play it, as -1..1 samples.
-pub fn decode_pcm(file: &MediaFile, stream_id: u8) -> Vec<f32> {
-	audio::dfpwm::decode(file.get_pcm(stream_id))
+/// Decodes a pcm track like the tape drive would play it, as -1..1 samples.
+pub fn decode_pcm(file: &MediaFile, track_id: u8) -> Vec<f32> {
+	audio::dfpwm::decode(file.get_pcm(track_id))
 		.into_iter()
 		.map(|sample| sample as f32 / 128.0)
 		.collect()

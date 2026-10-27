@@ -29,7 +29,7 @@ pub struct Cli {
 	#[arg(short = 'o', long = "out", help = "output path, defaults to the input file stem with the picked extension")]
 	pub out_path: Option<PathBuf>,
 
-	#[arg(short = 'f', long = "format", help = "force an output format instead of picking one from the streams")]
+	#[arg(short = 'f', long = "format", help = "force an output format instead of picking one from the tracks")]
 	pub format: Option<ExportFormat>,
 
 	#[arg(short = 'd', long = "diff", help = "visualize difference from the last frame")]
@@ -52,9 +52,9 @@ pub struct Cli {
 }
 
 fn pick_format(file: &MediaFile) -> anyhow::Result<ExportFormat> {
-	let has_video = file.stream_descs.iter().any(|desc| desc.content.is_video());
-	let has_audio = file.stream_descs.iter().any(|desc| desc.content.is_audio() || desc.content.is_pcm());
-	let is_one_frame = file.stream_descs
+	let has_video = file.track_descs.iter().any(|desc| desc.content.is_video());
+	let has_audio = file.track_descs.iter().any(|desc| desc.content.is_audio() || desc.content.is_pcm());
+	let is_one_frame = file.track_descs
 		.iter()
 		.any(|desc| desc.content.is_video() && desc.num_packets == 1);
 
@@ -63,7 +63,7 @@ fn pick_format(file: &MediaFile) -> anyhow::Result<ExportFormat> {
 		(true, false) if is_one_frame => ExportFormat::Png, //image
 		(true, _) => ExportFormat::Mp4, //video with or without audio
 		(false, true) => ExportFormat::Mp3, //pure music
-		(false, false) => anyhow::bail!("The input file has no video or audio streams to export."),
+		(false, false) => anyhow::bail!("The input file has no video or audio tracks to export."),
 	})
 }
 
@@ -80,7 +80,7 @@ fn default_out_path(in_path: &Path, format: ExportFormat) -> PathBuf {
 pub fn export(args: Cli) -> anyhow::Result<()> {
 	let raw = std::fs::read(&args.in_path)?;
 	let file = MediaFile::from_bytes((raw.as_slice(), 0))?.1;
-	anyhow::ensure!(file.header.num_streams > 0, "The input file has no streams.");
+	anyhow::ensure!(file.header.num_tracks > 0, "The input file has no tracks.");
 
 	let format = match args.format {
 		Some(format) => format,
@@ -99,11 +99,11 @@ pub fn export(args: Cli) -> anyhow::Result<()> {
 }
 
 fn export_png(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<()> {
-	let (stream_index, desc) = file.stream_descs
+	let (track_index, desc) = file.track_descs
 		.iter()
 		.enumerate()
 		.find(|(_, desc)| desc.content.is_video())
-		.ok_or_else(|| anyhow::anyhow!("The input file has no video stream."))?;
+		.ok_or_else(|| anyhow::anyhow!("The input file has no video track."))?;
 
 	let video_desc = desc.content.as_video().unwrap();
 	let size_cells = video_desc.size.cast::<usize>();
@@ -115,12 +115,12 @@ fn export_png(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 	let frame = file.packets
 		.iter()
-		.filter(|packet| packet.stream_id as usize == stream_index)
+		.filter(|packet| packet.track_id as usize == track_index)
 		.find_map(|packet| match &packet.content {
 			PacketContent::Video(frame) => Some(frame),
 			_ => None,
 		})
-		.ok_or_else(|| anyhow::anyhow!("The video stream has no frames."))?;
+		.ok_or_else(|| anyhow::anyhow!("The video track has no frames."))?;
 
 	target.draw_packet(&mut gpu, &opts, frame)?;
 
@@ -139,11 +139,11 @@ fn argb_to_rgb_bytes(pixel: u32) -> [u8; 3] {
 }
 
 struct VideoTrack {
-	stream_id: u8,
+	track_id: u8,
 	size: Size<u32>,
 	target: DrawTarget,
 	gpu: Gpu,
-	stream_time_base: Frac<i32>,
+	track_time_base: Frac<i32>,
 	ost_index: usize,
 	encoder: ffmpeg::encoder::Video,
 	scaler: ffmpeg::software::scaling::Context,
@@ -152,7 +152,7 @@ struct VideoTrack {
 fn open_video_track(
 	octx: &mut ffmpeg::format::context::Output,
 	desc: &Descriptor<DescriptorContent>,
-	stream_id: u8,
+	track_id: u8,
 	args: &Cli,
 ) -> anyhow::Result<VideoTrack> {
 	let video_desc = desc.content.as_video().unwrap();
@@ -200,9 +200,9 @@ fn open_video_track(
 	)?;
 
 	Ok(VideoTrack {
-		stream_id,
+		track_id,
 		size,
-		stream_time_base: rate,
+		track_time_base: rate,
 		target: DrawTarget::new(size_pixels, size_cells, 0xff00ff),
 		gpu: Gpu::new(),
 		ost_index,
@@ -254,7 +254,7 @@ impl VideoTrack {
 		let mut packet = ffmpeg::Packet::empty();
 		while self.encoder.receive_packet(&mut packet).is_ok() {
 			packet.set_stream(self.ost_index);
-			packet.rescale_ts(self.stream_time_base, stream_time_base);
+			packet.rescale_ts(self.track_time_base, stream_time_base);
 			packet.write_interleaved(octx)?;
 		}
 		Ok(())
@@ -267,7 +267,7 @@ impl VideoTrack {
 }
 
 struct AudioTrack {
-	stream_id: u8,
+	track_id: u8,
 	voices: Vec<VoiceState>,
 	targets: Vec<VoiceStateFlt>,
 	smooth_coefficient: f32,
@@ -282,7 +282,7 @@ struct AudioTrack {
 	pcm: Option<PcmSource>,
 }
 
-/// a decoded pcm stream, sampled at the export rate
+/// a decoded pcm track, sampled at the export rate
 struct PcmSource {
 	samples: Vec<f32>,
 	sample_rate: f64,
@@ -296,14 +296,14 @@ fn is_audio_desc(desc: &Descriptor<DescriptorContent>) -> bool {
 fn open_audio_track(
 	octx: &mut ffmpeg::format::context::Output,
 	file: &MediaFile,
-	stream_id: u8,
+	track_id: u8,
 	args: &Cli,
 	codec_id: ffmpeg::codec::Id,
 ) -> anyhow::Result<AudioTrack> {
-	let desc = &file.stream_descs[stream_id as usize];
+	let desc = &file.track_descs[track_id as usize];
 	let num_voices = desc.content.as_audio().map_or(0, |audio_desc| audio_desc.num_voices as usize);
 	let pcm = desc.content.as_pcm().map(|pcm_desc| PcmSource {
-		samples: shared::decode_pcm(file, stream_id),
+		samples: shared::decode_pcm(file, track_id),
 		sample_rate: pcm_desc.sample_rate as f64,
 		duration: shared::pcm_duration(pcm_desc),
 	});
@@ -353,7 +353,7 @@ fn open_audio_track(
 	frame.set_rate(sample_rate);
 
 	Ok(AudioTrack {
-		stream_id,
+		track_id,
 		voices: vec![VoiceState::new(0.0); num_voices],
 		targets: vec![VoiceStateFlt::default(); num_voices],
 		smooth_coefficient: shared::smooth_coefficient(sample_rate as f32, args.voice_smooth_time.into()),
@@ -442,14 +442,14 @@ impl AudioTrack {
 fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<()> {
 	let mut octx = ffmpeg::format::output(out_path)?;
 
-	let mut video_tracks: Vec<VideoTrack> = file.stream_descs
+	let mut video_tracks: Vec<VideoTrack> = file.track_descs
 		.iter()
 		.enumerate()
 		.filter(|(_, desc)| desc.content.is_video())
 		.map(|(index, desc)| open_video_track(&mut octx, desc, index as u8, args))
 		.try_collect()?;
 
-	let mut audio_track = file.stream_descs
+	let mut audio_track = file.track_descs
 		.iter()
 		.enumerate()
 		.find(|(_, desc)| is_audio_desc(desc))
@@ -465,24 +465,24 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 	for packet in &file.packets {
 		match &packet.content {
 			PacketContent::Video(frame) => {
-				if let Some(track) = video_tracks.iter_mut().find(|track| track.stream_id == packet.stream_id) {
+				if let Some(track) = video_tracks.iter_mut().find(|track| track.track_id == packet.track_id) {
 					track.push_frame(&opts, frame)?;
 					track.drain_packets(&mut octx)?;
 
 					//pcm has no packets, so keep it up with the video
 					if let Some(audio_track) = audio_track.as_mut().filter(|audio_track| audio_track.pcm.is_some()) {
-						let desc = &file.stream_descs[track.stream_id as usize];
+						let desc = &file.track_descs[track.track_id as usize];
 						let ts_end = Duration::from(desc.rate.cast::<u32>() * track.target.frame_index as u32);
 						audio_track.render_until(ts_end.as_secs_f64(), &mut octx)?;
 					}
 				}
 			},
 			PacketContent::Audio(sample) => {
-				if let Some(track) = audio_track.as_mut().filter(|track| track.stream_id == packet.stream_id) {
+				if let Some(track) = audio_track.as_mut().filter(|track| track.track_id == packet.track_id) {
 					track.set_targets(sample);
 					track.next_frame_index += 1;
 
-					let desc = &file.stream_descs[track.stream_id as usize];
+					let desc = &file.track_descs[track.track_id as usize];
 					let ts_end = Duration::from(desc.rate.cast::<u32>() * track.next_frame_index as u32);
 					track.render_until(ts_end.as_secs_f64(), &mut octx)?;
 				}
@@ -510,13 +510,13 @@ fn export_mp4(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 fn export_mp3(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<()> {
 	let mut octx = ffmpeg::format::output(out_path)?;
 
-	let (stream_index, desc) = file.stream_descs
+	let (track_index, desc) = file.track_descs
 		.iter()
 		.enumerate()
 		.find(|(_, desc)| is_audio_desc(desc))
-		.ok_or_else(|| anyhow::anyhow!("The input file has no audio stream."))?;
+		.ok_or_else(|| anyhow::anyhow!("The input file has no audio track."))?;
 
-	let mut audio_track = open_audio_track(&mut octx, file, stream_index as u8, args, ffmpeg::codec::Id::MP3)?;
+	let mut audio_track = open_audio_track(&mut octx, file, track_index as u8, args, ffmpeg::codec::Id::MP3)?;
 
 	octx.write_header()?;
 
@@ -525,7 +525,7 @@ fn export_mp3(file: &MediaFile, out_path: &Path, args: &Cli) -> anyhow::Result<(
 
 	for packet in file.packets
 		.iter()
-		.filter(|packet| packet.stream_id as usize == stream_index)
+		.filter(|packet| packet.track_id as usize == track_index)
 	{
 		if let PacketContent::Audio(sample) = &packet.content {
 			audio_track.set_targets(sample);

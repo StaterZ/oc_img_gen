@@ -5,7 +5,7 @@ use crate::{
 	math::Frac,
 	encoder::{
 		media_container::{
-			Descriptor as StreamDescriptor,
+			Descriptor as TrackDescriptor,
 			Packet,
 			PacketContent,
 		},
@@ -45,16 +45,16 @@ pub struct PcmDescriptor {
 }
 
 pub struct AudioEncoder {
-	pub desc: StreamDescriptor<Descriptor>,
-	stream_id: u8,
+	pub desc: TrackDescriptor<Descriptor>,
+	track_id: u8,
 	pub samples: VecDeque<Sample>,
 }
 
 impl AudioEncoder {
-	pub fn new(desc: StreamDescriptor<Descriptor>, stream_id: u8) -> Self {
+	pub fn new(desc: TrackDescriptor<Descriptor>, track_id: u8) -> Self {
 		Self {
 			desc,
-			stream_id,
+			track_id,
 			samples: VecDeque::new(),
 		}
 	}
@@ -69,7 +69,7 @@ impl PacketWriter for AudioEncoder {
 		self.samples.pop_front().map(|sample| {
 			self.desc.num_packets += 1;
 			Packet {
-				stream_id: self.stream_id,
+				track_id: self.track_id,
 				content: PacketContent::Audio(sample),
 			}
 		})

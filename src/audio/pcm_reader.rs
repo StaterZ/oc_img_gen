@@ -13,7 +13,7 @@ use ffmpeg_next::{
 
 use crate::{
 	encoder::{
-		media_container::Descriptor as StreamDescriptor,
+		media_container::Descriptor as TrackDescriptor,
 		muxer::{Muxer, PacketWriter},
 		reader::{Reader, ReaderData},
 	}, math::Frac,
@@ -31,7 +31,7 @@ pub struct PcmReader<'a> {
 	resampler: Resampler,
 	resampler_buffer: AudioFrame,
 	config: AudioConfig,
-	stream_id: u8,
+	track_id: u8,
 	pcm: Vec<f32>,
 	peak: f32,
 	data: Option<Vec<u8>>,
@@ -61,7 +61,7 @@ impl<'a> PcmReader<'a> {
 			config.pcm_rate,
 		).unwrap();
 
-		let desc = StreamDescriptor::<PcmDescriptor> {
+		let desc = TrackDescriptor::<PcmDescriptor> {
 			num_packets: 0,
 			rate: Frac::new(1, config.pcm_rate / 8).try_cast::<u16>().unwrap(), //seconds per byte
 			name: config.name.clone().into(),
@@ -72,14 +72,14 @@ impl<'a> PcmReader<'a> {
 				checksum: 0,
 			},
 		};
-		let stream_id = muxer.create_stream(desc.into());
+		let track_id = muxer.create_track(desc.into());
 
 		Some(Self {
 			reader_data,
 			resampler,
 			resampler_buffer: AudioFrame::empty(),
 			config,
-			stream_id,
+			track_id,
 			pcm: Vec::new(),
 			peak: 0.0,
 			data: None,
@@ -115,7 +115,7 @@ impl<'a> Reader<'a> for PcmReader<'a> {
 	}
 
 	fn take_pcm(&mut self) -> Option<(u8, Vec<u8>)> {
-		self.data.take().map(|data| (self.stream_id, data))
+		self.data.take().map(|data| (self.track_id, data))
 	}
 
 	fn process(&mut self, _stream_time_s: Frac<i64>, _should_force_emit: bool) {

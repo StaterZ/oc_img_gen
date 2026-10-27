@@ -111,12 +111,12 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	let file = std::fs::read(&args.in_path)?;
 	let file = MediaFile::from_bytes((file.as_slice(), 0))?.1;
 
-	if file.header.num_streams == 0 {
-		eprintln!("No streams");
+	if file.header.num_tracks == 0 {
+		eprintln!("No tracks");
 		return Ok(());
 	}
 
-	let video_streams = file.stream_descs
+	let video_tracks = file.track_descs
 		.iter()
 		.enumerate()
 		.filter(|(_, desc)| desc.content.is_video())
@@ -172,7 +172,7 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 				}
 			}
 
-			VideoStream {
+			VideoTrack {
 				id: index as u8,
 				window,
 				target: DrawTarget::new(size_pixels, size_cells, 0xff00ff),
@@ -181,28 +181,28 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		})
 		.collect();
 
-	let audio_stream = file.stream_descs
+	let audio_track = file.track_descs
 		.iter()
 		.enumerate()
 		.filter(|(_, desc)| desc.content.is_audio())
 		.next()
-		.map(|(id, _)| AudioStream {
+		.map(|(id, _)| AudioTrack {
 			id: id as u8,
 			next_frame_index: 0,
 		});
 
 	//a tape drive plays the pcm on its own, so the preview just runs through it next to the packets
-	let mut pcm = file.stream_descs
+	let mut pcm = file.track_descs
 		.iter()
 		.enumerate()
 		.find(|(_, desc)| desc.content.is_pcm())
-		.map(|(id, desc)| PcmStream {
+		.map(|(id, desc)| PcmTrack {
 			samples: shared::decode_pcm(&file, id as u8),
 			sample_rate: desc.content.as_pcm().unwrap().sample_rate as f32,
 			pos: 0.0,
 		});
 
-	let voices = TripleBuffer::new(&vec![VoiceStateFlt::default(); audio_stream.as_ref().map_or(0, |audio_stream| file.stream_descs[audio_stream.id as usize].content.as_audio().unwrap().num_voices as usize)]);
+	let voices = TripleBuffer::new(&vec![VoiceStateFlt::default(); audio_track.as_ref().map_or(0, |audio_track| file.track_descs[audio_track.id as usize].content.as_audio().unwrap().num_voices as usize)]);
 	let (voices_in, mut voices_out) = voices.split();
 
 	let progress = ProgressBar::new(file.packets.len() as u64)
@@ -215,8 +215,8 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 		is_done: false,
 		progress,
 
-		video_streams,
-		audio_stream,
+		video_tracks,
+		audio_track,
 		sound_card: SoundCard {
 			voices: voices_in,
 		},
@@ -264,26 +264,26 @@ pub fn play(args: Cli) -> anyhow::Result<()> {
 	'outer: loop {
 		render(&mut render_state, &args)?;
 		//without windows there is nothing to close, so stop once everything played
-		if render_state.video_streams.is_empty() && render_state.is_done && render_state.timer.elapsed() >= stream_length(&file) {
+		if render_state.video_tracks.is_empty() && render_state.is_done && render_state.timer.elapsed() >= file_length(&file) {
 			break;
 		}
 
-		for video_stream in render_state.video_streams.iter_mut() {
-			if !video_stream.window.is_open() || video_stream.window.is_key_down(Key::Escape) { break 'outer; }
+		for video_track in render_state.video_tracks.iter_mut() {
+			if !video_track.window.is_open() || video_track.window.is_key_down(Key::Escape) { break 'outer; }
 
-			video_stream.window
+			video_track.window
 				.update_with_buffer(
-					video_stream.target.image.buffer(),
-					video_stream.target.image.size().w,
-					video_stream.target.image.size().h,
+					video_track.target.image.buffer(),
+					video_track.target.image.size().w,
+					video_track.target.image.size().h,
 				).expect("Failed to update window");
 		}
 	}
 	Ok(())
 }
 
-fn stream_length(file: &MediaFile) -> Duration {
-	file.stream_descs
+fn file_length(file: &MediaFile) -> Duration {
+	file.track_descs
 		.iter()
 		.map(|desc| match desc.content.as_pcm() {
 			Some(pcm) => shared::pcm_duration(pcm),
@@ -293,13 +293,13 @@ fn stream_length(file: &MediaFile) -> Duration {
 		.unwrap_or(Duration::ZERO)
 }
 
-struct PcmStream {
+struct PcmTrack {
 	samples: Vec<f32>,
 	sample_rate: f32,
 	pos: f64,
 }
 
-impl PcmStream {
+impl PcmTrack {
 	fn advance(&mut self, out_sample_rate: f32) -> f32 {
 		let sample = self.samples.get(self.pos as usize).copied().unwrap_or(0.0);
 		self.pos += (self.sample_rate / out_sample_rate) as f64;
@@ -314,8 +314,8 @@ struct RenderState<'a> {
 	is_done: bool,
 	progress: ProgressBar,
 
-	video_streams: Vec<VideoStream>,
-	audio_stream: Option<AudioStream>,
+	video_tracks: Vec<VideoTrack>,
+	audio_track: Option<AudioTrack>,
 	sound_card: SoundCard,
 }
 
@@ -329,7 +329,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	let elapsed = state.timer.elapsed();
 	let present_time = Frac::from(elapsed.as_secs()) + Frac::new(elapsed.subsec_nanos(), shared::NANOS_PER_SEC).cast();
 
-	let length = &stream_length(state.file);
+	let length = &file_length(state.file);
 
 	#[cfg(not(feature = "log"))]
 	state.progress.set_message(format!("{}/{}",
@@ -354,44 +354,44 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	{
 		match &packet.content {
 			PacketContent::Video(frame) => {
-				let stream = state.video_streams
+				let track = state.video_tracks
 					.iter_mut()
-					.filter(|s| s.id == packet.stream_id)
+					.filter(|t| t.id == packet.track_id)
 					.next()
 					.unwrap();
-				let desc = &state.file.stream_descs[stream.id as usize];
+				let desc = &state.file.track_descs[track.id as usize];
 
-				if Frac::from(stream.target.frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
+				if Frac::from(track.target.frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
 				state.progress.inc(1);
 
 				if args.diff && frame.commands_len > 0 {
-					for pixel in stream.target.image.buffer_mut() {
+					for pixel in track.target.image.buffer_mut() {
 						*pixel = 0xff0000;
 					}
 				}
-				stream.draw_packet(&opts, frame)?;
+				track.draw_packet(&opts, frame)?;
 
 				if args.export {
 					let path = format!("{}_{}_{}.png",
 						shared::stem(&args.in_path).unwrap(),
 						desc.name,
-						stream.target.frame_index - 1,
+						track.target.frame_index - 1,
 					);
 					eprintln!("{}", path);
-					shared::write_image(path, stream.target.image
+					shared::write_image(path, track.target.image
 						.iter()
 						.map(|p| Srgb::<u8>::from_u32::<Argb>(*p)))?;
 				}
 			},
-			PacketContent::Audio(sample) if Some(packet.stream_id) == state.audio_stream.as_ref().map(|audio_stream| audio_stream.id) => {
-				if let Some(stream) = &mut state.audio_stream {
-					let desc = &state.file.stream_descs[stream.id as usize];
+			PacketContent::Audio(sample) if Some(packet.track_id) == state.audio_track.as_ref().map(|audio_track| audio_track.id) => {
+				if let Some(track) = &mut state.audio_track {
+					let desc = &state.file.track_descs[track.id as usize];
 
-					if Frac::from(stream.next_frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
-					stream.next_frame_index += 1;
+					if Frac::from(track.next_frame_index) * desc.rate.cast::<u64>() > present_time { break; } //SAFETY: packets are ordered, so break on the first one like this is ok
+					track.next_frame_index += 1;
 					state.progress.inc(1);
 
-					stream.play_packet(&mut state.sound_card, sample)?;
+					track.play_packet(&mut state.sound_card, sample)?;
 				}
 			},
 			_ => {},
@@ -409,25 +409,25 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 	Ok(())
 }
 
-struct VideoStream {
+struct VideoTrack {
 	id: u8,
 	window: Window,
 	target: DrawTarget,
 	gpu: Gpu,
 }
 
-impl VideoStream {
+impl VideoTrack {
 	fn draw_packet(&mut self, opts: &DrawOptions, packet: &Frame) -> anyhow::Result<()> {
 		self.target.draw_packet(&mut self.gpu, opts, packet)
 	}
 }
 
-struct AudioStream {
+struct AudioTrack {
 	id: u8,
 	next_frame_index: u64,
 }
 
-impl AudioStream {
+impl AudioTrack {
 	pub fn play_packet(&mut self, state: &mut SoundCard, packet: &Sample) -> anyhow::Result<()> {
 		for (voice, target) in state.voices
 			.input_buffer_publisher()

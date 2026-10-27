@@ -62,8 +62,8 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
 
 	if let (Some(video), Some(video_config)) = (&args.video, video_config) {
 		lines.push(format!("video: {}", video.mode.as_ref().map_or_else(String::new, value_name)));
-		if let Some(desc) = video_config.stream_descs_data.first() {
-			lines.push(format!("  streams: {} of {}", video_config.stream_descs_data.len(), desc.size));
+		if let Some(desc) = video_config.track_descs_data.first() {
+			lines.push(format!("  tracks: {} of {}", video_config.track_descs_data.len(), desc.size));
 		}
 		lines.push(format!("  frame rate: {}", video.frame_rate.map_or_else(|| "source".to_string(), |rate| rate.to_string())));
 		lines.push(format!("  fill color: {}", video.fill_color));
@@ -99,7 +99,7 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
 }
 
 fn build_video_config(args: &VideoOpts, machine: &Machine, in_path: &Path) -> VideoConfig {
-	let stream_desc = |name: String, size: Size<u8>, source_area: Option<Rect<usize>>| VideoDescData {
+	let track_desc = |name: String, size: Size<u8>, source_area: Option<Rect<usize>>| VideoDescData {
 		name,
 		frame_rate: args.frame_rate.map(|x| x.inverse()),
 		size,
@@ -114,56 +114,56 @@ fn build_video_config(args: &VideoOpts, machine: &Machine, in_path: &Path) -> Vi
 
 	match args.mode.unwrap() { //SAFETY: the video option group requires --mode
 		VideoMode::Single => {
-			let stream_size = args.stream_size.unwrap_or_else(|| {
+			let track_size = args.track_size.unwrap_or_else(|| {
 				let source_size = read_video_size(in_path);
 				let max_screen_size = machine.compute_max_resolution(source_size.ratio() / video::braille::SIZE.ratio());
 				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
 				max_screen_size
 			});
-			let stream_size: Size<u8> = stream_size.try_cast().expect("stream size too large");
+			let track_size: Size<u8> = track_size.try_cast().expect("track size too large");
 
 			VideoConfig {
-				stream_descs_data: vec![stream_desc("main".to_string(), stream_size, None)],
-				container_size: stream_size.cast() * video::braille::SIZE,
+				track_descs_data: vec![track_desc("main".to_string(), track_size, None)],
+				container_size: track_size.cast() * video::braille::SIZE,
 				fill_color: *args.fill_color,
 			}
 		},
 		VideoMode::Matrix => {
 			let matrix_size = args.matrix_size.unwrap(); //SAFETY: --mode matrix requires --matrix-size
-			let stream_size = args.stream_size.unwrap_or_else(|| {
+			let track_size = args.track_size.unwrap_or_else(|| {
 				let size = machine.compute_max_resolution(Frac::ONE / video::braille::SIZE.ratio());
 				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
 			});
-			let stream_input_size = stream_size * video::braille::SIZE;
+			let track_input_size = track_size * video::braille::SIZE;
 			let gap_size = args.matrix_gap_size
 				.or_else(|| args.matrix_screen_size
 					.map(|matrix_screen_size| {
-						let gap = compute_gap_size(stream_input_size, matrix_screen_size);
+						let gap = compute_gap_size(track_input_size, matrix_screen_size);
 						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
 				.unwrap_or(Size::ZERO);
-			let stream_size: Size<u8> = stream_size.try_cast().expect("stream size too large");
+			let track_size: Size<u8> = track_size.try_cast().expect("track size too large");
 
 			VideoConfig {
-				stream_descs_data: (0..matrix_size.h)
+				track_descs_data: (0..matrix_size.h)
 					.flat_map(|y| (0..matrix_size.w).map(move |x| Point::new(x, y)))
-					.map(|cell| stream_desc(
+					.map(|cell| track_desc(
 						format!("{},{}", cell.x, cell.y),
-						stream_size,
+						track_size,
 						Some(Rect {
-							pos: cell * (stream_input_size + gap_size),
-							size: stream_input_size,
+							pos: cell * (track_input_size + gap_size),
+							size: track_input_size,
 						}),
 					))
 					.collect(),
-				container_size: matrix_size * stream_input_size + (matrix_size - 1) * gap_size,
+				container_size: matrix_size * track_input_size + (matrix_size - 1) * gap_size,
 				fill_color: *args.fill_color,
 			}
 		},
-		VideoMode::Custom => create_streams_custom(
-			args.streams_config.as_ref().unwrap() //SAFETY: --mode custom requires --streams-config
+		VideoMode::Custom => create_tracks_custom(
+			args.tracks_config.as_ref().unwrap() //SAFETY: --mode custom requires --tracks-config
 		),
 	}
 }
@@ -176,16 +176,16 @@ fn read_video_size(in_path: &Path) -> Size<usize> {
 	Size::new(decoder.width() as usize, decoder.height() as usize)
 }
 
-pub fn compute_gap_size(stream_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
+pub fn compute_gap_size(track_size: Size<usize>, matrix_screen_size: Size<usize>) -> Size<usize> {
 	const FIXED_POINT: usize = 2;
 	const PIXEL_GAP: usize = 9; //it's '(2 + 0.25) * 2' but we use x2 fixed point to remove the floats
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
-	(stream_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
+	(track_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
 }
 
-fn create_streams_custom(_config_path: &Path) -> VideoConfig {
-	todo!("custom stream config");
+fn create_tracks_custom(_config_path: &Path) -> VideoConfig {
+	todo!("custom track config");
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
@@ -295,10 +295,10 @@ struct VideoOpts {
 		value_enum,
 		short = 'm',
 		long = "mode",
-		help = "How to arrange and produce the streams",
+		help = "How to arrange and produce the tracks",
 		requires_ifs([
 			("matrix", "matrix_size"),
-			("custom", "streams_config"),
+			("custom", "tracks_config"),
 		]),
 	)]
 	pub mode: Option<VideoMode>,
@@ -307,7 +307,7 @@ struct VideoOpts {
 		short = 'f',
 		long = "frame-rate",
 		help = "The output framerate, copies input framerate if omitted",
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 	)]
 	pub frame_rate: Option<Frac<u16>>,
 	
@@ -315,28 +315,28 @@ struct VideoOpts {
 		long = "fill-color",
 		help = "color of the padding around the video, as RRGGBB hex",
 		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 	)]
 	pub fill_color: CliSrgb8,
 
 	#[arg(
-		long = "stream-size",
-		help = "The size of the streams in characters, fits the GPU limits if omitted",
-		conflicts_with = "streams_config",
+		long = "track-size",
+		help = "The size of the tracks in characters, fits the GPU limits if omitted",
+		conflicts_with = "tracks_config",
 	)]
-	pub stream_size: Option<Size<usize>>,
+	pub track_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "matrix-size",
-		help = "How many grid cells (streams) to create",
-		conflicts_with = "streams_config",
+		help = "How many grid cells (tracks) to create",
+		conflicts_with = "tracks_config",
 	)]
 	pub matrix_size: Option<Size<usize>>,
 
 	#[arg(
 		long = "matrix-gap-size",
 		help = "sub-pixels to skip between matrix cells, defaults to 0 if omitted",
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 		conflicts_with = "matrix_screen_size",
 	)]
 	pub matrix_gap_size: Option<Size<usize>>,
@@ -344,14 +344,14 @@ struct VideoOpts {
 	#[arg(
 		long = "matrix-screen-size",
 		help = "screen size of matrix segments, this is used to derive the matrix gap size",
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 	)]
 	pub matrix_screen_size: Option<Size<usize>>,
 	
 	#[arg(
 		long = "filter",
 		help = "what to pass the pixels through before encoding",
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 	)]
 	pub filter: Option<VideoFilter>,
 
@@ -377,7 +377,7 @@ struct VideoOpts {
 		short = 'b',
 		long = "budget",
 		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
-		conflicts_with = "streams_config",
+		conflicts_with = "tracks_config",
 	)]
 	pub budget: Option<Budget>,
 	
@@ -398,10 +398,10 @@ struct VideoOpts {
 	pub loss_step: Frac<u32>,
 	
 	#[arg(
-		long = "streams-config",
-		help = "path to json streams config file",
+		long = "tracks-config",
+		help = "path to json tracks config file",
 	)]
-	pub streams_config: Option<PathBuf>,
+	pub tracks_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

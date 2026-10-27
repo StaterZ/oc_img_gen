@@ -18,7 +18,7 @@ use realfft::{RealFftPlanner, RealToComplex};
 
 use crate::{
 	audio::VoiceStateFlt, encoder::{
-		media_container::Descriptor as StreamDescriptor,
+		media_container::Descriptor as TrackDescriptor,
 		muxer::{Muxer, PacketWriter},
 		reader::{DecoderInterface, FrameInterface, Reader, ReaderData},
 	}, math::Frac,
@@ -101,7 +101,7 @@ impl<'a> AudioReader<'a> {
 			config.analysis_rate,
 		).unwrap();
 
-		let desc = StreamDescriptor::<Descriptor> {
+		let desc = TrackDescriptor::<Descriptor> {
 			num_packets: 0,
 			rate: Frac::new(config.hop_length, config.analysis_rate as usize).try_cast::<u16>().unwrap(),
 			name: config.name.clone().into(),
@@ -110,9 +110,9 @@ impl<'a> AudioReader<'a> {
 			},
 		};
 		
-		let stream_id = muxer.create_stream(desc.clone().into());
+		let track_id = muxer.create_track(desc.clone().into());
 		
-		let encoder = AudioEncoder::new(desc, stream_id);
+		let encoder = AudioEncoder::new(desc, track_id);
 		
 		// Prepare FFT
 		let mut fft_planner = RealFftPlanner::<f32>::new();
@@ -252,7 +252,7 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 
 	fn report(&self) -> Vec<String> {
 		let num_samples = self.encoder.samples.len() + self.encoder.desc.num_packets as usize;
-		let num_bytes = num_samples * (1 + self.config.num_voices * 3); //stream id, then volume u8 & frequency u16 per voice
+		let num_bytes = num_samples * (1 + self.config.num_voices * 3); //track id, then volume u8 & frequency u16 per voice
 		vec![format!("{:>6} {} voices @ {:.2}Hz | {} samples | {} ({}/sample) | peak {:.3}",
 			self.config.name,
 			self.config.num_voices,

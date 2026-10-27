@@ -372,11 +372,11 @@ do --video player
 		return pool_pop()
 	end
 
-	function video.begin_commit(gpu, stream)
-		local cache = buffer_cache[stream.index + 1]
+	function video.begin_commit(gpu, track)
+		local cache = buffer_cache[track.index + 1]
 		if not cache then --if no cache, create a new back-buffer by copying the screen
-			if gpu.getScreen() ~= stream.surface.screen_addr then
-				gpu.bind(stream.surface.screen_addr, false) --OUCH!
+			if gpu.getScreen() ~= track.surface.screen_addr then
+				gpu.bind(track.surface.screen_addr, false) --OUCH!
 			end
 			cache = 0
 		end
@@ -385,10 +385,10 @@ do --video player
 		if buffer ~= cache then --if we could not get the cache, then copy it
 			gpu.bitblt(
 				buffer,
-				stream.surface.pos_x,
-				stream.surface.pos_y,
-				stream.surface.size_x,
-				stream.surface.size_y,
+				track.surface.pos_x,
+				track.surface.pos_y,
+				track.surface.size_x,
+				track.surface.size_y,
 				cache
 			)
 		end
@@ -399,32 +399,32 @@ do --video player
 		if prev_buffer_idx then
 			buffer_cache[prev_buffer_idx] = nil
 		end
-		buffer_cache[stream.index + 1] = buffer
-		buffer_cache_idx[buffer] = stream.index + 1
-		table.insert(stream.swap_chain, buffer)
+		buffer_cache[track.index + 1] = buffer
+		buffer_cache_idx[buffer] = track.index + 1
+		table.insert(track.swap_chain, buffer)
 	end
 
-	function video.begin_dummy_commit(stream)
-		table.insert(stream.swap_chain, 0)
+	function video.begin_dummy_commit(track)
+		table.insert(track.swap_chain, 0)
 	end
 
-	function video.inject(gpu, stream, f)
+	function video.inject(gpu, track, f)
 		local active = gpu.getActiveBuffer()
-		gpu.setActiveBuffer(stream.swap_chain[1])
+		gpu.setActiveBuffer(track.swap_chain[1])
 		f()
 		gpu.setActiveBuffer(active)
 	end
 
-	function video.present(gpu, stream)
-		local frame = table.remove(stream.swap_chain, 1)
+	function video.present(gpu, track)
+		local frame = table.remove(track.swap_chain, 1)
 		if frame == 0 then return end --delete dummy commits
 
 		gpu.bitblt(
 			0,
-			stream.surface.pos_x,
-			stream.surface.pos_y,
-			stream.surface.size_x,
-			stream.surface.size_y,
+			track.surface.pos_x,
+			track.surface.pos_y,
+			track.surface.size_x,
+			track.surface.size_y,
 			frame
 		)
 		pool_insert(frame)
@@ -455,8 +455,8 @@ do --video player
 	local concat_buffer = {}
 
 	local frame_header_size = 1 -- 1 from the command_kind (this is a constant)
-	function video.draw_stream_frame(gpu, file, stream, commands_len)
-		local pos_x, pos_y = stream.surface.pos_x, stream.surface.pos_y
+	function video.draw_track_frame(gpu, file, track, commands_len)
+		local pos_x, pos_y = track.surface.pos_x, track.surface.pos_y
 
 		local command_kind = read_u8(file)
 		local is_braille = command_kind == 0x01 --check 0x01 first since it's likely more common
@@ -529,7 +529,7 @@ do --video player
 	end
 
 	function video.update_stats(
-		stream,
+		track,
 		frame_begin_time,
 		video_begin_time_up,
 		commands_len,
@@ -537,16 +537,16 @@ do --video player
 	)
 		local now, now_up = os.clock(), computer.uptime()
 		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
-		local presented_packet_time = stream.presented_packet_index * stream.time_base
-		local packet_header_len = 4 --stream_id = 1b, commands_len = 2b, command_kind = 1b
+		local presented_packet_time = track.presented_packet_index * track.time_base
+		local packet_header_len = 4 --track_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
-		stats[stream.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
-			stream.name,
-			stream.packet_index,
-			stream.presented_packet_index,
+		stats[track.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
+			track.name,
+			track.packet_index,
+			track.presented_packet_index,
 			time_fmt(presented_packet_time),
-			stream.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
-			#stream.swap_chain,
+			track.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
+			#track.swap_chain,
 			#buffer_pool,
 			buffer_pool_size,
 			1 / frame_elapsed,
@@ -626,8 +626,8 @@ do --audio player
 	end
 
 	local byte = string.byte
-	function audio.queue(file, stream)
-		local num_voices = stream.num_voices
+	function audio.queue(file, track)
+		local num_voices = track.num_voices
 		local data = file:read(num_voices * 3)
 		local volume_scale = ops.volume
 		local p = 1
@@ -646,28 +646,28 @@ do --audio player
 			end
 		end
 		
-		buffered_time_exact = buffered_time_exact + stream.time_base
+		buffered_time_exact = buffered_time_exact + track.time_base
 		local delay_ms = math.floor((buffered_time_exact - buffered_time) * 1000)
-		for i = 1, math.min(#sound_cards, math.ceil(stream.num_voices / channels_per_card)) do
+		for i = 1, math.min(#sound_cards, math.ceil(track.num_voices / channels_per_card)) do
 			sound_cards[i].delay(delay_ms)
 		end
 		buffered_time = buffered_time + delay_ms/1000
 		num_buffered_instructions = num_buffered_instructions + 1
 	end
 
-	function audio.commit(stream, flush)
+	function audio.commit(track, flush)
 		local now = computer.uptime()
 		local play_time = now - start_time
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		--print(("%07.1f buf --> %07.1f com"):format((buffered_left - committed_left) * 1000, committed_left * 1000))
-		local num_cards = math.min(#sound_cards, math.ceil(stream.num_voices / channels_per_card))
+		local num_cards = math.min(#sound_cards, math.ceil(track.num_voices / channels_per_card))
 		if num_pending_cards == 0 and (committed_left < buf_min or flush) then
 			for i = 1, num_cards do
 				pending_cards[i] = true
 			end
 			num_pending_cards = num_cards
-			pending_packet_index = stream.packet_index
+			pending_packet_index = track.packet_index
 			num_buffered_instructions_stable = num_buffered_instructions
 			num_buffered_instructions = 0
 			committed_time = buffered_time
@@ -682,7 +682,7 @@ do --audio player
 				end
 			end
 			if num_pending_cards == 0 then
-				stream.presented_packet_index = pending_packet_index
+				track.presented_packet_index = pending_packet_index
 			end
 		end
 
@@ -706,16 +706,16 @@ do --audio player
 		end
 	end
 
-	function audio.update_stats(stream)
+	function audio.update_stats(track)
 		local now = computer.uptime()
 		local play_time = now - start_time
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stats[stream.index + 1] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
-			stream.name,
-			stream.packet_index,
-			stream.presented_packet_index,
+		stats[track.index + 1] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+			track.name,
+			track.packet_index,
+			track.presented_packet_index,
 			num_buffered_instructions_stable,
 			(buffered_left - committed_left) * 1000,
 			committed_left * 1000,
@@ -790,7 +790,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	end
 
 	--copies the block from the szt file onto the burner tape, unless the tape holds it already. returns where it starts
-	local function burn(d, file, stream, frames_begin_pos)
+	local function burn(d, file, track, frames_begin_pos)
 		local entries = read_index(d)
 		if not entries then
 			if not ops.pcm_format then
@@ -800,12 +800,12 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		end
 
 		for _, entry in ipairs(entries) do
-			if entry.checksum == stream.checksum and entry.num_bytes == stream.num_bytes and entry.sample_rate == stream.sample_rate then
+			if entry.checksum == track.checksum and entry.num_bytes == track.num_bytes and entry.sample_rate == track.sample_rate then
 				return entry.offset
 			end
 		end
 
-		local size = stream.num_bytes + pad_size
+		local size = track.num_bytes + pad_size
 		local last = entries[#entries]
 		local offset = last and last.offset + last.num_bytes + pad_size or index_size
 		if offset + size > d.getSize() or #entries >= max_entries then
@@ -821,23 +821,23 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		print(("burning pcm audio onto tape drive %s"):format(d.address))
 		--each drive.write costs a tick, so write big chunks
 		local chunk_size = math.floor(math.max(512, math.min(64 * 1024, computer.freeMemory() / 8)))
-		file:seek("set", stream.offset)
+		file:seek("set", track.offset)
 		seek_to(d, offset)
 		local written = 0
-		while written < stream.num_bytes do
-			local chunk = file:read(math.min(chunk_size, stream.num_bytes - written))
+		while written < track.num_bytes do
+			local chunk = file:read(math.min(chunk_size, track.num_bytes - written))
 			d.write(chunk)
 			written = written + #chunk
-			io.write(("\r%i/%i bytes (%3.f%%)"):format(written, stream.num_bytes, written / stream.num_bytes * 100))
+			io.write(("\r%i/%i bytes (%3.f%%)"):format(written, track.num_bytes, written / track.num_bytes * 100))
 		end
 		print()
 		d.write(string.rep("\x55", pad_size)) --alternating DFPWM bits hold the level
 		file:seek("set", frames_begin_pos)
 
 		entries[#entries + 1] = {
-			checksum = stream.checksum,
-			num_bytes = stream.num_bytes,
-			sample_rate = stream.sample_rate,
+			checksum = track.checksum,
+			num_bytes = track.num_bytes,
+			sample_rate = track.sample_rate,
 			offset = offset,
 		}
 		write_index(d, entries)
@@ -845,7 +845,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	end
 
 	--picks the drive to play from and gets the block onto it. returns false and why not when it can't
-	function pcm.prepare(file, stream, frames_begin_pos, reads_packets)
+	function pcm.prepare(file, track, frames_begin_pos, reads_packets)
 		local used = video_drives(file)
 		local addr
 		if type(ops.pcm_tape) == "string" then
@@ -892,10 +892,10 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			if reads_packets then
 				return false, ("tape drive %s reads the video, so it can't play the pcm audio too"):format(addr)
 			end
-			block_offset = stream.offset --it holds the file, so play the block in place
+			block_offset = track.offset --it holds the file, so play the block in place
 		else
 			found.stop()
-			local offset, reason = burn(found, file, stream, frames_begin_pos)
+			local offset, reason = burn(found, file, track, frames_begin_pos)
 			if not offset then return false, reason end
 			block_offset = offset
 			if found.getLabel() ~= burner_label then
@@ -926,35 +926,35 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		end
 	end
 
-	function pcm.start(stream)
+	function pcm.start(track)
 		drive.stop()
 		seek_to(drive, block_offset)
-		drive.setSpeed(stream.sample_rate / tape_sample_rate)
+		drive.setSpeed(track.sample_rate / tape_sample_rate)
 		drive.play()
 		start_time = computer.uptime()
 	end
 
 	--returns true once the block played out
-	function pcm.update(stream, is_only_live_stream)
-		local time_left = stream.duration - (computer.uptime() - start_time)
+	function pcm.update(track, is_only_live_track)
+		local time_left = track.duration - (computer.uptime() - start_time)
 		if time_left <= 0 then
 			drive.stop() --the tape goes on past the block
 			return true
 		end
-		if is_only_live_stream then
+		if is_only_live_track then
 			os.sleep(math.min(time_left, 0.5)) --nothing else to do, so wait but still catch interrupts
 		end
 		return false
 	end
 
-	function pcm.update_stats(stream)
+	function pcm.update_stats(track)
 		local elapsed = computer.uptime() - start_time
-		stats[stream.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s"):format(
-			stream.name,
-			time_fmt(math.min(elapsed, stream.duration)),
-			time_fmt(stream.duration),
-			stream.sample_rate,
-			stream.sample_rate / tape_sample_rate,
+		stats[track.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s"):format(
+			track.name,
+			time_fmt(math.min(elapsed, track.duration)),
+			time_fmt(track.duration),
+			track.sample_rate,
+			track.sample_rate / tape_sample_rate,
 			drive.getState()
 		)
 	end
@@ -963,12 +963,12 @@ end
 local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
-	local num_streams = read_u8(file)
+	local num_tracks = read_u8(file)
 	local settings = file:read(read_u16(file))
 
-	local streams = {}
-	for i = 1, num_streams do
-		local stream = {
+	local tracks = {}
+	for i = 1, num_tracks do
+		local track = {
 			num_packets = read_u32(file),
 			time_base_num = read_u16(file),
 			time_base_denom = read_u16(file),
@@ -976,25 +976,25 @@ local function read_header(file)
 			kind = read_u8(file),
 		}
 
-		if stream.kind == 0x00 then
-			stream.size_x = read_u8(file)
-			stream.size_y = read_u8(file)
-		elseif stream.kind == 0x01 then
-			stream.num_voices = read_u8(file)
-		elseif stream.kind == 0x02 then
-			stream.sample_rate = read_u32(file)
-			stream.offset = read_u32(file)
-			stream.num_bytes = read_u32(file)
-			stream.checksum = read_u32(file)
+		if track.kind == 0x00 then
+			track.size_x = read_u8(file)
+			track.size_y = read_u8(file)
+		elseif track.kind == 0x01 then
+			track.num_voices = read_u8(file)
+		elseif track.kind == 0x02 then
+			track.sample_rate = read_u32(file)
+			track.offset = read_u32(file)
+			track.num_bytes = read_u32(file)
+			track.checksum = read_u32(file)
 		end
-		table.insert(streams, stream)
+		table.insert(tracks, track)
 	end
 
 	return {
 		magic = magic,
 		version = version,
 		settings = settings,
-		streams = streams,
+		tracks = tracks,
 	}
 end
 
@@ -1012,25 +1012,25 @@ local function probe_header(file)
 		print("  " .. line)
 	end
 
-	print(("found %i streams:"):format(#header.streams))
-	for i, stream in ipairs(header.streams) do
+	print(("found %i tracks:"):format(#header.tracks))
+	for i, track in ipairs(header.tracks) do
 		local kind_text =
-			stream.kind == 0x00 and "video" or
-			stream.kind == 0x01 and "audio" or
-			stream.kind == 0x02 and "pcm" or
+			track.kind == 0x00 and "video" or
+			track.kind == 0x01 and "audio" or
+			track.kind == 0x02 and "pcm" or
 			"unknown"
 
-		print(("  %i: %s | '%s'"):format(i - 1, kind_text, stream.name))
-		print(("    time_base: %i/%i"):format(stream.time_base_num, stream.time_base_denom))
-		print(("    num_packets: %i"):format(stream.num_packets))
-		if stream.kind == 0x00 then
-			print(("    size: %ix%i (effective: %ix%i)"):format(stream.size_x, stream.size_y, stream.size_x * 2, stream.size_y * 4))
-		elseif stream.kind == 0x01 then
-			print(("    num_voices: %i"):format(stream.num_voices))
-		elseif stream.kind == 0x02 then
-			print(("    sample_rate: %iHz (tape speed %.2f)"):format(stream.sample_rate, stream.sample_rate / 48000))
-			print(("    dfpwm: %i bytes at byte %i (%s)"):format(stream.num_bytes, stream.offset, time_fmt(stream.num_bytes * 8 / stream.sample_rate)))
-			print(("    checksum: %08x"):format(stream.checksum))
+		print(("  %i: %s | '%s'"):format(i - 1, kind_text, track.name))
+		print(("    time_base: %i/%i"):format(track.time_base_num, track.time_base_denom))
+		print(("    num_packets: %i"):format(track.num_packets))
+		if track.kind == 0x00 then
+			print(("    size: %ix%i (effective: %ix%i)"):format(track.size_x, track.size_y, track.size_x * 2, track.size_y * 4))
+		elseif track.kind == 0x01 then
+			print(("    num_voices: %i"):format(track.num_voices))
+		elseif track.kind == 0x02 then
+			print(("    sample_rate: %iHz (tape speed %.2f)"):format(track.sample_rate, track.sample_rate / 48000))
+			print(("    dfpwm: %i bytes at byte %i (%s)"):format(track.num_bytes, track.offset, time_fmt(track.num_bytes * 8 / track.sample_rate)))
+			print(("    checksum: %08x"):format(track.checksum))
 		end
 	end
 
@@ -1039,22 +1039,22 @@ local function probe_header(file)
 
 	--pcm blocks end the file, otherwise walk the packets to find the end
 	local file_size = frames_begin_pos
-	local pcm_streams = {}
+	local pcm_tracks = {}
 	local num_packets = 0
-	for _, stream in ipairs(header.streams) do
-		num_packets = num_packets + stream.num_packets
-		if stream.kind == 0x02 then
-			file_size = math.max(file_size, stream.offset + stream.num_bytes)
-			table.insert(pcm_streams, stream)
+	for _, track in ipairs(header.tracks) do
+		num_packets = num_packets + track.num_packets
+		if track.kind == 0x02 then
+			file_size = math.max(file_size, track.offset + track.num_bytes)
+			table.insert(pcm_tracks, track)
 		end
 	end
-	if #pcm_streams == 0 then
+	if #pcm_tracks == 0 then
 		for _ = 1, num_packets do
-			local stream = header.streams[read_u8(file) + 1]
-			if stream.kind == 0x00 then
+			local track = header.tracks[read_u8(file) + 1]
+			if track.kind == 0x00 then
 				file:read(read_u16(file) + 1) --command_kind = 1b
-			elseif stream.kind == 0x01 then
-				file:read(stream.num_voices * 3)
+			elseif track.kind == 0x01 then
+				file:read(track.num_voices * 3)
 			end
 		end
 		file_size = file:seek()
@@ -1076,8 +1076,8 @@ local function probe_header(file)
 	end
 	print("tape size needed:")
 	print(("  data tape: %s"):format(tape_fmt(file_size)))
-	for _, stream in ipairs(pcm_streams) do
-		print(("  burner tape for '%s': %s"):format(stream.name, tape_fmt(pcm.burner_size(stream.num_bytes))))
+	for _, track in ipairs(pcm_tracks) do
+		print(("  burner tape for '%s': %s"):format(track.name, tape_fmt(pcm.burner_size(track.num_bytes))))
 	end
 end
 
@@ -1095,57 +1095,57 @@ local function play(gpu, file, surfaces)
 	local max_num_voices = 0
 	local num_total_packets = 0
 	local has_video, has_audio = false, false
-	local pcm_stream
-	local streams = {}
-	for i, stream_desc in ipairs(header.streams) do
-		local stream = {
+	local pcm_track
+	local tracks = {}
+	for i, track_desc in ipairs(header.tracks) do
+		local track = {
 			index = i - 1,
-			kind = stream_desc.kind,
-			num_packets = stream_desc.num_packets,
-			time_base = stream_desc.time_base_num / stream_desc.time_base_denom,
-			name = stream_desc.name,
+			kind = track_desc.kind,
+			num_packets = track_desc.num_packets,
+			time_base = track_desc.time_base_num / track_desc.time_base_denom,
+			name = track_desc.name,
 		}
-		num_total_packets = num_total_packets + stream.num_packets
-		if stream_desc.kind == 0x00 then
+		num_total_packets = num_total_packets + track.num_packets
+		if track_desc.kind == 0x00 then
 			has_video = true
 			
-			local surface = surfaces[stream_desc.name] or error(("missing surface for stream '%s'"):format(stream_desc.name))
+			local surface = surfaces[track_desc.name] or error(("missing surface for track '%s'"):format(track_desc.name))
 			surface.pos_x = surface.is_fullscreen and 1 or surface.pos_x or error("surface has no pos_x")
 			surface.pos_y = surface.is_fullscreen and 1 or surface.pos_y or error("surface has no pos_y")
 
-			stream.surface = surface
-			stream.size_x = stream_desc.size_x
-			stream.size_y = stream_desc.size_y
+			track.surface = surface
+			track.size_x = track_desc.size_x
+			track.size_y = track_desc.size_y
 
-			max_size_x = math.max(max_size_x, stream.size_x)
-			max_size_y = math.max(max_size_y, stream.size_y)
+			max_size_x = math.max(max_size_x, track.size_x)
+			max_size_y = math.max(max_size_y, track.size_y)
 
-			if stream.surface.is_fullscreen then
-				gpu.bind(stream.surface.screen_addr, false)
-				gpu.setResolution(stream.size_x, stream.size_y)
+			if track.surface.is_fullscreen then
+				gpu.bind(track.surface.screen_addr, false)
+				gpu.setResolution(track.size_x, track.size_y)
 			end
-		elseif stream_desc.kind == 0x01 then
+		elseif track_desc.kind == 0x01 then
 			has_audio = true
 
-			stream.num_voices = stream_desc.num_voices
-			max_num_voices = math.max(max_num_voices, stream.num_voices)
-		elseif stream_desc.kind == 0x02 and not pcm_stream then --a drive plays one block, so the rest are skipped
-			stream.sample_rate = stream_desc.sample_rate
-			stream.offset = stream_desc.offset
-			stream.num_bytes = stream_desc.num_bytes
-			stream.checksum = stream_desc.checksum
-			stream.duration = stream_desc.num_bytes * 8 / stream_desc.sample_rate
-			pcm_stream = stream
+			track.num_voices = track_desc.num_voices
+			max_num_voices = math.max(max_num_voices, track.num_voices)
+		elseif track_desc.kind == 0x02 and not pcm_track then --a drive plays one block, so the rest are skipped
+			track.sample_rate = track_desc.sample_rate
+			track.offset = track_desc.offset
+			track.num_bytes = track_desc.num_bytes
+			track.checksum = track_desc.checksum
+			track.duration = track_desc.num_bytes * 8 / track_desc.sample_rate
+			pcm_track = track
 		end
-		table.insert(streams, stream)
+		table.insert(tracks, track)
 	end
 	local play_video = has_video and not ops.no_video
 	local play_audio = has_audio and not ops.no_audio
 
 	local frames_begin_pos = file:seek()
 	local play_pcm = false
-	if pcm_stream and not ops.no_audio then
-		local ok, reason = pcm.prepare(file, pcm_stream, frames_begin_pos, num_total_packets > 0)
+	if pcm_track and not ops.no_audio then
+		local ok, reason = pcm.prepare(file, pcm_track, frames_begin_pos, num_total_packets > 0)
 		if ok then
 			play_pcm = true
 			print(("pcm audio plays from tape drive %s"):format(reason))
@@ -1166,103 +1166,103 @@ local function play(gpu, file, surfaces)
 
 	local function play_impl()
 		local video_begin_time_up = computer.uptime()
-		local num_live_streams = 0
-		for _, stream in ipairs(streams) do
-			stream.packet_index = 0
-			stream.presented_packet_index = 0
-			if stream.kind == 0x00 and play_video then --video
-				stream.swap_chain = {}
-				num_live_streams = num_live_streams + 1
-			elseif stream.kind == 0x01 and play_audio then --audio
-				num_live_streams = num_live_streams + 1
-			elseif stream == pcm_stream and play_pcm then
-				stream.is_live = true
-				num_live_streams = num_live_streams + 1
+		local num_live_tracks = 0
+		for _, track in ipairs(tracks) do
+			track.packet_index = 0
+			track.presented_packet_index = 0
+			if track.kind == 0x00 and play_video then --video
+				track.swap_chain = {}
+				num_live_tracks = num_live_tracks + 1
+			elseif track.kind == 0x01 and play_audio then --audio
+				num_live_tracks = num_live_tracks + 1
+			elseif track == pcm_track and play_pcm then
+				track.is_live = true
+				num_live_tracks = num_live_tracks + 1
 			else
 				--we probably just wanna skip unknowns rather than get mad about it
-				--error("unknown packet kind: %x2", stream.kind)
+				--error("unknown packet kind: %x2", track.kind)
 			end
 		end
 
 		if play_pcm then
-			pcm.start(pcm_stream)
+			pcm.start(pcm_track)
 		end
 		local packet_index = 0
-		while num_live_streams > 0 do
+		while num_live_tracks > 0 do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
 			if check_interrupted() then
 				return false
 			end
 
-			local stream = nil
+			local track = nil
 			if packet_index < num_total_packets then
-				local stream_id = read_u8(file)
-				stream = streams[stream_id + 1]
-				if stream.kind == 0x00 then --video
+				local track_id = read_u8(file)
+				track = tracks[track_id + 1]
+				if track.kind == 0x00 then --video
 					local commands_len = read_u16(file)
 					if play_video then
 						if commands_len > 0 then
 							if ops.no_back then
-								if gpu.getScreen() ~= stream.surface.screen_addr then
-									gpu.bind(stream.surface.screen_addr, false)
+								if gpu.getScreen() ~= track.surface.screen_addr then
+									gpu.bind(track.surface.screen_addr, false)
 								end
 							else
-								video.begin_commit(gpu, stream)
+								video.begin_commit(gpu, track)
 							end
 							if ops.diff then
 								gpu.setBackground(0x000000)
 								gpu.setForeground(0xff0000)
-								gpu.fill(1, 1, stream.size_x, stream.size_y, "*")
+								gpu.fill(1, 1, track.size_x, track.size_y, "*")
 							end
 						elseif not ops.no_back then
-							video.begin_dummy_commit(stream)
+							video.begin_dummy_commit(track)
 						end
 
-						local command_count = video.draw_stream_frame(gpu, file, stream, commands_len)
+						local command_count = video.draw_track_frame(gpu, file, track, commands_len)
 						if ops.fps then
-							video.update_stats(stream, frame_begin_time, video_begin_time_up, commands_len, command_count)
+							video.update_stats(track, frame_begin_time, video_begin_time_up, commands_len, command_count)
 						end
 
 						if ops.no_back then
-							stream.presented_packet_index = stream.presented_packet_index + 1
-							if stream.presented_packet_index == stream.num_packets then
-								num_live_streams = num_live_streams - 1
+							track.presented_packet_index = track.presented_packet_index + 1
+							if track.presented_packet_index == track.num_packets then
+								num_live_tracks = num_live_tracks - 1
 							end
 						end
 					else
 						file:seek("cur", commands_len + 1) --command_kind = 1b
 					end
 					if ops.no_back then
-						--this won't play nice with audio streams,
+						--this won't play nice with audio tracks,
 						--but we can't really help it without buffers
 						if not ops.fast then
 							repeat
 								local now_up = computer.uptime()
 								local current_time = (now_up - video_begin_time_up)
-								local next_present_time = stream.presented_packet_index * stream.time_base
+								local next_present_time = track.presented_packet_index * track.time_base
 								local time_left = next_present_time - current_time
 								os.sleep(time_left) --sleep is no-op when time<=0
 							until time_left <= 0
 						end
-						stream.presented_packet_index = stream.presented_packet_index + 1
+						track.presented_packet_index = track.presented_packet_index + 1
 					end
-				elseif stream.kind == 0x01 then --audio
+				elseif track.kind == 0x01 then --audio
 					if play_audio then
-						audio.queue(file, stream)
+						audio.queue(file, track)
 					else
-						file:seek("cur", stream.num_voices * 3)
+						file:seek("cur", track.num_voices * 3)
 					end
 				end
 			end
 
 			while true do
 				local next_present_time = math.huge
-				for _, stream in ipairs(streams) do
-					if stream.kind == 0x00 and play_video and not ops.no_back then
-						while #stream.swap_chain > 0 do
+				for _, track in ipairs(tracks) do
+					if track.kind == 0x00 and play_video and not ops.no_back then
+						while #track.swap_chain > 0 do
 							local now_up = computer.uptime()
 							local current_time = (now_up - video_begin_time_up)
-							local presented_packet_time = stream.presented_packet_index * stream.time_base
+							local presented_packet_time = track.presented_packet_index * track.time_base
 							local time_left = presented_packet_time - current_time
 							if time_left > 0  and not ops.fast then
 								next_present_time = math.min(next_present_time, presented_packet_time)
@@ -1270,33 +1270,33 @@ local function play(gpu, file, surfaces)
 							end
 
 							if ops.fps then
-								video.inject(gpu, stream, function() draw_stats(gpu) end)
+								video.inject(gpu, track, function() draw_stats(gpu) end)
 							end
-							video.present(gpu, stream)
-							stream.presented_packet_index = stream.presented_packet_index + 1
-							if stream.presented_packet_index == stream.num_packets then
-								num_live_streams = num_live_streams - 1
+							video.present(gpu, track)
+							track.presented_packet_index = track.presented_packet_index + 1
+							if track.presented_packet_index == track.num_packets then
+								num_live_tracks = num_live_tracks - 1
 							end
 						end
-					elseif stream.kind == 0x01 and play_audio then --audio
+					elseif track.kind == 0x01 and play_audio then --audio
 						--with --fast the audio runs far ahead of real time, so flush it once the input is done instead of waiting for it to play out
-						audio.commit(stream, ops.fast and packet_index >= num_total_packets) --commit handles presented_packet_index incrementation
+						audio.commit(track, ops.fast and packet_index >= num_total_packets) --commit handles presented_packet_index incrementation
 						if ops.fps then
-							audio.update_stats(stream)
+							audio.update_stats(track)
 						end
-						if stream.presented_packet_index == stream.num_packets then
-							num_live_streams = num_live_streams - 1
+						if track.presented_packet_index == track.num_packets then
+							num_live_tracks = num_live_tracks - 1
 						end
-					elseif stream.is_live then --pcm
+					elseif track.is_live then --pcm
 						if ops.fps then
-							pcm.update_stats(stream)
+							pcm.update_stats(track)
 						end
 						--with --fast the video won't wait for the tape, so stop it with the input
 						local is_done = ops.fast and packet_index >= num_total_packets
 						if is_done then pcm.stop() end
-						if is_done or pcm.update(stream, num_live_streams == 1 and packet_index >= num_total_packets) then
-							stream.is_live = false
-							num_live_streams = num_live_streams - 1
+						if is_done or pcm.update(track, num_live_tracks == 1 and packet_index >= num_total_packets) then
+							track.is_live = false
+							num_live_tracks = num_live_tracks - 1
 						end
 					end
 				end
@@ -1317,8 +1317,8 @@ local function play(gpu, file, surfaces)
 				end
 			end
 
-			if stream then
-				stream.packet_index = stream.packet_index + 1
+			if track then
+				track.packet_index = track.packet_index + 1
 			end
 			packet_index = packet_index + 1
 			--print(("frame took: %05.1fms"):format((computer.uptime() - frame_begin_time_up) * 1000))
@@ -1428,8 +1428,8 @@ if ops.h or ops.help then
 	print("   --fps", "show performance stats during playback")
 	print("   --loop", "loop video like a gif")
 	print("   --hold", "hold image on screen")
-	print("   --no-video", "skip video streams")
-	print("   --no-audio", "skip audio streams")
+	print("   --no-video", "skip video tracks")
+	print("   --no-audio", "skip audio tracks")
 	print("   --no-back", "disable buffering and the dependency on GPU buffers")
 	print("   --one-buf", "use only one back buffer to reduce bitblt copies")
 	print("   --cfg", "set the screen layout and other environment settings. generate a configs with 'screenConfig.lua'")

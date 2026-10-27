@@ -145,12 +145,12 @@ pub trait Reader<'a> {
 
 	fn get_writers(&mut self) -> Vec<&mut dyn PacketWriter>;
 
-	//one line per stream for the summary printed after encoding
+	//one line per track for the summary printed after encoding
 	fn report(&self) -> Vec<String> {
 		Vec::new()
 	}
 
-	//streams that are one block instead of packets hand it over after eof
+	//tracks that are one block instead of packets hand it over after eof
 	fn take_pcm(&mut self) -> Option<(u8, Vec<u8>)> {
 		None
 	}

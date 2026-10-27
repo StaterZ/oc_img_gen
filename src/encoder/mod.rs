@@ -81,8 +81,8 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 		.flat_map(|r| r.get_writers())
 		.collect_vec()
 		.as_mut_slice()); //TODO: PERF
-	for (stream_id, data) in readers.iter_mut().filter_map(|reader| reader.take_pcm()) {
-		media_file.push_pcm(stream_id, data);
+	for (track_id, data) in readers.iter_mut().filter_map(|reader| reader.take_pcm()) {
+		media_file.push_pcm(track_id, data);
 	}
 	
 	if cfg!(feature = "log") {
@@ -93,7 +93,7 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 		.map_err(AppError::WriteFailed))?;
 
 	eprintln!();
-	eprintln!("streams:");
+	eprintln!("tracks:");
 	for line in readers.iter().flat_map(|reader| reader.report()) {
 		eprintln!("  {}", line);
 	}
@@ -108,13 +108,13 @@ pub enum AppError {
 	#[error("Failed to write output file. INNER: {0}")]
 	WriteFailed(std::io::Error),
 
-	#[error("stream name '{name}' ({{name.as_bytes().len()}} bytes) is too long. max length is: {max_length}")]
-	StreamNameTooLong {
+	#[error("track name '{name}' ({{name.as_bytes().len()}} bytes) is too long. max length is: {max_length}")]
+	TrackNameTooLong {
 		name: String,
 		max_length: usize,
 	},
-	#[error("stream size '{size}' is too large. max is: {max_size}")]
-	StreamSizeTooLarge {
+	#[error("track size '{size}' is too large. max is: {max_size}")]
+	TrackSizeTooLarge {
 		size: Size<usize>,
 		max_size: Size<usize>,
 	}

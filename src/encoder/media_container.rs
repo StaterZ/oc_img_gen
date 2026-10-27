@@ -64,10 +64,10 @@ impl DescriptorContent {
 }
 
 #[derive(DekuWrite, DekuRead)]
-#[deku(ctx = "stream_descs: &[Descriptor<DescriptorContent>]")]
+#[deku(ctx = "track_descs: &[Descriptor<DescriptorContent>]")]
 pub struct Packet {
-	#[deku(endian = "little")] pub stream_id: u8,
-	#[deku(ctx = "&stream_descs[*stream_id as usize]")] pub content: PacketContent,
+	#[deku(endian = "little")] pub track_id: u8,
+	#[deku(ctx = "&track_descs[*track_id as usize]")] pub content: PacketContent,
 }
 
 #[derive(DekuWrite, DekuRead, EnumAsInner)]
@@ -81,7 +81,7 @@ pub enum PacketContent {
 #[deku(endian = "little", magic = b"sztb")]
 pub struct Header {
 	pub version: u16,
-	pub num_streams: u8,
+	pub num_tracks: u8,
 	/// the settings the file was encoded with, as "key: value" lines
 	#[deku(ctx = "deku_string::Encoding::Utf8, deku_string::StringLayout::LengthPrefix(deku_string::Size::U16)")] pub settings: StringDeku,
 }
@@ -90,17 +90,17 @@ pub struct Header {
 pub struct MediaFile {
 	pub header: Header,
 
-	#[deku(count = "header.num_streams")]
-	pub stream_descs: Vec<Descriptor<DescriptorContent>>,
+	#[deku(count = "header.num_tracks")]
+	pub track_descs: Vec<Descriptor<DescriptorContent>>,
 
 	#[deku(
-		count = "stream_descs.iter().map(|desc| desc.num_packets).sum::<u32>()",
-		ctx = "stream_descs.as_slice()",
+		count = "track_descs.iter().map(|desc| desc.num_packets).sum::<u32>()",
+		ctx = "track_descs.as_slice()",
 	)]
 	pub packets: Vec<Packet>,
 
-	/// the DFPWM blocks of the pcm streams. pcm streams have no packets
-	#[deku(count = "stream_descs.iter().filter_map(|desc| desc.content.as_pcm()).map(|pcm| pcm.num_bytes as usize).sum::<usize>()")]
+	/// the DFPWM blocks of the pcm tracks. pcm tracks have no packets
+	#[deku(count = "track_descs.iter().filter_map(|desc| desc.content.as_pcm()).map(|pcm| pcm.num_bytes as usize).sum::<usize>()")]
 	pub pcm_data: Vec<u8>,
 }
 
@@ -109,32 +109,32 @@ impl MediaFile {
 		Self {
 			header: Header {
 				version: FORMAT_VERSION,
-				num_streams: 0,
+				num_tracks: 0,
 				settings: settings.into(),
 			},
-			stream_descs: Vec::new(),
+			track_descs: Vec::new(),
 			packets: Vec::new(),
 			pcm_data: Vec::new(),
 		}
 	}
 
-	pub fn push_pcm(&mut self, stream_id: u8, data: Vec<u8>) {
-		let pcm = self.stream_descs[stream_id as usize].content.as_pcm_mut().unwrap();
+	pub fn push_pcm(&mut self, track_id: u8, data: Vec<u8>) {
+		let pcm = self.track_descs[track_id as usize].content.as_pcm_mut().unwrap();
 		pcm.offset = self.pcm_data.len() as u32; //relative for now, into_bytes makes it absolute
 		pcm.num_bytes = data.len() as u32;
 		pcm.checksum = crate::audio::dfpwm::checksum(&data);
 		self.pcm_data.extend(data);
 	}
 
-	pub fn get_pcm(&self, stream_id: u8) -> &[u8] {
-		let pcm = self.stream_descs[stream_id as usize].content.as_pcm().unwrap();
+	pub fn get_pcm(&self, track_id: u8) -> &[u8] {
+		let pcm = self.track_descs[track_id as usize].content.as_pcm().unwrap();
 		//the pcm data is the end of the file, so its blocks start at their offset minus where it starts
 		let start = pcm.offset as usize + self.pcm_data.len() - self.pcm_end();
 		&self.pcm_data[start..start + pcm.num_bytes as usize]
 	}
 
 	fn pcm_end(&self) -> usize {
-		self.stream_descs
+		self.track_descs
 			.iter()
 			.filter_map(|desc| desc.content.as_pcm())
 			.map(|pcm| pcm.offset as usize + pcm.num_bytes as usize)
@@ -148,7 +148,7 @@ impl MediaFile {
 			return self.to_bytes();
 		}
 		let pcm_start = (self.to_bytes()?.len() - self.pcm_data.len()) as u32;
-		for desc in self.stream_descs.iter_mut() {
+		for desc in self.track_descs.iter_mut() {
 			if let Some(pcm) = desc.content.as_pcm_mut() {
 				pcm.offset += pcm_start;
 			}

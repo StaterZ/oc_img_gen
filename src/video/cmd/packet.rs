@@ -11,7 +11,7 @@ use crate::math::*;
 use crate::encoder::{
 	cli::{Budget, VideoFilter, BrailleStrategy, ColorDiffStrategy},
 	media_container::{
-		Descriptor as StreamDescriptor,
+		Descriptor as TrackDescriptor,
 		Packet,
 		PacketContent
 	},
@@ -100,8 +100,8 @@ pub struct Descriptor {
 }
 
 pub struct VideoEncoder<'a> {
-	pub desc: StreamDescriptor<Descriptor>,
-	stream_id: u8,
+	pub desc: TrackDescriptor<Descriptor>,
+	track_id: u8,
 	source_area: Rect<usize>,
 	frames: VecDeque<Frame>,
 	prev_frame: Option<TermFrame>,
@@ -173,8 +173,8 @@ static VGA_PALETTE: LazyLock<[Lab; 1 << 3]> = LazyLock::new(|| [
 ].map(|c| Lab::from_color(Srgb::<u8>::from_u32::<Argb>(c).into_format::<f32>())));
 impl<'a> VideoEncoder<'a> {
 	pub fn new(
-		desc: StreamDescriptor<Descriptor>,
-		stream_id: u8,
+		desc: TrackDescriptor<Descriptor>,
+		track_id: u8,
 		source_area: Rect<usize>,
 		filter: Option<VideoFilter>,
 		braille_strategy: BrailleStrategy,
@@ -224,7 +224,7 @@ impl<'a> VideoEncoder<'a> {
 
 		Self {
 			desc,
-			stream_id,
+			track_id,
 			source_area,
 			frames: VecDeque::new(),
 			prev_frame: None,
@@ -278,13 +278,13 @@ impl<'a> VideoEncoder<'a> {
 	}
 
 	pub fn process(&mut self, img: &Image<Srgb<u8>>, formatter: &HybridFormatter) {
-		let img = crate::stage("Stream | Preamble  | Crop", || img.crop(&self.source_area));
+		let img = crate::stage("Track  | Preamble  | Crop", || img.crop(&self.source_area));
 		debug_assert_eq!(img.size(), self.desc.content.size.cast::<usize>() * braille::SIZE);
 
 		let img = if let Some(filter) = self.filter {
 			Self::apply_filter(filter, img)
 		} else {
-			crate::stage("Stream | Process   | ToLab", || img
+			crate::stage("Track  | Process   | ToLab", || img
 				.into_iter()
 				.map(|p| Lab::from_color(p.into_format::<f32>()))
 				.collect())
@@ -318,42 +318,42 @@ impl<'a> VideoEncoder<'a> {
 
 		const UBER_MODE: bool = true;
 		let img = if UBER_MODE {
-			crate::stage("Stream | Process   | Uber", || {
+			crate::stage("Track  | Process   | Uber", || {
 				braille::as_braille(&img, braille_from_pixels)
 					.map(|braille| braille.into())
 					.collect()
 			})
 		} else {
 			//img.debug_export("raw".into()).unwrap();
-			//let img2 = crate::stage("Stream | Process   | Deflate", || img.iter().map(|p| formatter.deflate(PaletteOr::NonPalette(*p))).collect());
-			//let img2 = crate::stage("Stream | Process   | Inflate", || img2.into_iter().map(|p| formatter.inflate(p)).collect());
+			//let img2 = crate::stage("Track  | Process   | Deflate", || img.iter().map(|p| formatter.deflate(PaletteOr::NonPalette(*p))).collect());
+			//let img2 = crate::stage("Track  | Process   | Inflate", || img2.into_iter().map(|p| formatter.inflate(p)).collect());
 			//img2.debug_export("raw_deflate".into()).unwrap();
 
-			let img: Image<_> = crate::stage("Stream | Process   | Braille", || braille::as_braille(&img, braille_from_pixels).collect());
-			crate::stage("Stream | Process   | Into Text", || img.into_iter().map(|braille| braille.into()).collect())
+			let img: Image<_> = crate::stage("Track  | Process   | Braille", || braille::as_braille(&img, braille_from_pixels).collect());
+			crate::stage("Track  | Process   | Into Text", || img.into_iter().map(|braille| braille.into()).collect())
 		};
 
 		//std::fs::write("code_out.lua", super::code_gen(&img, None, self.acceptable_loss, formatter)).unwrap();
-		crate::stage("Stream | Postamble | Cmd Gen", || self.push_frame::<{ CommandKind::Braille }>(img, self.acceptable_loss, formatter));
+		crate::stage("Track  | Postamble | Cmd Gen", || self.push_frame::<{ CommandKind::Braille }>(img, self.acceptable_loss, formatter));
 	}
 
 	fn apply_filter(filter: VideoFilter, img: Image<Srgb<u8>>) -> Image<Lab> {
 		match filter {
-			VideoFilter::Monochrome => crate::stage("Stream | Process   | Monochrome", || img.into_iter().map(|p| {
+			VideoFilter::Monochrome => crate::stage("Track  | Process   | Monochrome", || img.into_iter().map(|p| {
 				let p = Lab::from_color(p.into_format::<f32>());
 				if p.improved_difference(*rgb::WHITE_LAB) < p.improved_difference(*rgb::BLACK_LAB) { *rgb::WHITE_LAB } else { *rgb::BLACK_LAB }
 			}).collect()),
-			VideoFilter::Grayscale => crate::stage("Stream | Process   | Grayscale", || img.into_iter().map(|p| {
+			VideoFilter::Grayscale => crate::stage("Track  | Process   | Grayscale", || img.into_iter().map(|p| {
 				let p = Lab::from_color(p.into_format::<f32>());
 				Lab::new(p.l, 0.0, 0.0)
 			}).collect()),
-			VideoFilter::Vga => crate::stage("Stream | Process   | VGA", || img.into_iter().map(|p| {
+			VideoFilter::Vga => crate::stage("Track  | Process   | VGA", || img.into_iter().map(|p| {
 				let mut hsv = Hsv::from_color(p.into_format::<f32>());
 				hsv.saturation = 1.0;
 				let p = Lab::from_color(hsv);
 				*VGA_PALETTE.iter().min_by_key(|c| OrderedFloat(p.improved_difference(**c))).unwrap() //SAFETY: unwrap safe due to VGA_PALETTE.len > 0
 			}).collect()),
-			VideoFilter::Hsv => crate::stage("Stream | Process   | HSV", || img.into_iter().map(|p| {
+			VideoFilter::Hsv => crate::stage("Track  | Process   | HSV", || img.into_iter().map(|p| {
 				let mut hsv = Hsv::from_color(p.into_format::<f32>());
 				hsv.saturation = (hsv.saturation * 6.0).round() / 6.0;
 				hsv.value = (hsv.value * 4.0).round() / 4.0;
@@ -456,7 +456,7 @@ impl<'a> VideoEncoder<'a> {
 		let use_of = |cost: f32, budget: f32| if budget > 0.0 { 100.0 * cost / budget } else { 0.0 };
 		let gpu_use = use_of(sample.gpu_cost, sample.gpu_budget);
 		let cpu_use = use_of(sample.cpu_cost, sample.cpu_budget);
-		let num_bytes = 1 + 2 + 1 + frame.commands.len(); //stream id, commands_len, command_kind, commands
+		let num_bytes = 1 + 2 + 1 + frame.commands.len(); //track id, commands_len, command_kind, commands
 
 		#[cfg(feature = "charts")] {
 			let time = (self.desc.rate.cast::<usize>() * self.stats.num_frames).into_flt::<f64>();
@@ -508,7 +508,7 @@ impl<'a> PacketWriter for VideoEncoder<'a> {
 		self.frames.pop_front().map(|frame| {
 			self.desc.num_packets += 1;
 			Packet {
-				stream_id: self.stream_id,
+				track_id: self.track_id,
 				content: PacketContent::Video(frame),
 			}
 		})

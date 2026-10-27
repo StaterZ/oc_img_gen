@@ -79,9 +79,9 @@ local function get_screen(msg, blacklist)
 	return addr
 end
 
-local stream_size = {
-	x = tonumber(ask("Stream Width")),
-	y = tonumber(ask("Stream Height"))
+local track_size = {
+	x = tonumber(ask("Track Width")),
+	y = tonumber(ask("Track Height"))
 }
 local matrix_size = {
 	x = tonumber(ask("Matrix Width")),
