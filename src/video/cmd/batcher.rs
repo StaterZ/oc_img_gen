@@ -318,7 +318,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 				// FG | PF_ | PF_ | *FI | P_I |
 
 				let matches = CondMatches {
-					perfect: true, //the only case we don't need it is if both char and batch are different single color batch kinds. for this case it's okay to have perfect matching on since it's impossible it match then, meaning we can just the entire perfect matcher to always occur
+					perfect: !(char_batch_kind.is_single_color() && batch.kind.is_single_color() && char_batch_kind != batch.kind), //a bg only and a fg only share no color slot, so the checks below pass on the slots neither uses. that is not a match, the char would draw with a color the batch never sets
 					flipped: char_batch_kind != batch.kind || char_batch_kind == BatchKind::Flippable, //flip everywhere except along the diagonal, with the exception of the flippables intersection where we still flip
 					insert: char_batch_kind.is_single_color() && batch.kind.is_single_color(), //if both are single colors, that leaves one color for each, so we can insert
 				};
@@ -342,6 +342,8 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 
 				let can_append = perfect || flipped || insert;
 				if can_append && batch.chars.len() < max_batch_size {
+					let is_cross_insert = insert && char_batch_kind != batch.kind;
+
 					batch.kind = if char_batch_kind == BatchKind::Unique || batch.kind == BatchKind::Unique {
 						BatchKind::Unique
 					} else if matches.insert && (perfect || flipped) {
@@ -355,9 +357,11 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 							}
 						}
 						if flipped || insert {
-							match batch.kind {
-								BatchKind::BgOnly => batch.fg = char.bg,
-								BatchKind::FgOnly => batch.bg = char.fg,
+							match (batch.kind, is_cross_insert) {
+								(BatchKind::BgOnly, false) => batch.fg = char.bg,
+								(BatchKind::FgOnly, false) => batch.bg = char.fg,
+								(BatchKind::BgOnly, true) => batch.fg = char.fg,
+								(BatchKind::FgOnly, true) => batch.bg = char.bg,
 								_ => {},
 							}
 						}
@@ -365,7 +369,7 @@ fn generate_batches(frame: &TermFrame, prev_frame: &mut Option<TermFrame>, losse
 					};
 					
 					let mut sym = char.sym;
-					let is_flip = !perfect && (flipped || insert);
+					let is_flip = !perfect && (flipped || insert) && !is_cross_insert;
 					if is_flip {
 						if char_batch_kind == BatchKind::Unique { //if the char is unique, we need to flip the batch instead
 							*batch = batch.flip();
