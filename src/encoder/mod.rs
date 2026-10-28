@@ -15,6 +15,7 @@ pub mod cli;
 pub mod media_container;
 pub mod muxer;
 pub mod reader;
+pub mod track_spec;
 //mod ffmpeg_tracing;
 
 pub struct EncoderConfig {
@@ -27,7 +28,7 @@ pub struct EncoderConfig {
 
 	pub machine: Machine,
 	pub video: Option<VideoConfig>,
-	pub audio: Option<AudioConfig>,
+	pub audio: Vec<AudioConfig>,
 }
 
 pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
@@ -40,20 +41,18 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	
 	let mut muxer = Muxer::new(config.settings);
 	let video = config.video.and_then(|video_config| VideoReader::new(&ictx, &multi_progress, &config.range, &config.machine, video_config, &mut muxer, &config.out_path));
-	let audio = config.audio.and_then(|audio_config| match audio_config.mode {
+	let audio = config.audio.into_iter().filter_map(|audio_config| match audio_config.mode {
 		AudioMode::Voices => AudioReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer)
 			.map(|reader| Box::new(reader) as Box<dyn CommonReader>),
 		AudioMode::Pcm => PcmReader::new(&ictx, &multi_progress, &config.range, audio_config, &mut muxer)
 			.map(|reader| Box::new(reader) as Box<dyn CommonReader>),
-	});
+	}).collect_vec();
 	
 	let mut readers = Vec::<Box<dyn CommonReader>>::new();
 	if let Some(video) = video {
 		readers.push(Box::new(video));
 	}
-	if let Some(audio) = audio {
-		readers.push(audio);
-	}
+	readers.extend(audio);
 
 	for reader in readers.iter_mut() {
 		reader.init();
@@ -62,9 +61,11 @@ pub fn encode(config: EncoderConfig) -> anyhow::Result<()> {
 	for (stream, packet) in ictx.packets() {
 		if readers.iter().all(|reader | reader.is_done()) { break; }
 
+		//several readers can read the same stream, so every reader gets the packet
 		if readers
 			.iter_mut()
-			.any(|reader| reader.try_process_packet(&stream, &packet))
+			.map(|reader| reader.try_process_packet(&stream, &packet))
+			.fold(false, |any, used| any | used)
 		{
 			muxer.process(readers
 				.iter_mut()

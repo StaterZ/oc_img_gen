@@ -1833,6 +1833,8 @@ dependencies = [
  "phf 0.14.0",
  "rayon",
  "realfft",
+ "serde",
+ "serde_json",
  "szu",
  "thiserror 2.0.21",
  "triple_buffer",

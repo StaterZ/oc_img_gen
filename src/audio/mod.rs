@@ -12,7 +12,7 @@ pub mod dfpwm;
 /// Highest frequency a voice can encode; stored frequencies are fractions of this.
 pub const MAX_FREQUENCY: f32 = 20000.0;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, clap::ValueEnum)]
 pub enum Mode {
 	/// peaks from an fft, played as sound card voices
 	Voices,

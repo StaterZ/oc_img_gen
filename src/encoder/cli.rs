@@ -1,16 +1,17 @@
 use std::{fmt::Display, num::ParseIntError, ops::Deref, path::{Path, PathBuf}, str::FromStr, time::Duration};
 use clap::{Args, Parser, ValueEnum, ValueHint};
+use itertools::Itertools;
 use num::traits::{ConstOne, ConstZero};
 use palette::{Srgb, rgb::channels::Argb};
 
 use crate::{
 	EXT, audio::{Mode as AudioMode, dfpwm}, encoder::{
-		AudioConfig, EncoderConfig, VideoConfig, VideoDescData
+		AudioConfig, EncoderConfig, VideoConfig, VideoDescData,
+		track_spec::{AudioSpec, PcmSpec, default_name},
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
-pub fn process_args(mut args: Cli) -> EncoderConfig {
-	eprintln!("V:{} | A:{}", args.video.is_some(), args.audio.is_some());
+pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 	
 	let out_path = match args.out_path.take() {
 		None => {
@@ -31,18 +32,22 @@ pub fn process_args(mut args: Cli) -> EncoderConfig {
 
 	let machine = args.tier.into();
 	let video_config = args.video.as_ref().map(|video_args| build_video_config(video_args, &machine, &args.in_path));
-	let audio_config = args.audio.as_ref().map(build_audio_config);
-	let settings = describe_settings(&args, video_config.as_ref());
+	let audio_configs = build_audio_configs(&args.audio, &args.audio_specs, &args.pcm_specs)?;
+	if video_config.is_none() && audio_configs.is_empty() {
+		anyhow::bail!("there are no tracks to encode. add one with --video, --audio or --pcm");
+	}
+	eprintln!("V:{} | A:{}", video_config.as_ref().map_or(0, |video_config| video_config.track_descs_data.len()), audio_configs.len());
+	let settings = describe_settings(&args, video_config.as_ref(), &audio_configs);
 	
-	EncoderConfig {
+	Ok(EncoderConfig {
 		settings,
 		in_path: args.in_path,
 		out_path,
 		range: args.begin..=args.end,
 		machine,
 		video: video_config,
-		audio: audio_config,
-	}
+		audio: audio_configs,
+	})
 }
 
 fn value_name(value: &impl ValueEnum) -> String {
@@ -50,7 +55,7 @@ fn value_name(value: &impl ValueEnum) -> String {
 }
 
 /// the settings the file was encoded with, as "key: value" lines. nested settings are indented
-fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
+fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>, audio_configs: &[AudioConfig]) -> String {
 	let time = |time: Option<Duration>, fallback: &str| time.map_or_else(|| fallback.to_string(), |time| humantime::Duration::from(time).to_string());
 	let mut lines = vec![
 		format!("encoder: {} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
@@ -80,14 +85,15 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>) -> String {
 		lines.push(format!("  loss: {}% (step {}%)", video.acceptable_loss.into_flt::<f64>() * 100.0, video.loss_step.into_flt::<f64>() * 100.0));
 	}
 
-	if let Some(audio) = &args.audio {
-		lines.push(format!("audio: {}", value_name(&audio.audio_mode)));
-		match audio.audio_mode {
+	for audio in audio_configs {
+		lines.push(format!("audio: {}", audio.name));
+		lines.push(format!("  mode: {}", value_name(&audio.mode)));
+		match audio.mode {
 			AudioMode::Voices => {
 				lines.push(format!("  voices: {}", audio.num_voices));
 				lines.push(format!("  analysis rate: {}Hz", audio.analysis_rate));
 				lines.push(format!("  fft window: {}", audio.fft_window_size));
-				lines.push(format!("  hop length: {}", audio.hop_length.unwrap_or(audio.fft_window_size / 2)));
+				lines.push(format!("  hop length: {}", audio.hop_length));
 				lines.push(format!("  guard: {}", audio.guard));
 			},
 			AudioMode::Pcm => {
@@ -224,10 +230,11 @@ pub enum ColorDiffStrategy {
 	#[value(name = "ciede")] ImprovedCiede2000,
 }
 
-pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
-	AudioConfig {
-		name: "main".to_string(),
-		mode: args.audio_mode,
+/// the voices tracks, then the pcm tracks, each in the order of their flags
+fn build_audio_configs(args: &AudioOpts, audio_specs: &[AudioSpec], pcm_specs: &[PcmSpec]) -> anyhow::Result<Vec<AudioConfig>> {
+	let config = |name: String, mode: AudioMode| AudioConfig {
+		name,
+		mode,
 		pcm_rate: args.pcm_rate,
 		pcm_align: args.pcm_align,
 		analysis_rate: args.analysis_rate,
@@ -236,7 +243,40 @@ pub fn build_audio_config(args: &AudioOpts) -> AudioConfig {
 		guard: args.guard,
 		normalize: true,
 		num_voices: args.num_voices,
+	};
+
+	let mut configs = Vec::new();
+	for (index, spec) in audio_specs.iter().enumerate() {
+		let mut config = config(default_name(spec.name.clone(), index, audio_specs.len()), AudioMode::Voices);
+		if let Some(num_voices) = spec.voices {
+			anyhow::ensure!(num_voices >= 1, "audio track '{}' needs at least 1 voice", config.name);
+			config.num_voices = num_voices;
+		}
+		config.analysis_rate = spec.analysis_rate.unwrap_or(config.analysis_rate);
+		if let Some(fft_window_size) = spec.fft_window_size {
+			config.fft_window_size = parse_power_of_two(&fft_window_size.to_string()).map_err(anyhow::Error::msg)?;
+			config.hop_length = args.hop_length.unwrap_or(fft_window_size / 2);
+		}
+		config.hop_length = spec.hop_length.unwrap_or(config.hop_length);
+		config.guard = spec.guard.unwrap_or(config.guard);
+		configs.push(config);
 	}
+	for (index, spec) in pcm_specs.iter().enumerate() {
+		let mut config = config(default_name(spec.name.clone(), index, pcm_specs.len()), AudioMode::Pcm);
+		if let Some(pcm_rate) = spec.rate {
+			config.pcm_rate = parse_pcm_rate(&pcm_rate.to_string()).map_err(anyhow::Error::msg)?;
+		}
+		if let Some(pcm_align) = spec.align {
+			anyhow::ensure!(pcm_align >= 1, "pcm track '{}' needs an align of at least 1", config.name);
+			config.pcm_align = pcm_align;
+		}
+		configs.push(config);
+	}
+
+	if let Some((mode, name)) = configs.iter().map(|config| (config.mode, &config.name)).duplicates().next() {
+		anyhow::bail!("there are two {} tracks named '{}'", value_name(&mode), name);
+	}
+	Ok(configs)
 }
 
 #[derive(Parser, Debug)]
@@ -286,8 +326,26 @@ pub struct Cli {
 	#[command(flatten)]
 	video: Option<VideoOpts>,
 
+	#[arg(
+		long = "audio",
+		value_name = "SPEC",
+		num_args = 0..=1,
+		default_missing_value = "",
+		help = "Add a sound card voices track. SPEC is key=value pairs split by commas, the keys are: name, voices, analysis-rate, fft-window-size, hop-length, guard",
+	)]
+	audio_specs: Vec<AudioSpec>,
+
+	#[arg(
+		long = "pcm",
+		value_name = "SPEC",
+		num_args = 0..=1,
+		default_missing_value = "",
+		help = "Add a DFPWM track for computronics tape drives, play it with play_szt --pcm-tape. SPEC is key=value pairs split by commas, the keys are: name, rate, align",
+	)]
+	pcm_specs: Vec<PcmSpec>,
+
 	#[command(flatten)]
-	audio: Option<AudioOpts>,
+	audio: AudioOpts,
 }
 
 #[derive(Args, Debug)]
@@ -455,17 +513,9 @@ impl From<Srgb<u8>> for CliSrgb8 {
 #[derive(Args, Debug)]
 pub struct AudioOpts {
 	#[arg(
-		value_enum,
-		long = "audio-mode",
-		default_value_t = AudioMode::Voices,
-		help = "voices: sound card voices from an fft. pcm: DFPWM for computronics tape drives, play it with play_szt --pcm-tape",
-	)]
-	pub audio_mode: AudioMode,
-
-	#[arg(
 		long = "pcm-rate",
 		default_value_t = dfpwm::TAPE_SAMPLE_RATE,
-		help = "pcm sample rate (Hz). the tape drive plays 48000 at speed 1, so this sets the speed (12000-96000, a multiple of 32)",
+		help = "Default pcm sample rate (Hz). the tape drive plays 48000 at speed 1, so this sets the speed (12000-96000, a multiple of 32)",
 		value_parser = parse_pcm_rate,
 	)]
 	pub pcm_rate: u32,
@@ -473,7 +523,7 @@ pub struct AudioOpts {
 	#[arg(
 		long = "pcm-align",
 		default_value_t = 4096,
-		help = "the pcm track gets its own stream, which starts on a multiple of this many bytes",
+		help = "Default align: each pcm track gets its own stream, which starts on a multiple of this many bytes",
 		value_parser = clap::value_parser!(u32).range(1..),
 	)]
 	pub pcm_align: u32,
@@ -481,28 +531,28 @@ pub struct AudioOpts {
 	#[arg(
 		long = "analysis-rate",
 		default_value_t = 24000,
-		help = "Target analysis sample rate (Hz)",
+		help = "Default target analysis sample rate (Hz)",
 	)]
 	pub analysis_rate: u32,
 
 	#[arg(
 		long = "fft-window-size",
 		default_value_t = 1024,
-		help = "FFT window size (power of two)",
+		help = "Default FFT window size (power of two)",
 		value_parser = parse_power_of_two,
 	)]
 	pub fft_window_size: usize,
 
 	#[arg(
 		long = "hop-length",
-		help = "Hop size in samples (defaults to window/2)",
+		help = "Default hop size in samples (defaults to window/2)",
 	)]
 	pub hop_length: Option<usize>,
 
 	#[arg(
 		long = "guard",
 		default_value_t = 1,
-		help = "Bins around a selected peak will be removed",
+		help = "Default bins around a selected peak that will be removed",
 	)]
 	pub guard: isize,
 
@@ -510,7 +560,7 @@ pub struct AudioOpts {
 		short = 'v',
 		long = "voices",
 		default_value_t = 8,
-		help = "How many voices to use (8 channels per sound card)",
+		help = "Default number of voices (8 channels per sound card)",
 		value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
 	)]
 	pub num_voices: usize,

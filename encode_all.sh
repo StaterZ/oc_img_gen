@@ -13,7 +13,7 @@ OUT_DIR="data/out"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
-SETTINGS=(-m single -f 10 -B polar-pair -b buffered -l 20% -D ciede --audio-mode pcm)
+SETTINGS=(-m single -f 10 -B polar-pair -b buffered -l 20% -D ciede --pcm)
 
 if [ -z "${OC_BIN:-}" ]; then
 	if command -v cargo >/dev/null 2>&1; then

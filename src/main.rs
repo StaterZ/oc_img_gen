@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
 	
 	let start = Instant::now();
 	match args.command {
-		CliCommand::Encode(args) => encoder::encode(encoder::cli::process_args(args))?,
+		CliCommand::Encode(args) => encoder::encode(encoder::cli::process_args(args)?)?,
 		CliCommand::Play(args) => playback::player::play(args)?,
 		CliCommand::Export(args) => playback::exporter::export(args)?,
 	};
