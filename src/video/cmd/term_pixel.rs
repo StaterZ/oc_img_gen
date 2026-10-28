@@ -17,8 +17,8 @@ pub struct TermPixel {
 
 impl TermPixel {
 	pub fn flip(&self) -> Option<Self> {
-		self.sym.flip().map(|sym| Self {
-			sym,
+		Some(Self {
+			sym: self.sym.flip()?,
 			bg: self.fg,
 			fg: self.bg,
 		})
@@ -32,15 +32,11 @@ impl TermPixel {
 				bg: self.bg,
 				fg: self.fg, //arbitrary
 			},
-			std::cmp::Ordering::Greater => if let Some(flipped_char) = self.flip() {
-				flipped_char
-			} else {
-				*self
-			},
+			std::cmp::Ordering::Greater => self.flip().unwrap_or(*self),
 		}
 	}
 	
-	fn basic_eq(&self, other: &Self) -> bool {
+	pub fn basic_eq(&self, other: &Self) -> bool {
 		self.sym == other.sym && self.bg == other.bg && self.fg == other.fg
 	}
 

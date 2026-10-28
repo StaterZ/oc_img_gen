@@ -9,29 +9,9 @@ local serialization = require("serialization")
 
 local version = "4.4"
 
---the player names the tape it burns pcm audio onto, so it can find it again
-local burner_label = "szt pcm burner"
-
---the primary drive, unless it holds the burner tape, then another drive
-local function default_tape_drive()
-	if not component.isAvailable("tape_drive") then
-		return nil, "no tape drive found"
-	end
-	if component.tape_drive.getLabel() == burner_label then
-		for candidate in component.list("tape_drive") do
-			local d = component.proxy(candidate)
-			if d.isReady() and d.getLabel() ~= burner_label then
-				return candidate
-			end
-		end
-	end
-	return component.tape_drive.address
-end
-
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
 do
-	--several handles can read one drive, one per szt stream, so they share where its head is
 	local drive_positions = {}
 
 	local mt = {
@@ -40,16 +20,12 @@ do
 	}
 
 	function tape_stream.open(address)
-		local addr, reason
-		if address then
-			addr, reason = component.get(address, "tape_drive")
-		else
-			addr, reason = default_tape_drive()
-		end
+		local addr, reason = component.get(address, "tape_drive")
 		if not addr then return nil, reason end
+
 		local drive = component.proxy(addr)
 		if not drive.isReady() then return nil, "no tape in drive" end
-		drive.stop() --a playing tape moves under us
+		drive.stop()
 
 		drive_positions[addr] = drive.getPosition()
 
@@ -77,13 +53,19 @@ do
 	function tape_stream:read(n)
 		local left = self.size - self.pos
 		if left <= 0 then return nil end
-		n = math.floor(math.min(n, left)) --the drive wants an integer
+
+		n = math.min(n, left)
 		local addr = self.drive.address
-		if self.pos ~= drive_positions[addr] then
-			self.drive.seek(self.pos - drive_positions[addr])
+		do
+			local drive_pos = drive_positions[addr]
+			if self.pos ~= drive_pos then
+				self.drive.seek(self.pos - drive_pos)
+			end
 		end
+
 		local data = self.drive.read(n)
 		if not data then return nil, "no tape in drive" end
+
 		self.pos = self.pos + #data
 		drive_positions[addr] = self.pos
 		return data
@@ -702,14 +684,15 @@ do --audio player
 end
 
 local pcm = {}
-do --pcm player. the audio burns onto a burner tape once, then a computronics tape drive plays the DFPWM block on its own
-	local tape_sample_rate = 48000 --the drive plays 1500 bytes per 250ms at speed 1
+do --pcm player
+	local tape_sample_rate = 48000 --tape drives play 1500 bytes per 250ms at speed 1
 
-	--a burner tape keeps the blocks it played until a new one doesn't fit after the last one. its layout:
+	--a scratch tape keeps the blocks it played until a new one doesn't fit after the last one. its layout:
 	--  index: "sztp", u8 version, u8 num_entries, then per entry u32 checksum, u32 num_bytes, u32 sample_rate, u32 offset
 	--  blocks: from index_size on, in the order they were burned. each one has pad_size of silence after it
-	local burner_magic = "sztp"
-	local burner_version = 1
+	
+	local scratch_magic = "sztp"
+	local scratch_version = 1
 	local index_size = 4096
 	local entry_size = 16
 	local max_entries = math.min(0xff, math.floor((index_size - 6) / entry_size))
@@ -740,11 +723,11 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	local function read_index(d)
 		seek_to(d, 0)
 		local data = d.read(index_size)
-		if data:sub(1, #burner_magic) ~= burner_magic then
+		if data:sub(1, #scratch_magic) ~= scratch_magic then
 			if data:find("[^\0]") then return nil end --not blank, so it isn't ours to erase
 			return {}
 		end
-		if data:byte(5) ~= burner_version then return nil end
+		if data:byte(5) ~= scratch_version then return nil end
 
 		local entries = {}
 		for i = 1, data:byte(6) do
@@ -760,7 +743,7 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 	end
 
 	local function write_index(d, entries)
-		local parts = {burner_magic, string.char(burner_version, #entries)}
+		local parts = {scratch_magic, string.char(scratch_version, #entries)}
 		for _, entry in ipairs(entries) do
 			parts[#parts + 1] = string.pack("<I4I4I4I4", entry.checksum, entry.num_bytes, entry.sample_rate, entry.offset)
 		end
@@ -768,12 +751,12 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		d.write(table.concat(parts))
 	end
 
-	--copies the block from the szt file onto the burner tape, unless the tape holds it already. returns where it starts
+	--copies the block from the szt file onto the scratch tape, unless the tape holds it already. returns where it starts
 	local function burn(d, file, track)
 		local entries = read_index(d)
 		if not entries then
 			if not ops.pcm_format then
-				return nil, ("the tape in drive %s is not blank or a pcm burner tape. give --pcm-format to erase it"):format(d.address)
+				return nil, ("the tape in drive %s is not blank or a pcm scratch tape. give --pcm-format to erase it"):format(d.address)
 			end
 			entries = {}
 		end
@@ -832,11 +815,11 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			addr, reason = component.get(ops.pcm_tape, "tape_drive")
 			if not addr then return false, reason end
 		else
-			--take the tape named as the burner, else a blank tape, so a drive with other tapes in it is left alone.
-			--a tape the video reads from can't be the burner, even when it has the name
+			--take the tape named as the scratch, else a blank tape, so a drive with other tapes in it is left alone.
+			--a tape the video reads from can't be the scratch, even when it has the name
 			for candidate in component.list("tape_drive") do
 				local d = component.proxy(candidate)
-				if not used[candidate] and d.isReady() and d.getLabel() == burner_label then
+				if not used[candidate] and d.isReady() and d.getLabel() == scratch_label then
 					addr = candidate
 					break
 				end
@@ -877,8 +860,8 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 			local offset, reason = burn(found, files[1], track)
 			if not offset then return false, reason end
 			block_offset = offset
-			if found.getLabel() ~= burner_label then
-				found.setLabel(burner_label)
+			if found.getLabel() ~= scratch_label then
+				found.setLabel(scratch_label)
 			end
 		end
 
@@ -887,8 +870,8 @@ do --pcm player. the audio burns onto a burner tape once, then a computronics ta
 		return true, addr
 	end
 
-	--the bytes a burner tape needs to hold a block
-	function pcm.burner_size(num_bytes)
+	--the bytes a scratch tape needs to hold a block
+	function pcm.scratch_size(num_bytes)
 		return index_size + num_bytes + pad_size
 	end
 
@@ -1070,19 +1053,19 @@ local function probe_header(file)
 	local default_lengths = {2, 4, 6, 8, 16, 32, 64, 128}
 	local function tape_fmt(num_bytes)
 		local minutes = num_bytes / minute
-		local fits = "none of the default tapes"
+		local fits = "no tape"
 		for _, length in ipairs(default_lengths) do
 			if length >= minutes then
 				fits = ("a %i minute tape"):format(length)
 				break
 			end
 		end
-		return ("%i bytes (%.2f minutes), fits on %s"):format(num_bytes, minutes, fits)
+		return ("%ib / %.2fm, fits on %s"):format(num_bytes, minutes, fits)
 	end
 	print("tape size needed:")
 	print(("  data tape: %s"):format(tape_fmt(file_size)))
 	for _, track in ipairs(pcm_tracks) do
-		print(("  burner tape for '%s': %s"):format(track.name, tape_fmt(pcm.burner_size(track.num_bytes))))
+		print(("  scratch tape for '%s': %s"):format(track.name, tape_fmt(pcm.scratch_size(track.num_bytes))))
 	end
 end
 
@@ -1491,8 +1474,8 @@ if ops.h or ops.help then
 	print("   --diff", "only draw what changed from the last frame")
 	print("   --fast", "don't wait for frame time; render next frame as fast as possible")
 	print("   --batch-check", "debug the batches")
-	print("   --pcm-tape", "burner tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. burner_label .. "' to find it again")
-	print("   --pcm-format", "erase the pcm tape if it isn't blank or a burner tape")
+	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
+	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
 	return
 end
@@ -1528,7 +1511,7 @@ else
 end
 
 --do playback
-local path = args[1] or type(ops.tape) == "string" and ops.tape or nil --'--tape=<addr>' names the drive too
+local path = args[1] or default_tape_drive() or nil
 local function open_file()
 	return linear_stream.open(path, "rb", ops.tape)
 end

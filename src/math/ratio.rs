@@ -2,7 +2,6 @@ use szu::math::GoodNum;
 
 use super::{Frac, IntoIntRound};
 
-// exact ratios for ints, plain division for floats
 pub trait HasRatio: GoodNum {
 	type Ratio: GoodNum;
 

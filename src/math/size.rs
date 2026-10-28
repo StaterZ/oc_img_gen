@@ -69,24 +69,6 @@ impl<T: HasRatio> Size<T> {
 	}
 }
 
-// impl<T: GoodNum + Num> Num for Size<T> {
-// 	type FromStrRadixErr = SizeParseErr<<T as Num>::FromStrRadixErr>;
-
-// 	fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
-// 		let parts: Vec<&str> = str.split('x').collect();
-// 		if parts.len() != 2 {
-// 			return Err(SizeParseErr::BadFormat);
-// 		}
-
-// 		Ok(Self {
-// 			x: T::from_str_radix(parts[0], radix).map_err(SizeParseErr::ParseError)?,
-// 			y: T::from_str_radix(parts[1], radix).map_err(SizeParseErr::ParseError)?
-// 		})
-// 	}
-// }
-
-// impl<T: GoodNum + Unsigned> Unsigned for Size<T> { }
-
 impl<T: GoodNum + Display> Display for Size<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}x{}", self.w, self.h)
