@@ -430,7 +430,7 @@ impl<'a> VideoEncoder<'a> {
 			let can_afford = gpu_cost <= gpu_budget && cpu_cost <= cpu_budget;
 			let is_loss_acceptable = loss <= acceptable_loss;
 			if !has_budget || can_afford || !is_loss_acceptable {
-				if has_budget && !can_afford && !is_loss_acceptable {
+				if has_budget && !can_afford && !is_loss_acceptable || stats.num_set_commands == 0 {
 					break (Frame {
 						commands_len: 0,
 						command_kind: CMD_KIND,
