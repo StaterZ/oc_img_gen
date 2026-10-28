@@ -9,6 +9,25 @@ local serialization = require("serialization")
 
 local version = "4.4"
 
+--the player names the scratch tape it burns pcm audio onto, so it can find it again
+local scratch_label = "szt pcm burner"
+
+--the primary drive, unless it holds the scratch tape, then another drive
+local function default_tape_drive()
+	if not component.isAvailable("tape_drive") then
+		return nil, "no tape drive found"
+	end
+	if component.tape_drive.getLabel() == scratch_label then
+		for candidate in component.list("tape_drive") do
+			local d = component.proxy(candidate)
+			if d.isReady() and d.getLabel() ~= scratch_label then
+				return candidate
+			end
+		end
+	end
+	return component.tape_drive.address
+end
+
 --raw stream over a computronics tape drive, the data starts at the beginning of the tape
 local tape_stream = {}
 do
@@ -20,7 +39,12 @@ do
 	}
 
 	function tape_stream.open(address)
-		local addr, reason = component.get(address, "tape_drive")
+		local addr, reason
+		if address then
+			addr, reason = component.get(address, "tape_drive")
+		else
+			addr, reason = default_tape_drive()
+		end
 		if not addr then return nil, reason end
 
 		local drive = component.proxy(addr)
@@ -54,7 +78,7 @@ do
 		local left = self.size - self.pos
 		if left <= 0 then return nil end
 
-		n = math.min(n, left)
+		n = math.floor(math.min(n, left)) --the drive wants an integer
 		local addr = self.drive.address
 		do
 			local drive_pos = drive_positions[addr]
@@ -1511,7 +1535,7 @@ else
 end
 
 --do playback
-local path = args[1] or default_tape_drive() or nil
+local path = args[1] or type(ops.tape) == "string" and ops.tape or nil --'--tape=<addr>' names the drive too
 local function open_file()
 	return linear_stream.open(path, "rb", ops.tape)
 end
