@@ -7,7 +7,7 @@ use palette::{Srgb, rgb::channels::Argb};
 use crate::{
 	EXT, audio::{Mode as AudioMode, dfpwm}, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData,
-		track_spec::{AudioSpec, PcmSpec, default_name},
+		track_spec::{AudioSpec, Offset, PcmSpec, VideoSpec, default_name},
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
@@ -31,7 +31,7 @@ pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 	};
 
 	let machine = args.tier.into();
-	let video_config = args.video.as_ref().map(|video_args| build_video_config(video_args, &machine, &args.in_path));
+	let video_config = build_video_config(&args.video, &args.video_specs, &machine, &args.in_path)?;
 	let audio_configs = build_audio_configs(&args.audio, &args.audio_specs, &args.pcm_specs)?;
 	if video_config.is_none() && audio_configs.is_empty() {
 		anyhow::bail!("there are no tracks to encode. add one with --video, --audio or --pcm");
@@ -65,24 +65,22 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>, audio_confi
 		format!("tier: {}", value_name(&args.tier)),
 	];
 
-	if let (Some(video), Some(video_config)) = (&args.video, video_config) {
-		lines.push(format!("video: {}", video.mode.as_ref().map_or_else(String::new, value_name)));
-		if let Some(desc) = video_config.track_descs_data.first() {
-			lines.push(format!("  tracks: {} of {}", video_config.track_descs_data.len(), desc.size));
+	if let Some(video_config) = video_config {
+		lines.push(format!("video: {} tracks on a {} canvas", video_config.track_descs_data.len(), video_config.container_size));
+		lines.push(format!("  fill color: {}", CliSrgb8(video_config.fill_color)));
+		for desc in &video_config.track_descs_data {
+			lines.push(format!("  track: {}", desc.name));
+			lines.push(format!("    size: {}", desc.size));
+			if let Some(area) = desc.source_area {
+				lines.push(format!("    at: {}", Offset(area.pos)));
+			}
+			lines.push(format!("    frame rate: {}", desc.frame_rate.map_or_else(|| "source".to_string(), |rate| rate.inverse().to_string())));
+			lines.push(format!("    filter: {}", desc.filter.as_ref().map_or_else(|| "none".to_string(), value_name)));
+			lines.push(format!("    braille: {}", value_name(&desc.braille_strategy)));
+			lines.push(format!("    color diff: {}", value_name(&desc.color_diff_strategy)));
+			lines.push(format!("    budget: {}", desc.budget.as_ref().map_or_else(|| "none".to_string(), value_name)));
+			lines.push(format!("    loss: {}% (step {}%)", desc.acceptable_loss.into_flt::<f64>() * 100.0, desc.loss_step.into_flt::<f64>() * 100.0));
 		}
-		lines.push(format!("  frame rate: {}", video.frame_rate.map_or_else(|| "source".to_string(), |rate| rate.to_string())));
-		lines.push(format!("  fill color: {}", video.fill_color));
-		if let Some(gap) = video.matrix_gap_size {
-			lines.push(format!("  matrix gap: {}", gap));
-		}
-		if let Some(screen_size) = video.matrix_screen_size {
-			lines.push(format!("  matrix screen size: {}", screen_size));
-		}
-		lines.push(format!("  filter: {}", video.filter.as_ref().map_or_else(|| "none".to_string(), value_name)));
-		lines.push(format!("  braille: {}", value_name(&video.braille_strategy)));
-		lines.push(format!("  color diff: {}", value_name(&video.color_diff_strategy)));
-		lines.push(format!("  budget: {}", video.budget.as_ref().map_or_else(|| "none".to_string(), value_name)));
-		lines.push(format!("  loss: {}% (step {}%)", video.acceptable_loss.into_flt::<f64>() * 100.0, video.loss_step.into_flt::<f64>() * 100.0));
 	}
 
 	for audio in audio_configs {
@@ -105,74 +103,105 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>, audio_confi
 	lines.join("\n")
 }
 
-fn build_video_config(args: &VideoOpts, machine: &Machine, in_path: &Path) -> VideoConfig {
-	let track_desc = |name: String, size: Size<u8>, source_area: Option<Rect<usize>>| VideoDescData {
-		name,
-		frame_rate: args.frame_rate.map(|x| x.inverse()),
-		size,
-		source_area,
-		filter: args.filter,
-		braille_strategy: args.braille_strategy,
-		color_diff_strategy: args.color_diff_strategy,
-		budget: args.budget,
-		acceptable_loss: args.acceptable_loss,
-		loss_step: args.loss_step,
+/// all video tracks cut their area from one canvas. tracks with `at` (and matrix cells) are placed on it,
+/// and the canvas is just large enough to hold them. tracks without `at` show the whole canvas instead
+fn build_video_config(args: &VideoOpts, specs: &[VideoSpec], machine: &Machine, in_path: &Path) -> anyhow::Result<Option<VideoConfig>> {
+	if specs.is_empty() {
+		return Ok(None);
+	}
+
+	let track_desc = |spec: &VideoSpec, name: String, size: Size<usize>, source_area: Option<Rect<usize>>| -> anyhow::Result<VideoDescData> {
+		Ok(VideoDescData {
+			size: size.try_cast().ok_or_else(|| anyhow::anyhow!("video track '{}' is {}, which is too large", name, size))?,
+			name,
+			frame_rate: spec.frame_rate.or(args.frame_rate).map(|x| x.inverse()),
+			source_area,
+			filter: spec.filter.or(args.filter),
+			braille_strategy: spec.braille.unwrap_or(args.braille_strategy),
+			color_diff_strategy: spec.diff.unwrap_or(args.color_diff_strategy),
+			budget: spec.budget.or(args.budget),
+			acceptable_loss: spec.loss.unwrap_or(args.acceptable_loss),
+			loss_step: spec.loss_step.unwrap_or(args.loss_step),
+		})
 	};
 
-	match args.mode.unwrap() { //SAFETY: the video option group requires --mode
-		VideoMode::Single => {
-			let track_size = args.track_size.unwrap_or_else(|| {
-				let source_size = read_video_size(in_path);
-				let max_screen_size = machine.compute_max_resolution(source_size.ratio() / video::braille::SIZE.ratio());
-				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
-				max_screen_size
-			});
-			let track_size: Size<u8> = track_size.try_cast().expect("track size too large");
-
-			VideoConfig {
-				track_descs_data: vec![track_desc("main".to_string(), track_size, None)],
-				container_size: track_size.cast() * video::braille::SIZE,
-				fill_color: *args.fill_color,
-			}
-		},
-		VideoMode::Matrix => {
-			let matrix_size = args.matrix_size.unwrap(); //SAFETY: --mode matrix requires --matrix-size
-			let track_size = args.track_size.unwrap_or_else(|| {
+	let mut source_size = None;
+	let mut placed = Vec::new();
+	let mut unplaced = Vec::new();
+	for (index, spec) in specs.iter().enumerate() {
+		let track_size = spec.size.or(args.track_size);
+		if let Some(matrix_size) = spec.matrix {
+			anyhow::ensure!(spec.gap.is_none() || spec.screen.is_none(), "a matrix takes gap or screen, not both");
+			let track_size = track_size.unwrap_or_else(|| {
 				let size = machine.compute_max_resolution(Frac::ONE / video::braille::SIZE.ratio());
 				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", size);
 				size
 			});
 			let track_input_size = track_size * video::braille::SIZE;
-			let gap_size = args.matrix_gap_size
-				.or_else(|| args.matrix_screen_size
+			let gap_size = spec.gap
+				.or_else(|| spec.screen
 					.map(|matrix_screen_size| {
 						let gap = compute_gap_size(track_input_size, matrix_screen_size);
 						eprintln!("auto-gap: {}", gap);
 						gap
 					}))
 				.unwrap_or(Size::ZERO);
-			let track_size: Size<u8> = track_size.try_cast().expect("track size too large");
-
-			VideoConfig {
-				track_descs_data: (0..matrix_size.h)
-					.flat_map(|y| (0..matrix_size.w).map(move |x| Point::new(x, y)))
-					.map(|cell| track_desc(
-						format!("{},{}", cell.x, cell.y),
-						track_size,
-						Some(Rect {
-							pos: cell * (track_input_size + gap_size),
-							size: track_input_size,
-						}),
-					))
-					.collect(),
-				container_size: matrix_size * track_input_size + (matrix_size - 1) * gap_size,
-				fill_color: *args.fill_color,
+			let origin = spec.at.map_or(Point::ZERO, |at| at.0);
+			for cell in (0..matrix_size.h).flat_map(|y| (0..matrix_size.w).map(move |x| Point::new(x, y))) {
+				let name = match &spec.name {
+					Some(name) => format!("{}:{},{}", name, cell.x, cell.y),
+					None => format!("{},{}", cell.x, cell.y),
+				};
+				placed.push(track_desc(spec, name, track_size, Some(Rect {
+					pos: origin + cell * (track_input_size + gap_size),
+					size: track_input_size,
+				}))?);
 			}
-		},
-		VideoMode::Custom => create_tracks_custom(
-			args.tracks_config.as_ref().unwrap() //SAFETY: --mode custom requires --tracks-config
-		),
+		} else {
+			anyhow::ensure!(spec.gap.is_none() && spec.screen.is_none(), "gap and screen only work with matrix");
+			let track_size = track_size.unwrap_or_else(|| {
+				let source_size = *source_size.get_or_insert_with(|| read_video_size(in_path));
+				let max_screen_size = machine.compute_max_resolution(source_size.ratio() / video::braille::SIZE.ratio());
+				eprintln!("auto-size: {} (largest possible gpu pixel count & width for ratio)", max_screen_size);
+				max_screen_size
+			});
+			let name = default_name(spec.name.clone(), index, specs.len());
+			match spec.at {
+				Some(at) => placed.push(track_desc(spec, name, track_size, Some(Rect {
+					pos: at.0,
+					size: track_size * video::braille::SIZE,
+				}))?),
+				None => unplaced.push(track_desc(spec, name, track_size, None)?),
+			}
+		}
 	}
+
+	if let Some(name) = placed.iter().chain(unplaced.iter()).map(|desc| &desc.name).duplicates().next() {
+		anyhow::bail!("there are two video tracks named '{}'", name);
+	}
+
+	let container_size = match (placed.is_empty(), unplaced.as_slice()) {
+		(true, [first, rest @ ..]) => {
+			if let Some(other) = rest.iter().find(|desc| desc.size != first.size) {
+				anyhow::bail!("video tracks without `at` show the whole canvas, so they need the same size, but '{}' is {} and '{}' is {}", first.name, first.size, other.name, other.size);
+			}
+			first.size.cast() * video::braille::SIZE
+		},
+		(false, []) => placed
+			.iter()
+			.filter_map(|desc| desc.source_area)
+			.fold(Size::ZERO, |size: Size<usize>, area| Size::new(
+				size.w.max(area.pos.x + area.size.w),
+				size.h.max(area.pos.y + area.size.h),
+			)),
+		_ => anyhow::bail!("video tracks without `at` show the whole canvas, so they can not share it with tracks that have `at` or `matrix`"),
+	};
+
+	Ok(Some(VideoConfig {
+		track_descs_data: placed.into_iter().chain(unplaced).collect(),
+		container_size,
+		fill_color: *args.fill_color,
+	}))
 }
 
 fn read_video_size(in_path: &Path) -> Size<usize> {
@@ -189,17 +218,6 @@ pub fn compute_gap_size(track_size: Size<usize>, matrix_screen_size: Size<usize>
 	const MINECRAFT_PIXELS: usize = 16;
 	//https://www.desmos.com/calculator/balbctweiy
 	(track_size * PIXEL_GAP) / (matrix_screen_size * (MINECRAFT_PIXELS * FIXED_POINT) - PIXEL_GAP)
-}
-
-fn create_tracks_custom(_config_path: &Path) -> VideoConfig {
-	todo!("custom track config");
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
-pub enum VideoMode {
-	Single,
-	Matrix,
-	Custom,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, clap::ValueEnum)]
@@ -323,8 +341,17 @@ pub struct Cli {
 	)]
 	tier: Tier,
 
+	#[arg(
+		long = "video",
+		value_name = "SPEC",
+		num_args = 0..=1,
+		default_missing_value = "",
+		help = "Add a video track. SPEC is key=value pairs split by commas, the keys are: name, size, at (X+Y on the canvas, in sub-pixels), matrix (WxH tracks), gap, screen, frame-rate, filter, braille, diff, budget, loss, loss-step",
+	)]
+	video_specs: Vec<VideoSpec>,
+
 	#[command(flatten)]
-	video: Option<VideoOpts>,
+	video: VideoOpts,
 
 	#[arg(
 		long = "audio",
@@ -349,25 +376,11 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug)]
-#[group(requires = "mode")]
 struct VideoOpts {
-	#[arg(
-		value_enum,
-		short = 'm',
-		long = "mode",
-		help = "How to arrange and produce the tracks",
-		requires_ifs([
-			("matrix", "matrix_size"),
-			("custom", "tracks_config"),
-		]),
-	)]
-	pub mode: Option<VideoMode>,
-
 	#[arg(
 		short = 'f',
 		long = "frame-rate",
-		help = "The output framerate, copies input framerate if omitted",
-		conflicts_with = "tracks_config",
+		help = "Default output framerate, copies input framerate if omitted",
 	)]
 	pub frame_rate: Option<Frac<u16>>,
 	
@@ -375,43 +388,18 @@ struct VideoOpts {
 		long = "fill-color",
 		help = "color of the padding around the video, as RRGGBB hex",
 		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
-		conflicts_with = "tracks_config",
 	)]
 	pub fill_color: CliSrgb8,
 
 	#[arg(
 		long = "track-size",
-		help = "The size of the tracks in characters, fits the GPU limits if omitted",
-		conflicts_with = "tracks_config",
+		help = "Default size of the tracks in characters, fits the GPU limits if omitted",
 	)]
 	pub track_size: Option<Size<usize>>,
-	
-	#[arg(
-		long = "matrix-size",
-		help = "How many grid cells (tracks) to create",
-		conflicts_with = "tracks_config",
-	)]
-	pub matrix_size: Option<Size<usize>>,
 
 	#[arg(
-		long = "matrix-gap-size",
-		help = "sub-pixels to skip between matrix cells, defaults to 0 if omitted",
-		conflicts_with = "tracks_config",
-		conflicts_with = "matrix_screen_size",
-	)]
-	pub matrix_gap_size: Option<Size<usize>>,
-	
-	#[arg(
-		long = "matrix-screen-size",
-		help = "screen size of matrix segments, this is used to derive the matrix gap size",
-		conflicts_with = "tracks_config",
-	)]
-	pub matrix_screen_size: Option<Size<usize>>,
-	
-	#[arg(
 		long = "filter",
-		help = "what to pass the pixels through before encoding",
-		conflicts_with = "tracks_config",
+		help = "Default for what to pass the pixels through before encoding",
 	)]
 	pub filter: Option<VideoFilter>,
 
@@ -419,7 +407,7 @@ struct VideoOpts {
 		value_enum,
 		short = 'B',
 		long = "braille",
-		help = "What brailling strategy to use",
+		help = "Default brailling strategy",
 		default_value_t = BrailleStrategy::CentroidCohesion,
 	)]
 	braille_strategy: BrailleStrategy,
@@ -428,7 +416,7 @@ struct VideoOpts {
 		value_enum,
 		short = 'D',
 		long = "diff",
-		help = "What color comparison strategy to use",
+		help = "Default color comparison strategy",
 		default_value_t = ColorDiffStrategy::Fast,
 	)]
 	color_diff_strategy: ColorDiffStrategy,
@@ -436,8 +424,7 @@ struct VideoOpts {
 	#[arg(
 		short = 'b',
 		long = "budget",
-		help = "when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
-		conflicts_with = "tracks_config",
+		help = "Default budget. when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
 	)]
 	pub budget: Option<Budget>,
 	
@@ -445,23 +432,17 @@ struct VideoOpts {
 	#[arg(
 		short = 'l',
 		long = "loss",
-		help = "highest loss a frame may have when it's over budget",
+		help = "Default highest loss a frame may have when it's over budget",
 		default_value = "0",
 	)]
 	pub acceptable_loss: Frac<u32>,
 
 	#[arg(
 		long = "loss-step",
-		help = "how much to raise the loss each time a frame is over budget",
+		help = "Default for how much to raise the loss each time a frame is over budget",
 		default_value = "1%",
 	)]
 	pub loss_step: Frac<u32>,
-	
-	#[arg(
-		long = "tracks-config",
-		help = "path to json tracks config file",
-	)]
-	pub tracks_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

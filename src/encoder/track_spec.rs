@@ -5,6 +5,8 @@ use std::{fmt::Display, str::FromStr};
 use clap::ValueEnum;
 use serde::{Deserialize, Deserializer, de::{DeserializeOwned, Error}};
 
+use crate::{encoder::cli::{BrailleStrategy, Budget, ColorDiffStrategy, VideoFilter}, math::{Frac, Point, Size}};
+
 /// parses "key=value,key=value". an empty string is a spec with only defaults
 pub fn parse_spec<T: DeserializeOwned>(s: &str) -> Result<T, String> {
 	let mut map = serde_json::Map::new();
@@ -90,4 +92,46 @@ impl_from_str!(AudioSpec, PcmSpec);
 /// the name a track gets when its spec has none. a lone track of its kind is "main"
 pub fn default_name(name: Option<String>, index: usize, count: usize) -> String {
 	name.unwrap_or_else(|| if count == 1 { "main".to_string() } else { index.to_string() })
+}
+
+/// a video track. with `at` it shows that part of the canvas, without it shows the whole canvas.
+/// with `matrix` it is a grid of tracks, named "x,y" (or "name:x,y")
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct VideoSpec {
+	#[serde(default, deserialize_with = "parse")] pub name: Option<String>,
+	#[serde(default, deserialize_with = "parse")] pub size: Option<Size<usize>>,
+	#[serde(default, deserialize_with = "parse")] pub at: Option<Offset>,
+	#[serde(default, deserialize_with = "parse")] pub matrix: Option<Size<usize>>,
+	#[serde(default, deserialize_with = "parse")] pub gap: Option<Size<usize>>,
+	#[serde(default, deserialize_with = "parse")] pub screen: Option<Size<usize>>,
+	#[serde(default, deserialize_with = "parse")] pub frame_rate: Option<Frac<u16>>,
+	#[serde(default, deserialize_with = "parse_enum")] pub filter: Option<VideoFilter>,
+	#[serde(default, deserialize_with = "parse_enum")] pub braille: Option<BrailleStrategy>,
+	#[serde(default, deserialize_with = "parse_enum")] pub diff: Option<ColorDiffStrategy>,
+	#[serde(default, deserialize_with = "parse_enum")] pub budget: Option<Budget>,
+	#[serde(default, deserialize_with = "parse")] pub loss: Option<Frac<u32>>,
+	#[serde(default, deserialize_with = "parse")] pub loss_step: Option<Frac<u32>>,
+}
+
+impl_from_str!(VideoSpec);
+
+/// where a track is on the canvas in sub-pixels, as "X+Y". it is not "X,Y" because commas split the spec
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Offset(pub Point<usize>);
+
+impl FromStr for Offset {
+	type Err = String;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let (x, y) = s.trim().trim_start_matches('+').split_once('+').ok_or_else(|| format!("'{s}' is not X+Y"))?;
+		let parse = |value: &str| value.trim().parse::<usize>().map_err(|e| format!("'{value}': {e}"));
+		Ok(Self(Point::new(parse(x)?, parse(y)?)))
+	}
+}
+
+impl Display for Offset {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}+{}", self.0.x, self.0.y)
+	}
 }
