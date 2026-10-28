@@ -7,7 +7,7 @@ use palette::{Srgb, rgb::channels::Argb};
 use crate::{
 	EXT, audio::{Mode as AudioMode, dfpwm}, encoder::{
 		AudioConfig, EncoderConfig, VideoConfig, VideoDescData,
-		track_spec::{AudioSpec, Offset, PcmSpec, VideoSpec, default_name},
+		track_spec::{AudioSpec, Offset, PcmSpec, TracksConfig, VideoSpec, default_name},
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
 
@@ -29,6 +29,14 @@ pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 			path
 		}
 	};
+
+	//the tracks from the config file come after the tracks from the flags
+	if let Some(path) = &args.tracks_config {
+		let config = TracksConfig::read(path)?;
+		args.video_specs.extend(config.video);
+		args.audio_specs.extend(config.audio);
+		args.pcm_specs.extend(config.pcm);
+	}
 
 	let machine = args.tier.into();
 	let video_config = build_video_config(&args.video, &args.video_specs, &machine, &args.in_path)?;
@@ -349,6 +357,13 @@ pub struct Cli {
 		help = "Add a video track. SPEC is key=value pairs split by commas, the keys are: name, size, at (X+Y on the canvas, in sub-pixels), matrix (WxH tracks), gap, screen, frame-rate, filter, braille, diff, budget, loss, loss-step",
 	)]
 	video_specs: Vec<VideoSpec>,
+
+	#[arg(
+		long = "tracks-config",
+		help = "Path to a json file with more tracks: {\"video\": [...], \"audio\": [...], \"pcm\": [...]}. each track is an object with the same keys as the SPEC of its flag",
+		value_hint = ValueHint::FilePath,
+	)]
+	tracks_config: Option<PathBuf>,
 
 	#[command(flatten)]
 	video: VideoOpts,

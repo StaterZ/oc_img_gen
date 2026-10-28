@@ -1,7 +1,8 @@
 //! the tracks to encode, one spec per track. a spec comes from a cli flag as "key=value,key=value",
 //! or from the tracks config file with the same keys. keys that are left out use the global flags
 
-use std::{fmt::Display, str::FromStr};
+use std::{fmt::Display, path::Path, str::FromStr};
+use anyhow::Context;
 use clap::ValueEnum;
 use serde::{Deserialize, Deserializer, de::{DeserializeOwned, Error}};
 
@@ -133,5 +134,21 @@ impl FromStr for Offset {
 impl Display for Offset {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}+{}", self.0.x, self.0.y)
+	}
+}
+
+/// the --tracks-config file: {"video": [...], "audio": [...], "pcm": [...]}, each a list of specs
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TracksConfig {
+	#[serde(default)] pub video: Vec<VideoSpec>,
+	#[serde(default)] pub audio: Vec<AudioSpec>,
+	#[serde(default)] pub pcm: Vec<PcmSpec>,
+}
+
+impl TracksConfig {
+	pub fn read(path: &Path) -> anyhow::Result<Self> {
+		let text = std::fs::read_to_string(path).with_context(|| format!("failed to read tracks config '{}'", path.display()))?;
+		serde_json::from_str(&text).with_context(|| format!("bad tracks config '{}'", path.display()))
 	}
 }
