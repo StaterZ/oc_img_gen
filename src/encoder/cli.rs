@@ -448,6 +448,7 @@ struct VideoOpts {
 		short = 'l',
 		long = "loss",
 		help = "Default highest loss a frame may have when it's over budget",
+		requires = "budget",
 		default_value = "0",
 	)]
 	pub acceptable_loss: Frac<u32>,
@@ -455,6 +456,7 @@ struct VideoOpts {
 	#[arg(
 		long = "loss-step",
 		help = "Default for how much to raise the loss each time a frame is over budget",
+		requires = "loss",
 		default_value = "1%",
 	)]
 	pub loss_step: Frac<u32>,
