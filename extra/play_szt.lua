@@ -7,7 +7,7 @@ local component = require("component")
 local computer = require("computer")
 local serialization = require("serialization")
 
-local version = "4.4"
+local version = "4.5"
 
 --the player names the scratch tape it burns pcm audio onto, so it can find it again
 local scratch_label = "szt pcm burner"
@@ -515,12 +515,11 @@ do --video player
 	function video.update_stats(
 		track,
 		frame_begin_time,
-		video_begin_time_up,
+		play_time,
 		commands_len,
 		command_count
 	)
-		local now, now_up = os.clock(), computer.uptime()
-		local frame_elapsed, video_elapsed_up = now - frame_begin_time, now_up - video_begin_time_up
+		local frame_elapsed = os.clock() - frame_begin_time
 		local presented_packet_time = track.presented_packet_index * track.time_base
 		local packet_header_len = 4 --track_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
@@ -529,7 +528,7 @@ do --video player
 			track.packet_index,
 			track.presented_packet_index,
 			time_fmt(presented_packet_time),
-			track.time_base == 0 and 0 or video_elapsed_up - presented_packet_time,
+			track.time_base == 0 and 0 or play_time - presented_packet_time,
 			#track.swap_chain,
 			#buffer_pool,
 			buffer_pool_size,
@@ -913,17 +912,42 @@ do --pcm player
 		end
 	end
 
+	local packet_time = 0.25 --the drive sends the client 250ms of audio at a time
+	local sent_pos, sent_time, poll_time --the last drive position, the uptime it changed at, the uptime it was read at
+
 	function pcm.start(track)
 		drive.stop()
 		seek_to(drive, block_offset)
 		drive.setSpeed(track.sample_rate / tape_sample_rate)
 		drive.play()
 		start_time = computer.uptime()
+		sent_pos, sent_time, poll_time = block_offset, start_time, nil
+	end
+
+	--the play time of the block, from the tape position.
+	--the tape does not keep pace with computer.uptime, so the video follows this clock to stay with the audio
+	function pcm.time(track)
+		local now = computer.uptime()
+		if now ~= poll_time then --the position changes once per tick at most, so read it once per tick
+			poll_time = now
+			local pos = drive.getPosition()
+			if pos ~= sent_pos then
+				sent_pos, sent_time = pos, now
+			end
+		end
+		local sent_time_s = (sent_pos - block_offset) * 8 / track.sample_rate
+		--the client plays the last packet over the next 250ms. then the clock waits for the next packet,
+		--unless the block played out and the tape stopped
+		local since = now - sent_time
+		if sent_time_s < track.duration then
+			since = math.min(since, packet_time)
+		end
+		return math.max(0, sent_time_s - packet_time + since)
 	end
 
 	--returns true once the block played out
 	function pcm.update(track, is_only_live_track)
-		local time_left = track.duration - (computer.uptime() - start_time)
+		local time_left = track.duration - pcm.time(track)
 		if time_left <= 0 then
 			drive.stop() --the tape goes on past the block
 			return true
@@ -935,14 +959,15 @@ do --pcm player
 	end
 
 	function pcm.update_stats(track)
-		local elapsed = computer.uptime() - start_time
-		stats[track.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s"):format(
+		local elapsed = pcm.time(track)
+		stats[track.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s %+05.2fs drift"):format(
 			track.name,
 			time_fmt(math.min(elapsed, track.duration)),
 			time_fmt(track.duration),
 			track.sample_rate,
 			track.sample_rate / tape_sample_rate,
-			drive.getState()
+			drive.getState(),
+			elapsed - (computer.uptime() - start_time) --the tape time minus the uptime since it started
 		)
 	end
 end
@@ -1215,6 +1240,13 @@ local function play(gpu, file, surfaces, open_file)
 		end
 
 		local video_begin_time_up = computer.uptime()
+		--with pcm audio the tape is the master clock
+		local function play_clock()
+			if play_pcm then
+				return pcm.time(pcm_track)
+			end
+			return computer.uptime() - video_begin_time_up
+		end
 		local num_live_tracks = 0
 		for _, track in ipairs(tracks) do
 			track.packet_index = 0
@@ -1285,7 +1317,7 @@ local function play(gpu, file, surfaces, open_file)
 
 						local command_count = video.draw_track_frame(gpu, file, track, commands_len)
 						if ops.fps then
-							video.update_stats(track, frame_begin_time, video_begin_time_up, commands_len, command_count)
+							video.update_stats(track, frame_begin_time, play_clock(), commands_len, command_count)
 						end
 					else
 						file:seek("cur", commands_len + 1) --command_kind = 1b
@@ -1300,8 +1332,7 @@ local function play(gpu, file, surfaces, open_file)
 						--but we can't really help it without buffers
 						if not ops.fast then
 							repeat
-								local now_up = computer.uptime()
-								local current_time = (now_up - video_begin_time_up)
+								local current_time = play_clock()
 								local next_present_time = track.presented_packet_index * track.time_base
 								local time_left = next_present_time - current_time
 								os.sleep(time_left) --sleep is no-op when time<=0
@@ -1322,8 +1353,7 @@ local function play(gpu, file, surfaces, open_file)
 				for _, track in ipairs(tracks) do
 					if track.kind == 0x00 and play_video and not ops.no_back then
 						while #track.swap_chain > 0 do
-							local now_up = computer.uptime()
-							local current_time = (now_up - video_begin_time_up)
+							local current_time = play_clock()
 							local presented_packet_time = track.presented_packet_index * track.time_base
 							local time_left = presented_packet_time - current_time
 							if time_left > 0  and not ops.fast then
@@ -1371,8 +1401,7 @@ local function play(gpu, file, surfaces, open_file)
 
 				if next_present_time ~= math.huge and not ops.fast then
 					repeat
-						local now_up = computer.uptime()
-						local current_time = (now_up - video_begin_time_up)
+						local current_time = play_clock()
 						local time_left = next_present_time - current_time
 						os.sleep(time_left) --sleep is no-op when time<=0
 					until time_left <= 0
