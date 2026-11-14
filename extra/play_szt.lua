@@ -244,6 +244,7 @@ local args, ops = shell.parse(...)
 ops.tape = ops.tape or #args == 0 --with no file, play the primary tape drive
 ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
+ops.no_pcm = ops["no-pcm"]
 ops.no_back = ops["no-back"]
 ops.one_buf = ops["one-buf"]
 ops.batch_check = ops["batch-check"]
@@ -1152,6 +1153,7 @@ local function play(gpu, file, surfaces, open_file)
 	end
 	local play_video = has_video and not ops.no_video
 	local play_audio = has_audio and not ops.no_audio
+	local play_pcm   = pcm_track and not ops.no_pcm
 
 	--a stream is read when it holds a played track. it gets its own handle, so streams don't seek each other away.
 	--the pcm stream isn't read, a tape drive plays it
@@ -1185,13 +1187,12 @@ local function play(gpu, file, surfaces, open_file)
 		end
 	end
 
-	local play_pcm = false
-	if pcm_track and not ops.no_audio then
+	if play_pcm then
 		local ok, reason = pcm.prepare(files, pcm_track, num_total_packets > 0)
 		if ok then
-			play_pcm = true
 			print(("pcm audio plays from tape drive %s"):format(reason))
 		else
+			play_pcm = false
 			print(("skipping pcm audio: %s"):format(reason))
 			os.sleep(2)
 		end
