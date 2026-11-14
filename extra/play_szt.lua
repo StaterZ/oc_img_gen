@@ -263,109 +263,168 @@ end
 
 local video = {}
 do --video player
-	local buffer_pool = {}
-	local buffer_pool_idx = {}
-	local buffer_pool_size
-	local function pool_insert(buffer)
-		buffer_pool[#buffer_pool + 1] = buffer
-		buffer_pool_idx[buffer] = #buffer_pool
+	--all our gpus, the most recently used first
+	local gpus = {}
+	local main_screen
+	function video.init_gpus(primary)
+		main_screen = primary.getScreen()
+		gpus = {primary}
+		for addr in component.list("gpu") do
+			if addr ~= primary.address then
+				table.insert(gpus, component.proxy(addr))
+			end
+		end
+		return #gpus
+	end
+
+	local function move_to_front(idx)
+		local gpu = table.remove(gpus, idx)
+		table.insert(gpus, 1, gpu)
+		return gpu
+	end
+
+	--call this instead of gpu.bind. it returns a gpu that is bound to the screen.
+	--if no gpu is bound to the screen, it binds the least recently used gpu to it.
+	--give a gpu to bind that gpu, because a buffer only exists on the gpu that made it.
+	function video.bind(screen_addr, gpu)
+		local idx
+		for i, candidate in ipairs(gpus) do
+			if gpu then
+				if candidate.address == gpu.address then
+					idx = i
+					break
+				end
+			elseif candidate.getScreen() == screen_addr then
+				return move_to_front(i)
+			end
+		end
+		gpu = move_to_front(idx or #gpus)
+		if gpu.getScreen() ~= screen_addr then
+			gpu.bind(screen_addr, false)
+		end
+		return gpu
+	end
+
+	--each gpu has its own vram, so each gpu has its own pool of free buffers
+	local pools = {}
+
+	local function pool_insert(pool, buffer)
+		local free = pool.free
+		free[#free + 1] = buffer
+		pool.free_idx[buffer] = #free
 	end
 
 	-- Remove a specific buffer from the pool in O(1). Returns true if the
 	-- buffer was in the pool, false if not.
-	local function pool_remove(buffer)
-		local idx = buffer_pool_idx[buffer]
+	local function pool_remove(pool, buffer)
+		local free, free_idx = pool.free, pool.free_idx
+		local idx = free_idx[buffer]
 		if not idx then return false end
 
-		local last_idx = #buffer_pool
-		local last_buffer = buffer_pool[last_idx]
-		buffer_pool[idx] = last_buffer
-		buffer_pool_idx[last_buffer] = idx
-		buffer_pool[last_idx] = nil
-		buffer_pool_idx[buffer] = nil
+		local last_idx = #free
+		local last_buffer = free[last_idx]
+		free[idx] = last_buffer
+		free_idx[last_buffer] = idx
+		free[last_idx] = nil
+		free_idx[buffer] = nil
 		return true
 	end
 
-	local function pool_pop()
-		local last_idx = #buffer_pool
-		local last_buffer = buffer_pool[last_idx]
-		buffer_pool[last_idx] = nil
-		buffer_pool_idx[last_buffer] = nil
+	local function pool_pop(pool)
+		local free = pool.free
+		local last_idx = #free
+		local last_buffer = free[last_idx]
+		free[last_idx] = nil
+		pool.free_idx[last_buffer] = nil
 		return last_buffer
 	end
 
-	local main_screen
-	function video.pre_init(gpu)
-		main_screen = gpu.getScreen()
-	end
-
-	function video.bind_main_screen(gpu)
-		if gpu.getScreen() ~= main_screen then
-			gpu.bind(main_screen, false)
-		end
-	end
-
-	function video.init(gpu, size_x, size_y)
-		video.bind_main_screen(gpu)
-
+	function video.init(size_x, size_y)
+		local num_buffers = 0
 		if not ops.no_back then
-			if size_x > 0 and size_y > 0 then
-				repeat
-					local buffer = gpu.allocateBuffer(size_x, size_y)
-					if not buffer then break end
+			for _, gpu in ipairs(gpus) do
+				local pool = {gpu = gpu, free = {}, free_idx = {}, cache_of = {}}
+				pools[gpu.address] = pool
+				if size_x > 0 and size_y > 0 then
+					repeat
+						local buffer = gpu.allocateBuffer(size_x, size_y)
+						if not buffer then break end
 
-					pool_insert(buffer)
-				until ops.one_buf -- the sallad approves
-			end
-			if #buffer_pool == 0 then
-				video.deinit(gpu)
-				error("can't allocate back-buffer")
+						pool_insert(pool, buffer)
+					until ops.one_buf -- the sallad approves
+				end
+				if #pool.free == 0 then
+					video.deinit()
+					error(("can't allocate back-buffer on gpu %s"):format(gpu.address))
+				end
+				pool.size = #pool.free
+				num_buffers = num_buffers + pool.size
 			end
 		end
-		buffer_pool_size = #buffer_pool
-		return buffer_pool_size
+		return num_buffers
 	end
 
-	function video.deinit(gpu)
-		if buffer_pool then
-			for _, buffer in ipairs(buffer_pool) do
-				gpu.freeBuffer(buffer)
+	function video.deinit()
+		for _, pool in pairs(pools) do
+			for _, buffer in ipairs(pool.free) do
+				pool.gpu.freeBuffer(buffer)
 			end
-			gpu.setActiveBuffer(0)
+			pool.gpu.setActiveBuffer(0)
 		end
-		video.bind_main_screen(gpu)
+		pools = {}
+		video.bind(main_screen, gpus[1])
 	end
 
-	local buffer_cache = {}
-	local buffer_cache_idx = {}
-	local function alloc_buffer(cache)
+	--after an error, free every buffer and put the primary gpu back on the main screen
+	function video.reset(primary)
+		for _, gpu in ipairs(gpus) do
+			if not ops.no_back then
+				gpu.setActiveBuffer(0)
+				gpu.freeAllBuffers()
+			end
+		end
+		pools = {}
+		if main_screen then
+			video.bind(main_screen, primary)
+		end
+	end
+
+	--the gpu that last bound a screen, for draws that don't care which gpu it is
+	function video.any_gpu()
+		return gpus[1]
+	end
+
+	local function alloc_buffer(pool, cache)
 		-- 1. try to reuse the cache
-		if pool_remove(cache) then
+		if pool_remove(pool, cache) then
 			return cache
 		end
 
 		-- 2. try to find a free buffer (not used for cache)
-		for _, candidate in ipairs(buffer_pool) do
-			if not buffer_cache_idx[candidate] then
-				pool_remove(candidate)
+		for _, candidate in ipairs(pool.free) do
+			if not pool.cache_of[candidate] then
+				pool_remove(pool, candidate)
 				return candidate
 			end
 		end
 
 		-- 3. worst case, pick anything
-		return pool_pop()
+		return pool_pop(pool)
 	end
 
-	function video.begin_commit(gpu, track)
-		local cache = buffer_cache[track.index + 1]
-		if not cache then --if no cache, create a new back-buffer by copying the screen
-			if gpu.getScreen() ~= track.surface.screen_addr then
-				gpu.bind(track.surface.screen_addr, false) --OUCH!
-			end
-			cache = 0
+	--returns the gpu to draw the frame with
+	function video.begin_commit(track)
+		--the cache only exists on the gpu that made it, so keep drawing the track with that gpu
+		local pool, cache
+		if track.cache then
+			pool, cache = track.cache.pool, track.cache.buffer
+		else --if no cache, create a new back-buffer by copying the screen
+			local gpu = video.bind(track.surface.screen_addr)
+			pool, cache = pools[gpu.address], 0
 		end
-		
-		local buffer = alloc_buffer(cache)
+		local gpu = pool.gpu
+
+		local buffer = alloc_buffer(pool, cache)
 		if buffer ~= cache then --if we could not get the cache, then copy it
 			gpu.bitblt(
 				buffer,
@@ -377,45 +436,65 @@ do --video player
 			)
 		end
 		gpu.setActiveBuffer(buffer)
-		
+
 		--update bookkeeping
-		local prev_buffer_idx = buffer_cache_idx[buffer]
-		if prev_buffer_idx then
-			buffer_cache[prev_buffer_idx] = nil
+		local prev_track = pool.cache_of[buffer]
+		if prev_track then
+			prev_track.cache = nil
 		end
-		buffer_cache[track.index + 1] = buffer
-		buffer_cache_idx[buffer] = track.index + 1
-		table.insert(track.swap_chain, buffer)
+		if track.cache then
+			track.cache.pool.cache_of[track.cache.buffer] = nil
+		end
+		local frame = {pool = pool, buffer = buffer}
+		track.cache = frame
+		pool.cache_of[buffer] = track
+		table.insert(track.swap_chain, frame)
+		return gpu
 	end
 
 	function video.begin_dummy_commit(track)
 		table.insert(track.swap_chain, 0)
 	end
 
-	function video.inject(gpu, track, f)
+	--f gets the gpu to draw with
+	function video.inject(track, f)
+		local frame = track.swap_chain[1]
+		if frame == 0 then --dummy commits have no buffer, so draw on the screen
+			f(video.bind(track.surface.screen_addr))
+			return
+		end
+
+		local gpu = frame.pool.gpu
 		local active = gpu.getActiveBuffer()
-		gpu.setActiveBuffer(track.swap_chain[1])
-		f()
+		gpu.setActiveBuffer(frame.buffer)
+		f(gpu)
 		gpu.setActiveBuffer(active)
 	end
 
-	function video.present(gpu, track)
+	function video.present(track)
 		local frame = table.remove(track.swap_chain, 1)
 		if frame == 0 then return end --delete dummy commits
 
+		local gpu = video.bind(track.surface.screen_addr, frame.pool.gpu)
 		gpu.bitblt(
 			0,
 			track.surface.pos_x,
 			track.surface.pos_y,
 			track.surface.size_x,
 			track.surface.size_y,
-			frame
+			frame.buffer
 		)
-		pool_insert(frame)
+		pool_insert(frame.pool, frame.buffer)
 	end
 
+	--the next commit can go to any gpu, so stall when any pool is empty
 	function video.is_stalled()
-		return #buffer_pool == 0
+		for _, pool in pairs(pools) do
+			if #pool.free == 0 then
+				return true
+			end
+		end
+		return false
 	end
 
 	local lut = {
@@ -523,6 +602,11 @@ do --video player
 		local presented_packet_time = track.presented_packet_index * track.time_base
 		local packet_header_len = 4 --track_id = 1b, commands_len = 2b, command_kind = 1b
 		local packet_len = commands_len + packet_header_len
+		local num_free, num_buffers = 0, 0
+		for _, pool in pairs(pools) do
+			num_free = num_free + #pool.free
+			num_buffers = num_buffers + pool.size
+		end
 		stats[track.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
 			track.name,
 			track.packet_index,
@@ -530,8 +614,8 @@ do --video player
 			time_fmt(presented_packet_time),
 			track.time_base == 0 and 0 or play_time - presented_packet_time,
 			#track.swap_chain,
-			#buffer_pool,
-			buffer_pool_size,
+			num_free,
+			num_buffers,
 			1 / frame_elapsed,
 			frame_elapsed * 1000,
 			packet_len,
@@ -1127,9 +1211,6 @@ local function play(gpu, file, surfaces, open_file)
 	assertEq(header.version, szt.version, "bad version")
 	print("version: OK")
 
-	if not ops.no_video then
-		video.pre_init(gpu)
-	end
 	local max_size_x, max_size_y = 0, 0
 	local max_num_voices = 0
 	local has_video, has_audio = false, false
@@ -1158,8 +1239,7 @@ local function play(gpu, file, surfaces, open_file)
 			max_size_y = math.max(max_size_y, track.size_y)
 
 			if track.surface.is_fullscreen then
-				gpu.bind(track.surface.screen_addr, false)
-				gpu.setResolution(track.size_x, track.size_y)
+				video.bind(track.surface.screen_addr).setResolution(track.size_x, track.size_y)
 			end
 		elseif track_desc.kind == 0x01 then
 			has_audio = true
@@ -1223,7 +1303,7 @@ local function play(gpu, file, surfaces, open_file)
 		end
 	end
 	if play_video then
-		local num_buffers = video.init(gpu, max_size_x, max_size_y)
+		local num_buffers = video.init(max_size_x, max_size_y)
 		
 		print(("allocated %i buffers!"):format(num_buffers))
 		os.sleep(0.1)
@@ -1298,24 +1378,26 @@ local function play(gpu, file, surfaces, open_file)
 				if track.kind == 0x00 then --video
 					local commands_len = read_u16(file)
 					if play_video then
+						local draw_gpu
 						if commands_len > 0 then
 							if ops.no_back then
-								if gpu.getScreen() ~= track.surface.screen_addr then
-									gpu.bind(track.surface.screen_addr, false)
-								end
+								draw_gpu = video.bind(track.surface.screen_addr)
 							else
-								video.begin_commit(gpu, track)
+								draw_gpu = video.begin_commit(track)
 							end
 							if ops.diff then
-								gpu.setBackground(0x000000)
-								gpu.setForeground(0xff0000)
-								gpu.fill(1, 1, track.size_x, track.size_y, "*")
+								draw_gpu.setBackground(0x000000)
+								draw_gpu.setForeground(0xff0000)
+								draw_gpu.fill(1, 1, track.size_x, track.size_y, "*")
 							end
-						elseif not ops.no_back then
-							video.begin_dummy_commit(track)
+						else
+							if not ops.no_back then
+								video.begin_dummy_commit(track)
+							end
+							draw_gpu = video.any_gpu() --an empty frame draws nothing
 						end
 
-						local command_count = video.draw_track_frame(gpu, file, track, commands_len)
+						local command_count = video.draw_track_frame(draw_gpu, file, track, commands_len)
 						if ops.fps then
 							video.update_stats(track, frame_begin_time, play_clock(), commands_len, command_count)
 						end
@@ -1362,9 +1444,9 @@ local function play(gpu, file, surfaces, open_file)
 							end
 
 							if ops.fps then
-								video.inject(gpu, track, function() draw_stats(gpu) end)
+								video.inject(track, draw_stats)
 							end
-							video.present(gpu, track)
+							video.present(track)
 							track.presented_packet_index = track.presented_packet_index + 1
 							if track.presented_packet_index == track.num_packets then
 								num_live_tracks = num_live_tracks - 1
@@ -1430,7 +1512,7 @@ local function play(gpu, file, surfaces, open_file)
 	end
 
 	if play_video then
-		video.deinit(gpu)
+		video.deinit()
 	end
 	if play_audio then
 		audio.deinit(max_num_voices)
@@ -1540,6 +1622,7 @@ if ops.v or ops.version then
 end
 
 local gpu = component.gpu
+video.init_gpus(gpu)
 -- local dummy = function() return 0 end
 -- local gpu = {
 -- 	__index = function() return dummy end
@@ -1597,16 +1680,15 @@ file:close()
 if ops.p or ops.probe then return end
 
 --do cleanup
-if not ops.no_back then
+if not result then
+	video.reset(gpu)
+elseif not ops.no_back then
 	gpu.setActiveBuffer(0)
 end
 gpu.setResolution(res_x, res_y)
 
 --handle error
 if not result then
-	if not ops.no_back then
-		gpu.freeAllBuffers()
-	end
 	print("ERR:")
 	print(reason)
 	return
