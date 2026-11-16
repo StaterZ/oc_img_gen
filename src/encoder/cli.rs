@@ -1,5 +1,5 @@
 use std::{fmt::Display, num::ParseIntError, ops::Deref, path::{Path, PathBuf}, str::FromStr, time::Duration};
-use clap::{Args, Parser, ValueEnum, ValueHint};
+use clap::{ArgAction, ArgMatches, Args, FromArgMatches, Parser, ValueEnum, ValueHint};
 use itertools::Itertools;
 use num::traits::{ConstOne, ConstZero};
 use palette::{Srgb, rgb::channels::Argb};
@@ -30,17 +30,21 @@ pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 		}
 	};
 
+	let mut video_specs = std::mem::take(&mut args.tracks.video);
+	let mut audio_specs = std::mem::take(&mut args.tracks.audio);
+	let mut pcm_specs = std::mem::take(&mut args.tracks.pcm);
+
 	//the tracks from the config file come after the tracks from the flags
 	if let Some(path) = &args.tracks_config {
 		let config = TracksConfig::read(path)?;
-		args.video_specs.extend(config.video);
-		args.audio_specs.extend(config.audio);
-		args.pcm_specs.extend(config.pcm);
+		video_specs.extend(config.video);
+		audio_specs.extend(config.audio);
+		pcm_specs.extend(config.pcm);
 	}
 
 	let machine = args.tier.into();
-	let video_config = build_video_config(&args.video, &args.video_specs, &machine, &args.in_path)?;
-	let audio_configs = build_audio_configs(&args.audio, &args.audio_specs, &args.pcm_specs)?;
+	let video_config = build_video_config(*args.fill_color, &video_specs, &machine, &args.in_path)?;
+	let audio_configs = build_audio_configs(&AudioOpts::default(), &audio_specs, &pcm_specs)?;
 	if video_config.is_none() && audio_configs.is_empty() {
 		anyhow::bail!("there are no tracks to encode. add one with --video, --audio or --pcm");
 	}
@@ -56,6 +60,154 @@ pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 		video: video_config,
 		audio: audio_configs,
 	})
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackKind {
+	Video,
+	Audio,
+	Pcm,
+}
+
+impl TrackKind {
+	fn flag(self) -> &'static str {
+		match self {
+			TrackKind::Video => "--video",
+			TrackKind::Audio => "--audio",
+			TrackKind::Pcm => "--pcm",
+		}
+	}
+}
+
+/// the track flags (--video, --audio, --pcm) in the order they are on the command line
+struct TrackFlags<'a> {
+	matches: &'a ArgMatches,
+	/// the position of each track flag, and its kind
+	tracks: Vec<(usize, TrackKind)>,
+}
+
+impl<'a> TrackFlags<'a> {
+	fn new(matches: &'a ArgMatches) -> Self {
+		let mut tracks = [("video_tracks", TrackKind::Video), ("audio_tracks", TrackKind::Audio), ("pcm_tracks", TrackKind::Pcm)]
+			.into_iter()
+			.flat_map(|(id, kind)| matches.indices_of(id).into_iter().flatten().map(move |index| (index, kind)))
+			.collect_vec();
+		tracks.sort_by_key(|(index, _)| *index);
+		Self { matches, tracks }
+	}
+
+	/// gives each value of the flag to the last track flag before it. `kinds` are the tracks the flag works on
+	fn place<T: Clone>(&self, id: &str, flag: &str, values: &[T], kinds: &[TrackKind]) -> anyhow::Result<Vec<Option<T>>> {
+		let mut placed = vec![None; self.tracks.len()];
+		for (index, value) in self.matches.indices_of(id).into_iter().flatten().zip(values) {
+			let track = self.tracks
+				.iter()
+				.rposition(|(start, _)| *start < index)
+				.ok_or_else(|| anyhow::anyhow!("{flag} must come after {}", kinds.iter().map(|kind| kind.flag()).join(" or ")))?;
+			let kind = self.tracks[track].1;
+			anyhow::ensure!(kinds.contains(&kind), "{flag} does not work on a {} track", kind.flag());
+			anyhow::ensure!(placed[track].is_none(), "{flag} is set two times for the same track");
+			placed[track] = Some(value.clone());
+		}
+		Ok(placed)
+	}
+}
+
+/// the tracks from the track flags
+#[derive(Debug)]
+struct Tracks {
+	video: Vec<VideoSpec>,
+	audio: Vec<AudioSpec>,
+	pcm: Vec<PcmSpec>,
+}
+
+impl Tracks {
+	/// gives each track flag to its track. the matches hold the position of each flag on the command line
+	fn new(args: &TrackArgs, matches: &ArgMatches) -> anyhow::Result<Self> {
+		use TrackKind::*;
+		let flags = TrackFlags::new(matches);
+		let mut names = flags.place("names", "--name", &args.names, &[Video, Audio, Pcm])?;
+
+		let mut sizes = flags.place("sizes", "--size", &args.sizes, &[Video])?;
+		let mut ats = flags.place("ats", "--at", &args.ats, &[Video])?;
+		let mut matrices = flags.place("matrices", "--matrix", &args.matrices, &[Video])?;
+		let mut gaps = flags.place("gaps", "--gap", &args.gaps, &[Video])?;
+		let mut screens = flags.place("screens", "--screen", &args.screens, &[Video])?;
+		let mut frame_rates = flags.place("frame_rates", "--frame-rate", &args.frame_rates, &[Video])?;
+		let mut filters = flags.place("filters", "--filter", &args.filters, &[Video])?;
+		let mut brailles = flags.place("brailles", "--braille", &args.brailles, &[Video])?;
+		let mut diffs = flags.place("diffs", "--diff", &args.diffs, &[Video])?;
+		let mut budgets = flags.place("budgets", "--budget", &args.budgets, &[Video])?;
+		let mut losses = flags.place("losses", "--loss", &args.losses, &[Video])?;
+		let mut loss_steps = flags.place("loss_steps", "--loss-step", &args.loss_steps, &[Video])?;
+
+		let mut voices = flags.place("voices", "--voices", &args.voices, &[Audio])?;
+		let mut analysis_rates = flags.place("analysis_rates", "--analysis-rate", &args.analysis_rates, &[Audio])?;
+		let mut fft_window_sizes = flags.place("fft_window_sizes", "--fft-window-size", &args.fft_window_sizes, &[Audio])?;
+		let mut hop_lengths = flags.place("hop_lengths", "--hop-length", &args.hop_lengths, &[Audio])?;
+		let mut guards = flags.place("guards", "--guard", &args.guards, &[Audio])?;
+
+		let mut pcm_rates = flags.place("pcm_rates", "--pcm-rate", &args.pcm_rates, &[Pcm])?;
+		let mut pcm_aligns = flags.place("pcm_aligns", "--pcm-align", &args.pcm_aligns, &[Pcm])?;
+
+		let mut tracks = Self { video: Vec::new(), audio: Vec::new(), pcm: Vec::new() };
+		for (track, (_, kind)) in flags.tracks.iter().enumerate() {
+			let name = names[track].take();
+			match kind {
+				Video => tracks.video.push(VideoSpec {
+					name,
+					size: sizes[track].take(),
+					at: ats[track].take(),
+					matrix: matrices[track].take(),
+					gap: gaps[track].take(),
+					screen: screens[track].take(),
+					frame_rate: frame_rates[track].take(),
+					filter: filters[track].take(),
+					braille: brailles[track].take(),
+					diff: diffs[track].take(),
+					budget: budgets[track].take(),
+					loss: losses[track].take(),
+					loss_step: loss_steps[track].take(),
+				}),
+				Audio => tracks.audio.push(AudioSpec {
+					name,
+					voices: voices[track].take(),
+					analysis_rate: analysis_rates[track].take(),
+					fft_window_size: fft_window_sizes[track].take(),
+					hop_length: hop_lengths[track].take(),
+					guard: guards[track].take(),
+				}),
+				Pcm => tracks.pcm.push(PcmSpec {
+					name,
+					rate: pcm_rates[track].take(),
+					align: pcm_aligns[track].take(),
+				}),
+			}
+		}
+		Ok(tracks)
+	}
+}
+
+impl Args for Tracks {
+	fn augment_args(cmd: clap::Command) -> clap::Command {
+		TrackArgs::augment_args(cmd)
+	}
+
+	fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+		TrackArgs::augment_args_for_update(cmd)
+	}
+}
+
+impl FromArgMatches for Tracks {
+	fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+		let args = TrackArgs::from_arg_matches(matches)?;
+		Self::new(&args, matches).map_err(|e| clap::Error::raw(clap::error::ErrorKind::ArgumentConflict, format!("{e}\n")))
+	}
+
+	fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), clap::Error> {
+		*self = Self::from_arg_matches(matches)?;
+		Ok(())
+	}
 }
 
 fn value_name(value: &impl ValueEnum) -> String {
@@ -113,23 +265,28 @@ fn describe_settings(args: &Cli, video_config: Option<&VideoConfig>, audio_confi
 
 /// all video tracks cut their area from one canvas. tracks with `at` (and matrix cells) are placed on it,
 /// and the canvas is just large enough to hold them. tracks without `at` show the whole canvas instead
-fn build_video_config(args: &VideoOpts, specs: &[VideoSpec], machine: &Machine, in_path: &Path) -> anyhow::Result<Option<VideoConfig>> {
+fn build_video_config(fill_color: Srgb<u8>, specs: &[VideoSpec], machine: &Machine, in_path: &Path) -> anyhow::Result<Option<VideoConfig>> {
 	if specs.is_empty() {
 		return Ok(None);
 	}
 
 	let track_desc = |spec: &VideoSpec, name: String, size: Size<usize>, source_area: Option<Rect<usize>>| -> anyhow::Result<VideoDescData> {
+		let budget = spec.budget;
+		let acceptable_loss = spec.loss;
+		let loss_step = spec.loss_step;
+		anyhow::ensure!(acceptable_loss.is_none() || budget.is_some(), "video track '{}' has a loss, but no budget", name);
+		anyhow::ensure!(loss_step.is_none() || acceptable_loss.is_some(), "video track '{}' has a loss step, but no loss", name);
 		Ok(VideoDescData {
 			size: size.try_cast().ok_or_else(|| anyhow::anyhow!("video track '{}' is {}, which is too large", name, size))?,
 			name,
-			frame_rate: spec.frame_rate.or(args.frame_rate).map(|x| x.inverse()),
+			frame_rate: spec.frame_rate.map(|x| x.inverse()),
 			source_area,
-			filter: spec.filter.or(args.filter),
-			braille_strategy: spec.braille.unwrap_or(args.braille_strategy),
-			color_diff_strategy: spec.diff.unwrap_or(args.color_diff_strategy),
-			budget: spec.budget.or(args.budget),
-			acceptable_loss: spec.loss.unwrap_or(args.acceptable_loss),
-			loss_step: spec.loss_step.unwrap_or(args.loss_step),
+			filter: spec.filter,
+			braille_strategy: spec.braille.unwrap_or(BrailleStrategy::CentroidCohesion),
+			color_diff_strategy: spec.diff.unwrap_or(ColorDiffStrategy::Fast),
+			budget,
+			acceptable_loss: acceptable_loss.unwrap_or(Frac::ZERO),
+			loss_step: loss_step.unwrap_or(Frac::new(1, 100)),
 		})
 	};
 
@@ -137,7 +294,7 @@ fn build_video_config(args: &VideoOpts, specs: &[VideoSpec], machine: &Machine, 
 	let mut placed = Vec::new();
 	let mut unplaced = Vec::new();
 	for (index, spec) in specs.iter().enumerate() {
-		let track_size = spec.size.or(args.track_size);
+		let track_size = spec.size;
 		if let Some(matrix_size) = spec.matrix {
 			anyhow::ensure!(spec.gap.is_none() || spec.screen.is_none(), "a matrix takes gap or screen, not both");
 			let track_size = track_size.unwrap_or_else(|| {
@@ -208,7 +365,7 @@ fn build_video_config(args: &VideoOpts, specs: &[VideoSpec], machine: &Machine, 
 	Ok(Some(VideoConfig {
 		track_descs_data: placed.into_iter().chain(unplaced).collect(),
 		container_size,
-		fill_color: *args.fill_color,
+		fill_color,
 	}))
 }
 
@@ -304,8 +461,17 @@ fn build_audio_configs(args: &AudioOpts, audio_specs: &[AudioSpec], pcm_specs: &
 	}
 	Ok(configs)
 }
+const TRACKS_HELP: &str = "\
+Tracks:
+  Each --video, --audio or --pcm adds a track.
+  The track flags after it set only that track.
+  A track flag must come after a track flag of its kind.
+
+Example:
+  encode -i in.mp4 --video --name left --at 0+0 -B palette-pair --video --name right --at 320+0 -B palette-pair --pcm";
 
 #[derive(Parser, Debug)]
+#[command(after_help = TRACKS_HELP)]
 pub struct Cli {
 	#[arg(
 		short = 'i',
@@ -350,116 +516,230 @@ pub struct Cli {
 	tier: Tier,
 
 	#[arg(
-		long = "video",
-		value_name = "SPEC",
-		num_args = 0..=1,
-		default_missing_value = "",
-		help = "Add a video track. SPEC is key=value pairs split by commas, the keys are: name, size, at (X+Y on the canvas, in sub-pixels), matrix (WxH tracks), gap, screen, frame-rate, filter, braille, diff, budget, loss, loss-step",
-	)]
-	video_specs: Vec<VideoSpec>,
-
-	#[arg(
 		long = "tracks-config",
-		help = "Path to a json file with more tracks: {\"video\": [...], \"audio\": [...], \"pcm\": [...]}. each track is an object with the same keys as the SPEC of its flag",
+		help = "Path to a json file with more tracks: {\"video\": [...], \"audio\": [...], \"pcm\": [...]}. each track is an object, its keys are the track flags without the dashes (\"rate\" and \"align\" for --pcm-rate and --pcm-align)",
 		value_hint = ValueHint::FilePath,
 	)]
 	tracks_config: Option<PathBuf>,
 
-	#[command(flatten)]
-	video: VideoOpts,
-
-	#[arg(
-		long = "audio",
-		value_name = "SPEC",
-		num_args = 0..=1,
-		default_missing_value = "",
-		help = "Add a sound card voices track. SPEC is key=value pairs split by commas, the keys are: name, voices, analysis-rate, fft-window-size, hop-length, guard",
-	)]
-	audio_specs: Vec<AudioSpec>,
-
-	#[arg(
-		long = "pcm",
-		value_name = "SPEC",
-		num_args = 0..=1,
-		default_missing_value = "",
-		help = "Add a DFPWM track for computronics tape drives, play it with play_szt --pcm-tape. SPEC is key=value pairs split by commas, the keys are: name, rate, align",
-	)]
-	pcm_specs: Vec<PcmSpec>,
-
-	#[command(flatten)]
-	audio: AudioOpts,
-}
-
-#[derive(Args, Debug)]
-struct VideoOpts {
-	#[arg(
-		short = 'f',
-		long = "frame-rate",
-		help = "Default output framerate, copies input framerate if omitted",
-	)]
-	pub frame_rate: Option<Frac<u16>>,
-	
 	#[arg(
 		long = "fill-color",
 		help = "color of the padding around the video, as RRGGBB hex",
 		default_value_t = Srgb::<u8>::from_u32::<Argb>(0x000000).into(),
 	)]
-	pub fill_color: CliSrgb8,
+	fill_color: CliSrgb8,
 
+	#[command(flatten)]
+	tracks: Tracks,
+}
+
+/// the track flags as clap gives them, before they are given to their tracks
+#[derive(Args, Debug)]
+struct TrackArgs {
 	#[arg(
-		long = "track-size",
-		help = "Default size of the tracks in characters, fits the GPU limits if omitted",
+		long = "video",
+		num_args = 0,
+		default_missing_value = "true",
+		action = ArgAction::Append,
+		help_heading = "Tracks",
+		help = "Add a video track. the video flags after it set this track",
 	)]
-	pub track_size: Option<Size<usize>>,
+	video_tracks: Vec<bool>,
 
 	#[arg(
+		long = "audio",
+		num_args = 0,
+		default_missing_value = "true",
+		action = ArgAction::Append,
+		help_heading = "Tracks",
+		help = "Add a sound card voices track. the audio flags after it set this track",
+	)]
+	audio_tracks: Vec<bool>,
+
+	#[arg(
+		long = "pcm",
+		num_args = 0,
+		default_missing_value = "true",
+		action = ArgAction::Append,
+		help_heading = "Tracks",
+		help = "Add a DFPWM track for computronics tape drives, play it with play_szt --pcm-tape. the pcm flags after it set this track",
+	)]
+	pcm_tracks: Vec<bool>,
+
+	#[arg(
+		long = "name",
+		value_name = "NAME",
+		help_heading = "Tracks",
+		help = "Name of the track. a lone track of its kind is \"main\" if omitted, else its index",
+	)]
+	names: Vec<String>,
+
+	#[arg(
+		long = "size",
+		value_name = "WxH",
+		help_heading = "Video track",
+		help = "Size of the track in characters, fits the GPU limits if omitted",
+	)]
+	sizes: Vec<Size<usize>>,
+
+	#[arg(
+		long = "at",
+		value_name = "X+Y",
+		help_heading = "Video track",
+		help = "Where the track is on the canvas, in sub-pixels. without it the track shows the whole canvas",
+	)]
+	ats: Vec<Offset>,
+
+	#[arg(
+		long = "matrix",
+		value_name = "WxH",
+		help_heading = "Video track",
+		help = "Make a grid of tracks, named \"x,y\" (or \"name:x,y\")",
+	)]
+	matrices: Vec<Size<usize>>,
+
+	#[arg(
+		long = "gap",
+		value_name = "WxH",
+		help_heading = "Video track",
+		help = "Gap between the tracks of a matrix, in sub-pixels",
+	)]
+	gaps: Vec<Size<usize>>,
+
+	#[arg(
+		long = "screen",
+		value_name = "WxH",
+		help_heading = "Video track",
+		help = "Screen size of each matrix track in blocks, computes the gap from the screen borders",
+	)]
+	screens: Vec<Size<usize>>,
+
+	#[arg(
+		short = 'f',
+		long = "frame-rate",
+		value_name = "FPS",
+		help_heading = "Video track",
+		help = "Output framerate, copies input framerate if omitted",
+	)]
+	frame_rates: Vec<Frac<u16>>,
+
+	#[arg(
+		value_enum,
 		long = "filter",
-		help = "Default for what to pass the pixels through before encoding",
+		value_name = "FILTER",
+		help_heading = "Video track",
+		help = "What to pass the pixels through before encoding",
 	)]
-	pub filter: Option<VideoFilter>,
+	filters: Vec<VideoFilter>,
 
 	#[arg(
 		value_enum,
 		short = 'B',
 		long = "braille",
-		help = "Default brailling strategy",
-		default_value_t = BrailleStrategy::CentroidCohesion,
+		value_name = "STRATEGY",
+		help_heading = "Video track",
+		help = "Brailling strategy [default: centroid-cohesion]",
 	)]
-	braille_strategy: BrailleStrategy,
+	brailles: Vec<BrailleStrategy>,
 
 	#[arg(
 		value_enum,
 		short = 'D',
 		long = "diff",
-		help = "Default color comparison strategy",
-		default_value_t = ColorDiffStrategy::Fast,
+		value_name = "STRATEGY",
+		help_heading = "Video track",
+		help = "Color comparison strategy [default: fast]",
 	)]
-	color_diff_strategy: ColorDiffStrategy,
+	diffs: Vec<ColorDiffStrategy>,
 
 	#[arg(
+		value_enum,
 		short = 'b',
 		long = "budget",
-		help = "Default budget. when enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
+		value_name = "BUDGET",
+		help_heading = "Video track",
+		help = "When enabled, the video will lower in framerate if the frame complexity becomes higher than the GPU render budget",
 	)]
-	pub budget: Option<Budget>,
-	
-	
+	budgets: Vec<Budget>,
+
 	#[arg(
 		short = 'l',
 		long = "loss",
-		help = "Default highest loss a frame may have when it's over budget",
-		requires = "budget",
-		default_value = "0",
+		value_name = "LOSS",
+		help_heading = "Video track",
+		help = "Highest loss a frame may have when it's over budget, needs a budget [default: 0]",
 	)]
-	pub acceptable_loss: Frac<u32>,
+	losses: Vec<Frac<u32>>,
 
 	#[arg(
 		long = "loss-step",
-		help = "Default for how much to raise the loss each time a frame is over budget",
-		requires = "loss",
-		default_value = "1%",
+		value_name = "STEP",
+		help_heading = "Video track",
+		help = "How much to raise the loss each time a frame is over budget, needs a loss [default: 1%]",
 	)]
-	pub loss_step: Frac<u32>,
+	loss_steps: Vec<Frac<u32>>,
+
+	#[arg(
+		short = 'v',
+		long = "voices",
+		value_name = "N",
+		help_heading = "Audio track",
+		help = "Number of voices (8 channels per sound card) [default: 8]",
+		value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+	)]
+	voices: Vec<usize>,
+
+	#[arg(
+		long = "analysis-rate",
+		value_name = "HZ",
+		help_heading = "Audio track",
+		help = "Target analysis sample rate (Hz) [default: 24000]",
+	)]
+	analysis_rates: Vec<u32>,
+
+	#[arg(
+		long = "fft-window-size",
+		value_name = "N",
+		help_heading = "Audio track",
+		help = "FFT window size (power of two) [default: 1024]",
+		value_parser = parse_power_of_two,
+	)]
+	fft_window_sizes: Vec<usize>,
+
+	#[arg(
+		long = "hop-length",
+		value_name = "N",
+		help_heading = "Audio track",
+		help = "Hop size in samples (defaults to window/2)",
+	)]
+	hop_lengths: Vec<usize>,
+
+	#[arg(
+		long = "guard",
+		value_name = "N",
+		help_heading = "Audio track",
+		help = "Bins around a selected peak that will be removed [default: 1]",
+		allow_negative_numbers = true,
+	)]
+	guards: Vec<isize>,
+
+	#[arg(
+		long = "pcm-rate",
+		value_name = "HZ",
+		help_heading = "PCM track",
+		help = "Sample rate (Hz). the tape drive plays 48000 at speed 1, so this sets the speed (12000-96000, a multiple of 32) [default: 48000]",
+		value_parser = parse_pcm_rate,
+	)]
+	pcm_rates: Vec<u32>,
+
+	#[arg(
+		long = "pcm-align",
+		value_name = "BYTES",
+		help_heading = "PCM track",
+		help = "Each pcm track gets its own stream, which starts on a multiple of this many bytes [default: 4096]",
+		value_parser = clap::value_parser!(u32).range(1..),
+	)]
+	pcm_aligns: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -507,61 +787,30 @@ impl From<Srgb<u8>> for CliSrgb8 {
 		Self(value)
 	}
 }
-
-#[derive(Args, Debug)]
+/// the values the audio and pcm tracks use for the keys their spec leaves out
+#[derive(Debug)]
 pub struct AudioOpts {
-	#[arg(
-		long = "pcm-rate",
-		default_value_t = dfpwm::TAPE_SAMPLE_RATE,
-		help = "Default pcm sample rate (Hz). the tape drive plays 48000 at speed 1, so this sets the speed (12000-96000, a multiple of 32)",
-		value_parser = parse_pcm_rate,
-	)]
 	pub pcm_rate: u32,
-
-	#[arg(
-		long = "pcm-align",
-		default_value_t = 4096,
-		help = "Default align: each pcm track gets its own stream, which starts on a multiple of this many bytes",
-		value_parser = clap::value_parser!(u32).range(1..),
-	)]
 	pub pcm_align: u32,
-
-	#[arg(
-		long = "analysis-rate",
-		default_value_t = 24000,
-		help = "Default target analysis sample rate (Hz)",
-	)]
 	pub analysis_rate: u32,
-
-	#[arg(
-		long = "fft-window-size",
-		default_value_t = 1024,
-		help = "Default FFT window size (power of two)",
-		value_parser = parse_power_of_two,
-	)]
 	pub fft_window_size: usize,
-
-	#[arg(
-		long = "hop-length",
-		help = "Default hop size in samples (defaults to window/2)",
-	)]
 	pub hop_length: Option<usize>,
-
-	#[arg(
-		long = "guard",
-		default_value_t = 1,
-		help = "Default bins around a selected peak that will be removed",
-	)]
 	pub guard: isize,
-
-	#[arg(
-		short = 'v',
-		long = "voices",
-		default_value_t = 8,
-		help = "Default number of voices (8 channels per sound card)",
-		value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
-	)]
 	pub num_voices: usize,
+}
+
+impl Default for AudioOpts {
+	fn default() -> Self {
+		Self {
+			pcm_rate: dfpwm::TAPE_SAMPLE_RATE,
+			pcm_align: 4096,
+			analysis_rate: 24000,
+			fft_window_size: 1024,
+			hop_length: None,
+			guard: 1,
+			num_voices: 8,
+		}
+	}
 }
 
 fn parse_pcm_rate(s: &str) -> Result<u32, String> {

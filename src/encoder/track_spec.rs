@@ -1,39 +1,14 @@
-//! the tracks to encode, one spec per track. a spec comes from a cli flag as "key=value,key=value",
-//! or from the tracks config file with the same keys. keys that are left out use the global flags
+//! the tracks to encode, one spec per track. a spec comes from the track flags after --video, --audio or --pcm,
+//! or from the tracks config file, which uses the flag names as keys. keys that are left out use the defaults
 
 use std::{fmt::Display, path::Path, str::FromStr};
 use anyhow::Context;
 use clap::ValueEnum;
-use serde::{Deserialize, Deserializer, de::{DeserializeOwned, Error}};
+use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::{encoder::cli::{BrailleStrategy, Budget, ColorDiffStrategy, VideoFilter}, math::{Frac, Point, Size}};
 
-/// parses "key=value,key=value". an empty string is a spec with only defaults
-pub fn parse_spec<T: DeserializeOwned>(s: &str) -> Result<T, String> {
-	let mut map = serde_json::Map::new();
-	for pair in s.split(',').map(str::trim).filter(|pair| !pair.is_empty()) {
-		let (key, value) = pair.split_once('=').ok_or_else(|| format!("'{pair}' is not key=value"))?;
-		let key = key.trim();
-		if map.insert(key.to_string(), serde_json::Value::String(value.trim().to_string())).is_some() {
-			return Err(format!("'{key}' is set more than once"));
-		}
-	}
-	serde_json::from_value(map.into()).map_err(|e| e.to_string())
-}
-
-macro_rules! impl_from_str {
-	($($spec:ty),*) => {$(
-		impl FromStr for $spec {
-			type Err = String;
-
-			fn from_str(s: &str) -> Result<Self, Self::Err> {
-				parse_spec(s)
-			}
-		}
-	)*};
-}
-
-/// the cli gives every value as text, the config file can also give numbers
+/// the config file can give a value as text or as a number
 fn text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
 	#[derive(Deserialize)]
 	#[serde(untagged)]
@@ -88,8 +63,6 @@ pub struct PcmSpec {
 	#[serde(default, deserialize_with = "parse")] pub align: Option<u32>,
 }
 
-impl_from_str!(AudioSpec, PcmSpec);
-
 /// the name a track gets when its spec has none. a lone track of its kind is "main"
 pub fn default_name(name: Option<String>, index: usize, count: usize) -> String {
 	name.unwrap_or_else(|| if count == 1 { "main".to_string() } else { index.to_string() })
@@ -115,9 +88,7 @@ pub struct VideoSpec {
 	#[serde(default, deserialize_with = "parse")] pub loss_step: Option<Frac<u32>>,
 }
 
-impl_from_str!(VideoSpec);
-
-/// where a track is on the canvas in sub-pixels, as "X+Y". it is not "X,Y" because commas split the spec
+/// where a track is on the canvas in sub-pixels, as "X+Y"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Offset(pub Point<usize>);
 
