@@ -137,6 +137,13 @@ do
 		checkArg(2, offset, "number")
 		assert(math.floor(offset) == offset, "bad argument #2 (not an integer)")
 
+		--a skip forward inside the buffer keeps the buffer, so skipping a packet costs no tape read.
+		--it returns true instead of the position, since only the stream knows that
+		if whence == "cur" and offset > 0 and offset <= #self.buffer - self.bufferHead then
+			self.bufferHead = self.bufferHead + offset
+			return true
+		end
+
 		if whence == "cur" then
 			offset = offset - (#self.buffer - self.bufferHead)
 		end
@@ -1057,651 +1064,6 @@ do --pcm player
 	end
 end
 
---a master player sends the packets of some video tracks over a modem to slave players, which play them on their screens.
---  only the master has a --cfg. a slave answers "hello" with the addresses of its screens, and the signature of its own file if it has one.
---  a slave with the same file reads its packets itself, so the master only sends it the clock. else the master streams the packets to it.
---  the master plays a track itself when the screen of its surface is here, else it gives the track to the slave with that screen.
---  the slave syncs its uptime with the master by ping and pong, then the master clock reaches it as (clock, master uptime) samples.
---  a sample does not age in the network, because the slave turns the master uptime into its own uptime.
---  messages: tag "szt", then the kind and its values. the master sends each pass as "start", "data"..., then "end" or "stop"
-local net = {}
-do
-	net.default_port = 5741
-	--each modem message costs the sender a tick, so the master sends few and full messages
-	net.lead = 2 --the master reads packets up to this many seconds before they play
-	net.preroll = 0.25 --without pcm, the master starts its clock this much later
-	local flush_ahead = 1 --while the reader waits, a part-full message goes once its first packet plays within this many seconds.
-	--while the reader reads, only full messages go. a master that is behind reads without a wait, so it sends full messages and catches up
-	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too. each data message has it too
-	local resync_interval = 5 --a slave measures the uptime offset again this often
-	local timeout = 5 --a slave drops a master that is quiet this long
-	local tag = "szt"
-
-	function net.port(value)
-		if value == true then return net.default_port end
-		local port = tonumber(value)
-		if not port or port < 1 or port > 65535 or port % 1 ~= 0 then
-			error(("bad port '%s'"):format(tostring(value)), 0)
-		end
-		return port
-	end
-
-	local function open_modem(port)
-		if not component.isAvailable("modem") then
-			error("--slave and --master need a network card (a linked card has no ports, so it does not work)", 0)
-		end
-		local modem = component.modem
-		local was_open = modem.isOpen(port)
-		if not was_open and not modem.open(port) then
-			error(("can't open port %i"):format(port), 0)
-		end
-		return modem, was_open
-	end
-
-	--counts messages, bytes and the time a send blocked, over the last second, for --fps
-	local function new_meter()
-		return {msgs = 0, bytes = 0, busy = 0, since = computer.uptime(), rate = "0msg/s 0.0KB/s 0%send"}
-	end
-	local function meter_add(meter, num_bytes, busy)
-		meter.msgs = meter.msgs + 1
-		meter.bytes = meter.bytes + num_bytes
-		meter.busy = meter.busy + (busy or 0)
-	end
-	local function meter_rate(meter)
-		local now = computer.uptime()
-		local span = now - meter.since
-		if span >= 1 then
-			meter.rate = ("%imsg/s %.1fKB/s %i%%send"):format(math.floor(meter.msgs / span + 0.5), meter.bytes / span / 1024, math.floor(meter.busy / span * 100 + 0.5))
-			meter.msgs, meter.bytes, meter.busy, meter.since = 0, 0, 0, now
-		end
-		return meter.rate
-	end
-
-	--slave errors that stop a session are tables, so they don't print a traceback
-	local function fail(msg)
-		error({net = msg}, 0)
-	end
-	function net.error_text(err)
-		if type(err) == "table" and err.net then return err.net end
-	end
-
-	local master = {}
-	master.__index = master
-
-	function net.master(port)
-		local modem, was_open = open_modem(port)
-		local self = setmetatable({
-			modem = modem,
-			port = port,
-			was_open = was_open,
-			--the message size minus room for the tag, kind, gen and seq. older OpenComputers has no maxPacketSize, its limit is 8192
-			budget = (modem.maxPacketSize and modem.maxPacketSize() or 8192) - 96,
-			slaves = {}, --by address
-			by_track = {}, --by track index (from 1), the slaves that play the track
-			gen = 0,
-			meter = new_meter(),
-		}, master)
-		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a)
-			if msg_port == port and msg_tag == tag then
-				self:receive(from, kind, a)
-			end
-		end
-		event.listen("modem_message", self.listener)
-		return self
-	end
-
-	function master:receive(from, kind, a)
-		if kind == "ping" then
-			self.modem.send(from, self.port, tag, "pong", a, computer.uptime())
-		elseif kind == "claim" and self.claims then
-			self.claims[from] = serialization.unserialize(a)
-		elseif kind == "ready" or kind == "fail" then
-			local slave = self.slaves[from]
-			if slave and slave.state == "setup" then
-				slave.state = kind
-				slave.reason = a
-			end
-		end
-	end
-
-	--asks the slaves on the port which screens they have.
-	--a video track whose surface is on a screen of a slave goes to that slave, with its surface
-	--sig is the signature of the header of the file of this player
-	function master:discover(header, surfaces, sig)
-		print(("looking for slaves on port %i"):format(self.port))
-		self.claims = {}
-		self.modem.broadcast(self.port, tag, "hello")
-		os.sleep(1) --the listener collects the claims
-		local claims = self.claims
-		self.claims = nil
-
-		local owner = {} --screen address -> slave
-		local found = {}
-		for addr, claim in pairs(claims) do
-			claim = type(claim) == "table" and claim or {}
-			local slave = {address = addr, descs = {}, surfaces = {}, ids = {}}
-			slave.file_mode = claim.file ~= nil and claim.file == sig
-			if claim.file and not slave.file_mode then
-				print(("slave %s has another file, so it gets the packets over the network"):format(addr:sub(1, 8)))
-			end
-			for _, screen in ipairs(claim.screens or {}) do
-				owner[screen] = slave
-			end
-			table.insert(found, addr:sub(1, 8))
-		end
-		print(("found %i slaves %s"):format(#found, table.concat(found, " ")))
-
-		for i, desc in ipairs(header.tracks) do
-			local surface = surfaces[desc.name]
-			local screen = surface and surface.screen_addr
-			--a screen of this computer plays here
-			if desc.kind == 0x00 and screen and select(2, pcall(component.type, screen)) ~= "screen" then
-				local slave = owner[screen]
-				if not slave then
-					error(("no computer has the screen %s of track '%s'. start its slave first"):format(screen, desc.name), 0)
-				end
-				table.insert(slave.descs, desc)
-				table.insert(slave.surfaces, surface)
-				slave.ids[i] = #slave.descs - 1
-				--a slave with the file reads the track itself, so the master forwards nothing
-				self.by_track[i] = slave.file_mode and {} or {slave}
-				self.slaves[slave.address] = slave
-			end
-		end
-
-		for addr, slave in pairs(self.slaves) do
-			local names_text = {}
-			for _, desc in ipairs(slave.descs) do
-				table.insert(names_text, desc.name)
-			end
-			print(("slave %s plays %s %s"):format(addr:sub(1, 8), table.concat(names_text, ", "),
-				slave.file_mode and "from its own file" or "from packets that the master sends"))
-		end
-	end
-
-	--the slaves that play the track, or nil
-	function master:remotes_of(track_index)
-		return self.by_track[track_index]
-	end
-
-	function master:drop(slave)
-		self.slaves[slave.address] = nil
-		for _, list in pairs(self.by_track) do
-			for i = #list, 1, -1 do
-				if list[i] == slave then
-					table.remove(list, i)
-				end
-			end
-		end
-	end
-
-	--sends each slave its tracks, then waits until they sync and allocate their buffers
-	function master:setup()
-		for addr, slave in pairs(self.slaves) do
-			local descs = {}
-			for k, desc in ipairs(slave.descs) do
-				local surface = slave.surfaces[k]
-				table.insert(descs, {
-					surface = {
-						screen_addr = surface.screen_addr,
-						is_fullscreen = surface.is_fullscreen,
-						pos_x = surface.pos_x,
-						pos_y = surface.pos_y,
-					},
-					file_mode = slave.file_mode or nil,
-					name = desc.name,
-					kind = desc.kind,
-					num_packets = desc.num_packets,
-					time_base_num = desc.time_base_num,
-					time_base_denom = desc.time_base_denom,
-					size_x = desc.size_x,
-					size_y = desc.size_y,
-				})
-			end
-			local text = serialization.serialize(descs)
-			if #text > self.budget then
-				error(("the track list for slave %s is %i bytes, but a message holds %i"):format(addr, #text, self.budget))
-			end
-			slave.state = "setup"
-			self.modem.send(addr, self.port, tag, "setup", text)
-		end
-
-		local deadline = computer.uptime() + 15
-		while computer.uptime() < deadline do
-			local waiting = false
-			for _, slave in pairs(self.slaves) do
-				if slave.state == "setup" then
-					waiting = true
-				end
-			end
-			if not waiting then break end
-			os.sleep(0.05)
-		end
-
-		for addr, slave in pairs(self.slaves) do
-			if slave.state ~= "ready" then
-				print(("dropping slave %s: %s"):format(addr:sub(1, 8), slave.reason or "it did not answer"))
-				self:drop(slave)
-			end
-		end
-		self.active = next(self.slaves) ~= nil
-		--only slaves without the file need packets
-		self.streaming = false
-		for _, slave in pairs(self.slaves) do
-			if not slave.file_mode then
-				self.streaming = true
-			end
-		end
-	end
-
-	--clock gives the play time of the pass
-	function master:begin_pass(clock)
-		if not self.active then return end
-		self.gen = self.gen + 1
-		self.clock = clock
-		for _, slave in pairs(self.slaves) do
-			slave.seq = 0
-			slave.pending = {}
-			slave.pending_len = 0
-			slave.pending_time = nil
-		end
-		self.modem.broadcast(self.port, tag, "start", self.gen)
-		self:send_clock()
-	end
-
-	function master:send_clock()
-		local play_time = self.clock()
-		local now = computer.uptime()
-		self.clock_sent = now
-		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time, now)
-		meter_add(self.meter, 0, computer.uptime() - now)
-	end
-
-	function master:send_data(slave, data)
-		slave.seq = slave.seq + 1
-		local before = computer.uptime()
-		self.modem.send(slave.address, self.port, tag, "data", self.gen, slave.seq, data, self.clock(), before)
-		meter_add(self.meter, #data, computer.uptime() - before)
-	end
-
-	--read_lead is how far the reader is ahead of the clock, in seconds
-	function master:stats_line(read_lead)
-		local pending = 0
-		for _, slave in pairs(self.slaves) do
-			pending = pending + (slave.pending_len or 0)
-		end
-		return ("N|master: %s %+.2fs read %ib pending %i slaves"):format(meter_rate(self.meter), read_lead or 0, pending, (function()
-			local n = 0
-			for _ in pairs(self.slaves) do n = n + 1 end
-			return n
-		end)())
-	end
-
-	--sends the pending packets of the slave as one message
-	function master:send_pending(slave)
-		if slave.pending_len == 0 then return end
-		self:send_data(slave, table.concat(slave.pending))
-		slave.pending = {}
-		slave.pending_len = 0
-		slave.pending_time = nil
-	end
-
-	--payload is the packet without its track id.
-	--a message holds whole packets, so a slave never waits for the rest of a packet while it has frames to present
-	function master:forward(track, payload)
-		if not self.active then return end
-		local index = track.index + 1
-		local time = track.packet_index * track.time_base
-		local budget = self.budget
-		for _, slave in ipairs(self.by_track[index]) do
-			local packet = string.char(slave.ids[index]) .. payload
-			if slave.pending_len + #packet > budget then
-				self:send_pending(slave)
-			end
-			if #packet > budget then
-				--a packet bigger than a message goes at once, in parts that follow each other
-				for p = 1, #packet, budget do
-					self:send_data(slave, packet:sub(p, p + budget - 1))
-				end
-			else
-				slave.pending[#slave.pending + 1] = packet
-				slave.pending_len = slave.pending_len + #packet
-				slave.pending_time = slave.pending_time or time
-			end
-		end
-	end
-
-	--sends the part-full messages that play soon, or all of them when force is set. blocked is true while the reader waits
-	function master:flush(force, blocked)
-		if not self.active then return end
-		local play_time
-		for _, slave in pairs(self.slaves) do
-			if slave.pending_len > 0 then
-				play_time = play_time or self.clock()
-				if force or (blocked and slave.pending_time - play_time < flush_ahead) then
-					self:send_pending(slave)
-				end
-			end
-		end
-	end
-
-	--call this often during a pass. blocked is true while the reader waits
-	function master:tick(blocked)
-		if not self.active then return end
-		self:flush(false, blocked)
-		if computer.uptime() - self.clock_sent >= clock_interval then
-			self:send_clock()
-		end
-	end
-
-	--completed is false when the player was interrupted
-	function master:finish(completed)
-		if not self.active then return end
-		if completed then
-			self:flush(true)
-		end
-		self.modem.broadcast(self.port, tag, completed and "end" or "stop")
-		self.finished = true
-	end
-
-	function master:close()
-		if self.active and not self.finished then
-			self.modem.broadcast(self.port, tag, "stop")
-		end
-		event.ignore("modem_message", self.listener)
-		if not self.was_open then
-			self.modem.close(self.port)
-		end
-	end
-
-	--the slave link is also the stream that play() reads the packets from
-	local slave = {}
-	slave.__index = slave
-
-	--the master sends the surfaces, so a slave needs no --cfg.
-	--file_sig is the signature of the header of the file of this slave, or nil without a file
-	function net.slave(port, file_sig)
-		local modem, was_open = open_modem(port)
-		local self = setmetatable({
-			is_slave = true,
-			modem = modem,
-			port = port,
-			was_open = was_open,
-			file_sig = file_sig,
-		}, slave)
-		self:end_session()
-		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c, d, e)
-			if msg_port == port and msg_tag == tag then
-				self:receive(from, kind, a, b, c, d, e)
-			end
-		end
-		self.on_interrupt = function()
-			self.quit = true
-		end
-		event.listen("modem_message", self.listener)
-		event.listen("interrupted", self.on_interrupt)
-		return self
-	end
-
-	function slave:end_session()
-		self.meter = new_meter()
-		self.master = nil
-		self.queue, self.head, self.tail = {}, 1, 0
-		self.buffer, self.pos = "", 0
-		self.clocks = {}
-		self.gen = nil
-		self.stopped, self.ended, self.readied = false, false, false
-	end
-
-	function slave:receive(from, kind, a, b, c, d, e)
-		if not self.master then
-			if kind == "hello" then
-				local screens = {}
-				for addr in component.list("screen") do
-					table.insert(screens, addr)
-				end
-				self.modem.send(from, self.port, tag, "claim", serialization.serialize({screens = screens, file = self.file_sig}))
-			elseif kind == "setup" then
-				self.master = from
-				self:push({kind = kind, data = a})
-			end
-			return
-		end
-		if from ~= self.master then return end --a slave serves one master at a time
-
-		self.heard = computer.uptime()
-		if kind == "data" then
-			meter_add(self.meter, #c)
-		end
-		if kind == "pong" then
-			self:on_pong(a, b)
-		elseif kind == "clock" then
-			self.clocks[a] = {play_time = b, uptime = c}
-		elseif kind == "stop" then
-			self.stopped = true
-		elseif kind == "start" or kind == "data" or kind == "end" then
-			if kind == "data" and d then
-				self.clocks[a] = {play_time = d, uptime = e}
-			end
-			if kind == "end" then
-				self.ended = true
-			end
-			self:push({kind = kind, gen = a, seq = b, data = c})
-		end
-	end
-
-	function slave:push(msg)
-		self.tail = self.tail + 1
-		self.queue[self.tail] = msg
-	end
-
-	function slave:pop()
-		local msg = self.queue[self.head]
-		if msg then
-			self.queue[self.head] = nil
-			self.head = self.head + 1
-		end
-		return msg
-	end
-
-	function slave:ping()
-		self.last_ping = computer.uptime()
-		self.modem.send(self.master, self.port, tag, "ping", self.last_ping)
-	end
-
-	--the offset is the slave uptime minus the master uptime. a short round trip gives a good offset, so keep the best ones
-	function slave:on_pong(sent, master_uptime)
-		local now = computer.uptime()
-		local rtt = now - sent
-		if rtt <= self.best_rtt + 0.05 then
-			self.best_rtt = math.min(self.best_rtt, rtt)
-			self.offset = (sent + now) / 2 - master_uptime
-		end
-		self.num_pongs = self.num_pongs + 1
-	end
-
-	function slave:sync()
-		self.best_rtt = math.huge
-		self.num_pongs = 0
-		for _ = 1, 8 do
-			local before = self.num_pongs
-			self:ping()
-			local deadline = computer.uptime() + 1
-			while self.num_pongs == before and computer.uptime() < deadline and not self.quit do
-				os.sleep(0.05)
-			end
-		end
-		if self.best_rtt == math.huge then
-			fail("the master did not answer the clock sync")
-		end
-		print(("synced with master %s (round trip %.0fms)"):format(self.master:sub(1, 8), self.best_rtt * 1000))
-	end
-
-	--raises an error when the session ends. it also pings, to check the master and keep the offset fresh
-	function slave:check()
-		if self.quit then fail("interrupted") end
-		if self.stopped then fail("the master stopped") end
-		local now = computer.uptime()
-		local quiet = now - self.heard
-		if quiet > timeout and not self.ended then
-			fail(("the master is quiet for %.0fs"):format(quiet))
-		end
-		if now - self.last_ping >= (quiet > 1 and 1 or resync_interval) then
-			self:ping()
-		end
-	end
-
-	--returns what to play, or nil when interrupted: the surfaces, and for a slave without the file the header of its tracks.
-	--file_mode tells which one it is
-	function slave:wait_setup()
-		print(("waiting for a master on port %i"):format(self.port))
-		while not self.quit do
-			local msg = self:pop()
-			if msg and msg.kind == "setup" then
-				self.heard = computer.uptime()
-				local descs = serialization.unserialize(msg.data)
-				self:sync()
-
-				self.file_mode = descs[1] ~= nil and descs[1].file_mode == true
-				if self.file_mode then
-					local surfaces = {}
-					for _, desc in ipairs(descs) do
-						surfaces[desc.name] = desc.surface
-					end
-					return {surfaces = surfaces}
-				end
-
-				local stream = {index = 0, offset = 0, num_bytes = 0, tracks = {}, num_packets = 0}
-				local surfaces = {}
-				for _, desc in ipairs(descs) do
-					surfaces[desc.name] = desc.surface
-					desc.stream_id = 0
-					table.insert(stream.tracks, desc)
-					stream.num_packets = stream.num_packets + desc.num_packets
-				end
-				return {
-					magic = szt.magic,
-					version = szt.version,
-					settings = "",
-					tracks = descs,
-					streams = {stream},
-					surfaces = surfaces,
-				}
-			end
-			os.sleep(0.25)
-		end
-	end
-
-	function slave:ready()
-		self.readied = true
-		self.modem.send(self.master, self.port, tag, "ready")
-	end
-
-	--tells the master when the setup failed
-	function slave:report(err)
-		if self.master and not self.readied then
-			self.modem.send(self.master, self.port, tag, "fail", tostring(err):sub(1, 200))
-		end
-	end
-
-	function slave:wait_msg()
-		while true do
-			self:check()
-			local msg = self:pop()
-			if msg then return msg end
-			os.sleep(0.05)
-		end
-	end
-
-	--waits for the master to start a pass. returns false when the master is done
-	function slave:begin_pass()
-		while true do
-			local msg = self:wait_msg()
-			if msg.kind == "start" then
-				self.gen = msg.gen
-				self.seq = 0
-				self.buffer, self.pos = "", 0
-				while not self.clocks[self.gen] do
-					self:check()
-					os.sleep(0.05)
-				end
-				for gen in pairs(self.clocks) do
-					if gen < self.gen then
-						self.clocks[gen] = nil
-					end
-				end
-				return true
-			elseif msg.kind == "end" then
-				return false
-			end
-			--data of a pass this slave did not play, skip it
-		end
-	end
-
-	--the play time of the master, from its latest sample
-	function slave:clock()
-		self:check()
-		local sample = self.clocks[self.gen]
-		local master_now = computer.uptime() - self.offset
-		return sample.play_time + (master_now - sample.uptime)
-	end
-
-	function slave:stats_line()
-		local sample = self.clocks[self.gen]
-		local age = sample and computer.uptime() - self.offset - sample.uptime or -1
-		return ("N|slave: %s %imsgs %ib queued sample %.1fs old rtt %.0fms"):format(
-			(meter_rate(self.meter):gsub(" %d+%%send", "")), --a slave only receives
-			self.tail - self.head + 1,
-			#self.buffer - self.pos,
-			age,
-			self.best_rtt * 1000
-		)
-	end
-
-	--true when a packet can be read without waiting for the network
-	function slave:has_data()
-		self:check()
-		if self.file_mode then return true end --the packets come from the file
-		if #self.buffer > self.pos then return true end
-		local msg = self.queue[self.head]
-		return msg ~= nil and msg.kind == "data"
-	end
-
-	function slave:read(n)
-		while #self.buffer - self.pos < n do
-			local msg = self:wait_msg()
-			if msg.kind ~= "data" or msg.gen ~= self.gen then
-				fail(("the master sent '%s' in the middle of a packet"):format(msg.kind))
-			end
-			self.seq = self.seq + 1
-			if msg.seq ~= self.seq then
-				fail(("lost message %i from the master"):format(self.seq))
-			end
-			self.buffer = self.buffer:sub(self.pos + 1) .. msg.data
-			self.pos = 0
-		end
-		local data = self.buffer:sub(self.pos + 1, self.pos + n)
-		self.pos = self.pos + n
-		return data
-	end
-
-	--the stream only goes forward, so "set" does nothing and "cur" skips
-	function slave:seek(whence, offset)
-		if whence == "cur" and offset and offset > 0 then
-			self:read(offset)
-		end
-		return 0
-	end
-
-	function slave:close()
-		event.ignore("modem_message", self.listener)
-		event.ignore("interrupted", self.on_interrupt)
-		if not self.was_open then
-			self.modem.close(self.port)
-		end
-	end
-end
-
 local function read_header(file)
 	local magic = file:read(4)
 	local version = read_u16(file)
@@ -1764,18 +1126,6 @@ local function read_header(file)
 		tracks = tracks,
 		streams = streams,
 	}
-end
-
---two players with the same signature have the same file
-local function header_sig(header)
-	local parts = {header.magic, tostring(header.version)}
-	for _, track in ipairs(header.tracks) do
-		table.insert(parts, ("%s/%i/%i/%i/%i"):format(track.name, track.kind, track.num_packets, track.time_base_num, track.time_base_denom))
-	end
-	for _, stream in ipairs(header.streams) do
-		table.insert(parts, ("%i/%i"):format(stream.offset, stream.num_bytes))
-	end
-	return table.concat(parts, ";")
 end
 
 local function probe_header(file)
@@ -1861,6 +1211,631 @@ local function probe_header(file)
 	end
 end
 
+--a master player plays some video tracks on the screens of slave players, in sync.
+--  only the master has a --cfg. a slave answers "hello" with the addresses of its screens.
+--  the master gives each slave the video tracks whose surfaces are on its screens.
+--  a slave plays the szt file from its own tape. at setup the master sends it the file, unless its tape has the file already.
+--  the slave syncs its uptime with the master by ping and pong, then the master clock reaches it as (clock, master uptime) samples.
+--  a sample does not age in the network, because the slave turns the master uptime into its own uptime.
+--  messages: tag "szt", then the kind and its values. a pass is "start", then "end" or "stop"
+local net = {}
+do
+	net.default_port = 5741
+	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so "start" reaches the slaves first
+	net.slave_label = "szt slave" --the slave names the tape it burns the file onto, so it can find it again
+	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too
+	local resync_interval = 5 --a slave measures the uptime offset again this often
+	local timeout = 5 --a slave drops a master that is quiet this long
+	local chunk_timeout = 2 --a slave asks again for a chunk of the file that did not come in this long
+	local window = 4 --a slave asks for this many chunks of the file at once
+	local tag = "szt"
+
+	function net.port(value)
+		if value == true then return net.default_port end
+		local port = tonumber(value)
+		if not port or port < 1 or port > 65535 or port % 1 ~= 0 then
+			error(("bad port '%s'"):format(tostring(value)), 0)
+		end
+		return port
+	end
+
+	local function open_modem(port)
+		if not component.isAvailable("modem") then
+			error("--slave and --master need a network card (a linked card has no ports, so it does not work)", 0)
+		end
+		local modem = component.modem
+		local was_open = modem.isOpen(port)
+		if not was_open and not modem.open(port) then
+			error(("can't open port %i"):format(port), 0)
+		end
+		return modem, was_open
+	end
+
+	--slave errors that stop a session are tables, so they don't print a traceback
+	local function fail(msg)
+		error({net = msg}, 0)
+	end
+	function net.error_text(err)
+		if type(err) == "table" and err.net then return err.net end
+	end
+
+	--the streams say where they end, so the file ends after the last one
+	local function file_size(header)
+		local size = 0
+		for _, stream in ipairs(header.streams) do
+			size = math.max(size, stream.offset + stream.num_bytes)
+		end
+		return size
+	end
+
+	--two players with the same signature have the same file
+	function net.header_sig(header)
+		local parts = {header.magic, tostring(header.version), header.settings}
+		for _, track in ipairs(header.tracks) do
+			table.insert(parts, ("%s/%i/%i/%i/%i/%s"):format(track.name, track.kind, track.num_packets,
+				track.time_base_num, track.time_base_denom, tostring(track.checksum)))
+		end
+		for _, stream in ipairs(header.streams) do
+			table.insert(parts, ("%i/%i"):format(stream.offset, stream.num_bytes))
+		end
+		return table.concat(parts, ";")
+	end
+
+	local master = {}
+	master.__index = master
+
+	function net.master(port)
+		local modem, was_open = open_modem(port)
+		local self = setmetatable({
+			modem = modem,
+			port = port,
+			was_open = was_open,
+			--a chunk of the file is the message size minus room for the tag, kind and offset
+			chunk_size = (modem.maxPacketSize and modem.maxPacketSize() or 8192) - 64,
+			slaves = {}, --by address
+			on_slave = {}, --by track index (from 1), true when a slave plays the track
+			wants = {}, --the chunks of the file that slaves asked for
+			gen = 0,
+		}, master)
+		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a)
+			if msg_port == port and msg_tag == tag then
+				self:receive(from, kind, a)
+			end
+		end
+		event.listen("modem_message", self.listener)
+		return self
+	end
+
+	function master:receive(from, kind, a)
+		if kind == "ping" then
+			self.modem.send(from, self.port, tag, "pong", a, computer.uptime())
+		elseif kind == "claim" and self.claims then
+			self.claims[from] = serialization.unserialize(a)
+		elseif kind == "want" then
+			local slave = self.slaves[from]
+			if slave and slave.state == "setup" then
+				table.insert(self.wants, {slave = slave, offset = a})
+			end
+		elseif kind == "ready" or kind == "fail" then
+			local slave = self.slaves[from]
+			if slave and slave.state == "setup" then
+				slave.state = kind
+				slave.reason = a
+			end
+		end
+	end
+
+	--asks the slaves on the port which screens they have.
+	--a video track whose surface is on a screen of a slave goes to that slave, with its surface
+	function master:discover(header, surfaces)
+		print(("looking for slaves on port %i"):format(self.port))
+		self.claims = {}
+		self.modem.broadcast(self.port, tag, "hello")
+		os.sleep(1) --the listener collects the claims
+		local claims = self.claims
+		self.claims = nil
+
+		local owner = {} --screen address -> slave
+		local found = {}
+		for addr, claim in pairs(claims) do
+			local slave = {address = addr, tracks = {}}
+			for _, screen in ipairs(type(claim) == "table" and claim.screens or {}) do
+				owner[screen] = slave
+			end
+			table.insert(found, addr:sub(1, 8))
+		end
+		print(("found %i slaves %s"):format(#found, table.concat(found, " ")))
+
+		for i, desc in ipairs(header.tracks) do
+			local surface = surfaces[desc.name]
+			local screen = surface and surface.screen_addr
+			--a screen of this computer plays here
+			if desc.kind == 0x00 and screen and select(2, pcall(component.type, screen)) ~= "screen" then
+				local slave = owner[screen]
+				if not slave then
+					error(("no computer has the screen %s of track '%s'. start its slave first"):format(screen, desc.name), 0)
+				end
+				table.insert(slave.tracks, {
+					name = desc.name,
+					surface = {
+						screen_addr = surface.screen_addr,
+						is_fullscreen = surface.is_fullscreen,
+						pos_x = surface.pos_x,
+						pos_y = surface.pos_y,
+					},
+				})
+				self.on_slave[i] = true
+				self.slaves[slave.address] = slave
+			end
+		end
+
+		for addr, slave in pairs(self.slaves) do
+			local names = {}
+			for _, track in ipairs(slave.tracks) do
+				table.insert(names, track.name)
+			end
+			print(("slave %s plays %s"):format(addr:sub(1, 8), table.concat(names, ", ")))
+		end
+	end
+
+	--true when a slave plays the track
+	function master:plays_on_slave(track_index)
+		return self.on_slave[track_index] == true
+	end
+
+	--sends each slave its tracks, then sends the file to the slaves that ask for it.
+	--waits until the slaves have the file on tape, synced and allocated their buffers
+	function master:setup(header, open_file)
+		local size = file_size(header)
+		for addr, slave in pairs(self.slaves) do
+			local text = serialization.serialize({
+				sig = net.header_sig(header),
+				size = size,
+				chunk_size = self.chunk_size,
+				tracks = slave.tracks,
+			})
+			if #text > self.chunk_size then
+				error(("the setup for slave %s is %i bytes, but a message holds %i"):format(addr, #text, self.chunk_size), 0)
+			end
+			slave.state = "setup"
+			slave.sent = 0
+			self.modem.send(addr, self.port, tag, "setup", text)
+		end
+
+		local handle --the file again, so the chunks don't move the play position
+		local deadline = computer.uptime() + 15
+		local next_print = 0
+		while computer.uptime() < deadline do
+			local waiting = false
+			for _, slave in pairs(self.slaves) do
+				if slave.state == "setup" then
+					waiting = true
+				end
+			end
+			if not waiting then break end
+
+			local want = table.remove(self.wants, 1)
+			if want then
+				if not handle then
+					local reason
+					handle, reason = open_file()
+					if not handle then error(("can't open the file again to send it: %s"):format(reason), 0) end
+				end
+				local n = math.min(self.chunk_size, size - want.offset)
+				if n > 0 then
+					handle:seek("set", want.offset)
+					self.modem.send(want.slave.address, self.port, tag, "chunk", want.offset, handle:read(n))
+					want.slave.sent = math.max(want.slave.sent, want.offset + n)
+				end
+				deadline = computer.uptime() + 15 --a copy can take long, but it must go on
+				if computer.uptime() >= next_print then
+					next_print = computer.uptime() + 1
+					for addr, slave in pairs(self.slaves) do
+						if slave.sent > 0 and slave.state == "setup" then
+							print(("sending the file to slave %s: %i/%i bytes (%3.f%%)"):format(addr:sub(1, 8), slave.sent, size, slave.sent / size * 100))
+						end
+					end
+				end
+			else
+				os.sleep(0.05)
+			end
+		end
+		if handle then
+			handle:close()
+		end
+		self.wants = {}
+
+		for addr, slave in pairs(self.slaves) do
+			if slave.state ~= "ready" then
+				print(("dropping slave %s: %s"):format(addr:sub(1, 8), slave.reason or "it did not answer"))
+				self.slaves[addr] = nil
+			end
+		end
+		self.active = next(self.slaves) ~= nil
+	end
+
+	--clock gives the play time of the pass
+	function master:begin_pass(clock)
+		if not self.active then return end
+		self.gen = self.gen + 1
+		self.clock = clock
+		self.modem.broadcast(self.port, tag, "start", self.gen)
+		self:send_clock()
+	end
+
+	function master:send_clock()
+		local play_time = self.clock()
+		local now = computer.uptime()
+		self.clock_sent = now
+		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time, now)
+	end
+
+	--call this often during a pass
+	function master:tick()
+		if not self.active then return end
+		if computer.uptime() - self.clock_sent >= clock_interval then
+			self:send_clock()
+		end
+	end
+
+	function master:stats_line()
+		local n = 0
+		for _ in pairs(self.slaves) do n = n + 1 end
+		return ("N|master: %i slaves, clock sent %.1fs ago"):format(n, self.clock_sent and computer.uptime() - self.clock_sent or -1)
+	end
+
+	--completed is false when the player was interrupted
+	function master:finish(completed)
+		if not self.active then return end
+		self.modem.broadcast(self.port, tag, completed and "end" or "stop")
+		self.finished = true
+	end
+
+	function master:close()
+		if self.active and not self.finished then
+			self.modem.broadcast(self.port, tag, "stop")
+		end
+		event.ignore("modem_message", self.listener)
+		if not self.was_open then
+			self.modem.close(self.port)
+		end
+	end
+
+	local slave = {}
+	slave.__index = slave
+
+	--the master sends the surfaces, so a slave needs no --cfg.
+	--tape is the --tape option: a drive address, true for the primary drive, or nil to find the tape
+	function net.slave(port, tape)
+		local modem, was_open = open_modem(port)
+		local self = setmetatable({
+			is_slave = true,
+			modem = modem,
+			port = port,
+			was_open = was_open,
+			tape = tape,
+		}, slave)
+		self:end_session()
+		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c)
+			if msg_port == port and msg_tag == tag then
+				self:receive(from, kind, a, b, c)
+			end
+		end
+		self.on_interrupt = function()
+			self.quit = true
+		end
+		event.listen("modem_message", self.listener)
+		event.listen("interrupted", self.on_interrupt)
+		return self
+	end
+
+	function slave:end_session()
+		self.master = nil
+		self.queue, self.head, self.tail = {}, 1, 0
+		self.chunks = {}
+		self.clocks = {}
+		self.gen = nil
+		self.stopped, self.ended, self.readied = false, false, false
+		self.offset, self.best_rtt, self.num_pongs, self.last_ping = 0, math.huge, 0, 0
+	end
+
+	function slave:push(msg)
+		self.tail = self.tail + 1
+		self.queue[self.tail] = msg
+	end
+
+	function slave:pop()
+		local msg = self.queue[self.head]
+		if msg then
+			self.queue[self.head] = nil
+			self.head = self.head + 1
+		end
+		return msg
+	end
+
+	function slave:receive(from, kind, a, b, c)
+		if not self.master then
+			if kind == "hello" then
+				local screens = {}
+				for addr in component.list("screen") do
+					table.insert(screens, addr)
+				end
+				self.modem.send(from, self.port, tag, "claim", serialization.serialize({screens = screens}))
+			elseif kind == "setup" then
+				self.master = from
+				self:push({kind = kind, data = a})
+			end
+			return
+		end
+		if from ~= self.master then return end --a slave serves one master at a time
+
+		self.heard = computer.uptime()
+		if kind == "pong" then
+			self:on_pong(a, b)
+		elseif kind == "clock" then
+			self.clocks[a] = {play_time = b, uptime = c}
+		elseif kind == "chunk" then
+			self.chunks[a] = b
+		elseif kind == "stop" then
+			self.stopped = true
+		elseif kind == "start" or kind == "end" then
+			if kind == "end" then
+				self.ended = true
+			end
+			self:push({kind = kind, gen = a})
+		end
+	end
+
+	function slave:ping()
+		self.last_ping = computer.uptime()
+		self.modem.send(self.master, self.port, tag, "ping", self.last_ping)
+	end
+
+	--the offset is the slave uptime minus the master uptime. a short round trip gives a good offset, so keep the best ones
+	function slave:on_pong(sent, master_uptime)
+		local now = computer.uptime()
+		local rtt = now - sent
+		if rtt <= self.best_rtt + 0.05 then
+			self.best_rtt = math.min(self.best_rtt, rtt)
+			self.offset = (sent + now) / 2 - master_uptime
+		end
+		self.num_pongs = self.num_pongs + 1
+	end
+
+	function slave:sync()
+		self.best_rtt = math.huge
+		for _ = 1, 8 do
+			local before = self.num_pongs
+			self:ping()
+			local deadline = computer.uptime() + 1
+			while self.num_pongs == before and computer.uptime() < deadline and not self.quit do
+				os.sleep(0.05)
+			end
+		end
+		if self.best_rtt == math.huge then
+			fail("the master did not answer the clock sync")
+		end
+		print(("synced with master %s (round trip %.0fms)"):format(self.master:sub(1, 8), self.best_rtt * 1000))
+	end
+
+	--raises an error when the session ends. it also pings, to check the master and keep the offset fresh
+	function slave:check()
+		if self.quit then fail("interrupted") end
+		if self.stopped then fail("the master stopped") end
+		local now = computer.uptime()
+		local quiet = now - self.heard
+		if quiet > timeout and not self.ended then
+			fail(("the master is quiet for %.0fs"):format(quiet))
+		end
+		if now - self.last_ping >= (quiet > 1 and 1 or resync_interval) then
+			self:ping()
+		end
+	end
+
+	--returns the setup from the master, or nil when interrupted: sig, size, chunk_size, and tracks with the name and surface of each
+	function slave:wait_setup()
+		print(("waiting for a master on port %i"):format(self.port))
+		while not self.quit do
+			local msg = self:pop()
+			if msg and msg.kind == "setup" then
+				self.heard = computer.uptime()
+				local setup = serialization.unserialize(msg.data)
+				setup.surfaces = {}
+				for _, track in ipairs(setup.tracks) do
+					setup.surfaces[track.name] = track.surface
+				end
+				return setup
+			end
+			os.sleep(0.25)
+		end
+	end
+
+	--the signature of the szt file on the tape, or nil
+	local function tape_sig(addr)
+		local file = linear_stream.open(addr, "rb", true)
+		if not file then return nil end
+		local ok, sig = pcall(function()
+			if file:read(4) ~= szt.magic then return nil end
+			file:seek("set", 0)
+			return net.header_sig(read_header(file))
+		end)
+		file:close()
+		return ok and sig or nil
+	end
+
+	local function is_blank(drive)
+		drive.seek(-drive.getPosition())
+		local data = drive.read(4096)
+		drive.seek(-drive.getPosition())
+		return data ~= nil and not data:find("[^\0]")
+	end
+
+	--the drive for the file: the one --tape names, else the tape with the slave label, else a blank tape
+	local function pick_drive(self, size)
+		local addr
+		if not component.isAvailable("tape_drive") then
+			fail("this computer has no tape drive. the slave needs one to hold the video")
+		end
+		if self.tape == true then
+			addr = default_tape_drive()
+		elseif self.tape then
+			addr = component.get(self.tape, "tape_drive")
+		else
+			for candidate in component.list("tape_drive") do
+				local d = component.proxy(candidate)
+				if d.isReady() and d.getLabel() == net.slave_label then
+					addr = candidate
+					break
+				end
+			end
+			if not addr then
+				for candidate in component.list("tape_drive") do
+					local d = component.proxy(candidate)
+					if d.isReady() then
+						d.stop()
+						if is_blank(d) then
+							addr = candidate
+							break
+						end
+					end
+				end
+			end
+		end
+		if not addr then
+			fail("no tape for the video. put a blank tape in a tape drive, or give --tape=<drive> to write over a tape")
+		end
+		local drive = component.proxy(addr)
+		if not drive.isReady() then
+			fail(("no tape in drive %s"):format(addr))
+		end
+		if drive.getSize() < size then
+			fail(("the video is %i bytes, but the tape in drive %s only holds %i"):format(size, addr, drive.getSize()))
+		end
+		return drive
+	end
+
+	--makes sure a tape holds the file of the master, and copies it from the master when not. returns the drive address
+	function slave:fetch(setup)
+		local drive = pick_drive(self, setup.size)
+		drive.stop()
+		if tape_sig(drive.address) == setup.sig then
+			print(("tape drive %s has the video already"):format(drive.address))
+			return drive.address
+		end
+
+		print(("copying the video from the master onto tape drive %s"):format(drive.address))
+		drive.seek(-drive.getPosition())
+		local size, chunk_size = setup.size, setup.chunk_size
+		local written, next_want = 0, 0
+		local asked_at = computer.uptime()
+		local next_print = 0
+		self.chunks = {}
+		while written < size do
+			self:check()
+			--ask for the next chunks, at most window ahead of the tape
+			while next_want < size and next_want < written + window * chunk_size do
+				self.modem.send(self.master, self.port, tag, "want", next_want)
+				next_want = next_want + chunk_size
+				asked_at = computer.uptime()
+			end
+			--write the chunks that are next on the tape. each drive.write costs a tick, so write them together
+			local parts = {}
+			while self.chunks[written] do
+				local data = self.chunks[written]
+				self.chunks[written] = nil
+				table.insert(parts, data)
+				written = written + #data
+			end
+			if #parts > 0 then
+				drive.write(table.concat(parts))
+				asked_at = computer.uptime()
+				if computer.uptime() >= next_print then
+					next_print = computer.uptime() + 1
+					io.write(("\r%i/%i bytes (%3.f%%)"):format(written, size, written / size * 100))
+				end
+			elseif computer.uptime() - asked_at > chunk_timeout then
+				next_want = written --a chunk got lost, so ask again from the tape position
+			else
+				os.sleep(0.05)
+			end
+		end
+		print()
+		drive.seek(-drive.getPosition())
+		if drive.getLabel() ~= net.slave_label then
+			drive.setLabel(net.slave_label)
+		end
+		if tape_sig(drive.address) ~= setup.sig then
+			fail(("the copy on tape drive %s does not match the file of the master"):format(drive.address))
+		end
+		return drive.address
+	end
+
+	function slave:ready()
+		self.readied = true
+		self.modem.send(self.master, self.port, tag, "ready")
+	end
+
+	--tells the master when the setup failed
+	function slave:report(err)
+		if self.master and not self.readied then
+			self.modem.send(self.master, self.port, tag, "fail", tostring(err):sub(1, 200))
+		end
+	end
+
+	function slave:wait_msg()
+		while true do
+			self:check()
+			local msg = self:pop()
+			if msg then return msg end
+			os.sleep(0.05)
+		end
+	end
+
+	--waits for the master to start a pass. returns false when the master is done
+	function slave:begin_pass()
+		while true do
+			local msg = self:wait_msg()
+			if msg.kind == "start" then
+				self.gen = msg.gen
+				while not self.clocks[self.gen] do
+					self:check()
+					os.sleep(0.05)
+				end
+				for gen in pairs(self.clocks) do
+					if gen < self.gen then
+						self.clocks[gen] = nil
+					end
+				end
+				return true
+			elseif msg.kind == "end" then
+				return false
+			end
+		end
+	end
+
+	--the play time of the master, from its latest sample
+	function slave:clock()
+		self:check()
+		local sample = self.clocks[self.gen]
+		local master_now = computer.uptime() - self.offset
+		return sample.play_time + (master_now - sample.uptime)
+	end
+
+	function slave:stats_line()
+		local sample = self.clocks[self.gen]
+		local age = sample and computer.uptime() - self.offset - sample.uptime or -1
+		return ("N|slave: clock sample %.1fs old, rtt %.0fms"):format(age, self.best_rtt * 1000)
+	end
+
+	function slave:close()
+		event.ignore("modem_message", self.listener)
+		event.ignore("interrupted", self.on_interrupt)
+		if not self.was_open then
+			self.modem.close(self.port)
+		end
+	end
+end
+
 --open_file opens the file again, for streams read next to the first one.
 --link is the master or slave link of --master and --slave. a slave gives its header, and is the file too
 local function play(gpu, file, surfaces, open_file, link, header)
@@ -1873,7 +1848,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 	local master_link = link and not link.is_slave and link or nil
 	local slave_link = link and link.is_slave and link or nil
 	if master_link then
-		master_link:discover(header, surfaces, header_sig(header))
+		master_link:discover(header, surfaces)
 	end
 
 	local max_size_x, max_size_y = 0, 0
@@ -1892,10 +1867,10 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		}
 		if track_desc.kind == 0x00 then
 			--a track plays here, or on the slave that has its screen
-			track.remotes = master_link and master_link:remotes_of(i)
-			local surface = not track.remotes and surfaces[track_desc.name] or nil
+			track.on_slave = master_link ~= nil and master_link:plays_on_slave(i)
+			local surface = not track.on_slave and surfaces[track_desc.name] or nil
 			--a slave with the file plays only the tracks that the master gave it
-			if not surface and not track.remotes and not slave_link then
+			if not surface and not track.on_slave and not slave_link then
 				error(("missing surface for track '%s'"):format(track_desc.name))
 			end
 			--a screen of another computer can't be drawn here, so skip the track
@@ -1950,7 +1925,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		local is_read = false
 		for _, track_desc in ipairs(stream_desc.tracks) do
 			local track = track_of[track_desc]
-			if track.is_shown or (track.remotes and #track.remotes > 0) or (track_desc.kind == 0x01 and play_audio) then
+			if track.is_shown or (track_desc.kind == 0x01 and play_audio) then
 				is_read = true
 			end
 		end
@@ -1996,7 +1971,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 	end
 	--the slaves get ready after this player, so a long pcm burn can't make them give up
 	if master_link then
-		master_link:setup()
+		master_link:setup(header, open_file)
 	elseif slave_link then
 		slave_link:ready()
 	end
@@ -2032,14 +2007,11 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		for _, track in ipairs(tracks) do
 			track.packet_index = 0
 			track.presented_packet_index = 0
-			track.is_remote_live = false
+			track.is_slave_live = false
 			if track.is_shown then --video
 				track.swap_chain = {}
 				num_live_tracks = num_live_tracks + 1
-			elseif track.remotes and #track.remotes > 0 then --video on slaves only, live until the last packet is sent
-				track.is_remote_live = true
-				num_live_tracks = num_live_tracks + 1
-			elseif track.remotes then --on a slave that reads its own file, live until it played out, so the clock goes on
+			elseif track.on_slave and master_link.active then --live until it played out on the slave, so the clock goes on
 				track.is_slave_live = true
 				num_live_tracks = num_live_tracks + 1
 				num_slave_live = num_slave_live + 1
@@ -2088,27 +2060,6 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			end
 		end
 
-		--a master reads ahead into memory, so it can fill whole messages for the slaves.
-		--the frames for its own screens wait in the queue of their track until a back-buffer is free
-		local read_ahead = master_link and master_link.streaming and not ops.no_back
-		local num_queued = 0
-		for _, track in ipairs(tracks) do
-			track.queue, track.queue_head, track.queue_tail = {}, 1, 0
-		end
-		local function draw_queued()
-			for _, track in ipairs(tracks) do
-				local queue = track.queue
-				while queue[track.queue_head] and not video.is_stalled() do
-					local frame = queue[track.queue_head]
-					queue[track.queue_head] = nil
-					track.queue_head = track.queue_head + 1
-					num_queued = num_queued - 1
-					draw_frame(track, frame.commands_len, frame.data)
-				end
-			end
-		end
-
-		local read_wait --the master reads the next packet after this play time, so it reads ahead at most net.lead
 		local packet_index = 0
 		while num_live_tracks > 0 do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
@@ -2119,10 +2070,8 @@ local function play(gpu, file, surfaces, open_file, link, header)
 				return false
 			end
 
-			--a slave doesn't wait for the network while it has frames to present
-			local waiting = slave_link and packet_index < num_total_packets and not slave_link:has_data()
 			local track = nil
-			if packet_index < num_total_packets and not waiting then
+			if packet_index < num_total_packets then
 				--each stream is in play order already, so take the packet that ends first, like the encoder did
 				local stream, best_end_time
 				for _, candidate in ipairs(packet_streams) do
@@ -2143,34 +2092,12 @@ local function play(gpu, file, surfaces, open_file, link, header)
 				local file = stream.file
 				if track.kind == 0x00 then --video
 					local commands_len = read_u16(file)
-					local is_remote = track.remotes and #track.remotes > 0
-					local data
-					if track.is_shown or is_remote then
-						data = file:read(commands_len + 1) --command_kind = 1b
+					if track.is_shown then
+						draw_frame(track, commands_len, file:read(commands_len + 1)) --command_kind = 1b
 					else
 						file:seek("cur", commands_len + 1)
 					end
-					if is_remote then
-						master_link:forward(track, string.pack("<I2", commands_len) .. data)
-						if track.is_remote_live and track.packet_index + 1 == track.num_packets then
-							track.is_remote_live = false
-							num_live_tracks = num_live_tracks - 1
-						end
-					end
-					if is_remote or (read_ahead and track.is_shown) then
-						read_wait = track.packet_index * track.time_base - net.lead
-					end
-					if track.is_shown then
-						if read_ahead then
-							track.queue_tail = track.queue_tail + 1
-							track.queue[track.queue_tail] = {commands_len = commands_len, data = data}
-							num_queued = num_queued + 1
-						else
-							draw_frame(track, commands_len, data)
-						end
-					end
-					--a track only on slaves is paced by read_wait instead
-					if ops.no_back and (track.is_shown or not is_remote) then
+					if ops.no_back then
 						track.presented_packet_index = track.presented_packet_index + 1
 						if track.is_shown and track.presented_packet_index == track.num_packets then
 							num_live_tracks = num_live_tracks - 1
@@ -2249,35 +2176,22 @@ local function play(gpu, file, surfaces, open_file, link, header)
 						end
 					end
 				end
-				if num_queued > 0 then
-					draw_queued()
+				if master_link then
+					master_link:tick()
 				end
 				if ops.fps and link then
-					local read_lead = read_wait and read_wait + net.lead - play_clock()
-					stats[#tracks + 1] = master_link and master_link:stats_line(read_lead) or slave_link:stats_line()
-				end
-				--don't read too far ahead, the packets would pile up in memory
-				local is_ahead = read_wait ~= nil and not ops.fast and play_clock() < read_wait
-				--only back-buffers can stall. with read_ahead the reader goes on, and the frames wait in the queue.
-				--once all is read, wait for a frame to present instead of a busy loop
-				local is_read = packet_index + 1 >= num_total_packets
-				local is_stalled = play_video and not ops.no_back and video.is_stalled()
-					and (not read_ahead or (num_queued > 0 and is_read))
-				if master_link then
-					--while the reader waits, send what the slaves have. while it reads, send only full messages
-					master_link:tick(is_ahead or is_stalled or is_read)
+					stats[#tracks + 1] = link:stats_line()
 				end
 				if ops.fps and (play_audio or play_pcm) and not play_video and gpu then
 					draw_stats(gpu)
-					if not is_ahead then break end
+					break
 				end
 
+				local is_stalled = play_video and not ops.no_back and video.is_stalled() --only back-buffers can stall
+				if not is_stalled then break end
 				if not is_stalled and not is_ahead then break end
 
 				local wake_time = next_present_time
-				if is_ahead then
-					wake_time = math.min(wake_time, read_wait)
-				end
 				if wake_time ~= math.huge and not ops.fast then
 					repeat
 						local current_time = play_clock()
@@ -2290,15 +2204,8 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			if track then
 				track.packet_index = track.packet_index + 1
 			end
-			if waiting then
-				os.sleep(0.05) --the next message comes in a tick at the soonest
-			else
-				packet_index = packet_index + 1
-			end
+			packet_index = packet_index + 1
 			--print(("frame took: %05.1fms"):format((computer.uptime() - frame_begin_time_up) * 1000))
-		end
-		if master_link then
-			master_link:flush(true)
 		end
 		return true
 	end
@@ -2425,7 +2332,7 @@ if ops.h or ops.help then
 	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
-	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. give it the same file or --tape as the master, so it reads the packets itself. without one, the master sends the packets, which is only fast enough for little data"):format(net.default_port))
+	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. the master copies the file onto a tape of the slave first: the tape named '%s', else a blank tape, else give --tape=<drive> to write over a tape"):format(net.default_port, net.slave_label))
 	print("   --master[=port]", "find the slaves on the port. a track whose --cfg surface is on a screen of a slave plays on that slave, the rest play here. the slaves follow the clock of the master")
 	return
 end
@@ -2467,9 +2374,7 @@ local function open_file()
 	return linear_stream.open(path, "rb", ops.tape)
 end
 local file
---a slave without a file or --tape gets its packets from the master
-local has_file = not ops.slave or args[1] ~= nil or tape_given
-if has_file then
+if not ops.slave then --a slave plays the file that the master copied onto its tape
 	local reason
 	file, reason = open_file()
 	if not file then
@@ -2491,11 +2396,7 @@ local link
 do
 	local ok, err = pcall(function()
 		if ops.slave then
-			local file_sig
-			if file then
-				file_sig = header_sig(read_header(file))
-			end
-			link = net.slave(net.port(ops.slave), file_sig)
+			link = net.slave(net.port(ops.slave), tape_given)
 		elseif ops.master and not (ops.p or ops.probe) then
 			link = net.master(net.port(ops.master))
 		end
@@ -2515,12 +2416,18 @@ local function slave_main()
 		local ok, err = xpcall(link.wait_setup, errHandler, link)
 		if ok then
 			if not err then return end --interrupted
-			if link.file_mode then
-				file:seek("set", 0)
-				ok, err = xpcall(play, errHandler, gpu, file, err.surfaces, open_file, link)
-			else
-				ok, err = xpcall(play, errHandler, gpu, link, err.surfaces, nil, link, err)
-			end
+			local setup = err
+			ok, err = xpcall(function()
+				--the master sends the file first, unless the tape has it
+				local addr = link:fetch(setup)
+				link:sync()
+				local function open_tape()
+					return linear_stream.open(addr, "rb", true)
+				end
+				local tape = assert(open_tape())
+				play(gpu, tape, setup.surfaces, open_tape, link)
+				tape:close()
+			end, errHandler)
 		end
 		if ok then
 			if not ops.no_back then
