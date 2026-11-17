@@ -1222,7 +1222,9 @@ local net = {}
 do
 	net.default_port = 5741
 	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so "start" reaches the slaves first
-	net.default_label = "szt video" --the tape label when the master has no file name to give
+	net.default_label = "szt video" --the tape label when the master plays an unlabeled tape
+	--the options of the master that the slaves play with. --fast and --loop are not here: the clock of the master paces the slaves
+	net.shared_ops = {"fps", "hold", "no_video", "diff", "no_back", "one_buf", "batch_check"}
 	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too
 	local resync_interval = 5 --a slave measures the uptime offset again this often
 	local timeout = 5 --a slave drops a master that is quiet this long
@@ -1390,7 +1392,8 @@ do
 		for addr, slave in pairs(self.slaves) do
 			local text = serialization.serialize({
 				sig = net.header_sig(header),
-				name = self.name or net.default_label, --the slave labels its tape with this, like the burn command
+				source = self.source, --where the slave reads the file: {path=...} or {label=...}, like the master
+				ops = self.ops, --the playback options of the master
 				size = size,
 				chunk_size = self.chunk_size,
 				tracks = slave.tracks,
@@ -1651,9 +1654,10 @@ do
 		end
 	end
 
-	--the signature of the szt file on the tape, or nil
-	local function tape_sig(addr)
-		local file = linear_stream.open(addr, "rb", true)
+	--the signature of the szt file at the source, or nil
+	local function source_sig(src, is_tape)
+		if not is_tape and not fs.exists(src) then return nil end
+		local file = linear_stream.open(src, "rb", is_tape)
 		if not file then return nil end
 		local ok, sig = pcall(function()
 			if file:read(4) ~= szt.magic then return nil end
@@ -1671,11 +1675,11 @@ do
 		return data ~= nil and not data:find("[^\0]")
 	end
 
-	--the drive for the file: the one --tape names, else the tape with the slave label, else a blank tape
+	--the drive for the file: the one --tape names, else the tape with the label, else a blank tape
 	local function pick_drive(self, size, label)
 		local addr
 		if not component.isAvailable("tape_drive") then
-			fail("this computer has no tape drive. the slave needs one to hold the video")
+			fail("this computer has no tape drive. the master plays a tape, so the slave needs one too")
 		end
 		if self.tape == true then
 			addr = default_tape_drive()
@@ -1703,7 +1707,7 @@ do
 			end
 		end
 		if not addr then
-			fail("no tape for the video. put a blank tape in a tape drive, or give --tape=<drive> to write over a tape")
+			fail(("no tape for the video. put the tape '%s' or a blank tape in a tape drive, or give --tape=<drive> to write over a tape"):format(label))
 		end
 		local drive = component.proxy(addr)
 		if not drive.isReady() then
@@ -1715,18 +1719,8 @@ do
 		return drive
 	end
 
-	--makes sure a tape holds the file of the master, and copies it from the master when not. returns the drive address
-	function slave:fetch(setup)
-		local label = setup.name or net.default_label
-		local drive = pick_drive(self, setup.size, label)
-		drive.stop()
-		if tape_sig(drive.address) == setup.sig then
-			print(("tape drive %s has the video already"):format(drive.address))
-			return drive.address
-		end
-
-		print(("copying the video from the master onto tape drive %s"):format(drive.address))
-		drive.seek(-drive.getPosition())
+	--gets the file from the master in chunks and gives them to write in order
+	local function copy(self, setup, write)
 		local size, chunk_size = setup.size, setup.chunk_size
 		local written, next_want = 0, 0
 		local asked_at = computer.uptime()
@@ -1734,13 +1728,13 @@ do
 		self.chunks = {}
 		while written < size do
 			self:check()
-			--ask for the next chunks, at most window ahead of the tape
+			--ask for the next chunks, at most window ahead of the write position
 			while next_want < size and next_want < written + window * chunk_size do
 				self.modem.send(self.master, self.port, tag, "want", next_want)
 				next_want = next_want + chunk_size
 				asked_at = computer.uptime()
 			end
-			--write the chunks that are next on the tape. each drive.write costs a tick, so write them together
+			--write the chunks that are next. each tape write costs a tick, so write them together
 			local parts = {}
 			while self.chunks[written] do
 				local data = self.chunks[written]
@@ -1749,29 +1743,74 @@ do
 				written = written + #data
 			end
 			if #parts > 0 then
-				drive.write(table.concat(parts))
+				write(table.concat(parts))
 				asked_at = computer.uptime()
 				if computer.uptime() >= next_print then
 					next_print = computer.uptime() + 1
 					io.write(("\r%i/%i bytes (%3.f%%)"):format(written, size, written / size * 100))
 				end
 			elseif computer.uptime() - asked_at > chunk_timeout then
-				next_want = written --a chunk got lost, so ask again from the tape position
+				next_want = written --a chunk got lost, so ask again from the write position
 			else
 				os.sleep(0.05)
 			end
 		end
+		self.chunks = {}
 		print()
-		drive.seek(-drive.getPosition())
-		if drive.getLabel() ~= label then
-			drive.setLabel(label)
-		end
-		if tape_sig(drive.address) ~= setup.sig then
-			fail(("the copy on tape drive %s does not match the file of the master"):format(drive.address))
-		end
-		return drive.address
 	end
 
+	--makes sure the slave has the file of the master at the same place as the master: the same path, or a tape with the same label.
+	--copies it from the master when not. --tape on the slave puts it on that drive instead. returns the source and if it is a tape
+	function slave:fetch(setup)
+		local source = setup.source or {label = net.default_label}
+		if source.label or self.tape then
+			local label = source.label or fs.name(source.path)
+			local drive = pick_drive(self, setup.size, label)
+			drive.stop()
+			if source_sig(drive.address, true) == setup.sig then
+				print(("tape drive %s has the video already"):format(drive.address))
+			else
+				print(("copying the video from the master onto tape drive %s"):format(drive.address))
+				drive.seek(-drive.getPosition())
+				copy(self, setup, function(data) drive.write(data) end)
+				drive.seek(-drive.getPosition())
+				if drive.getLabel() ~= label then
+					drive.setLabel(label)
+				end
+				if source_sig(drive.address, true) ~= setup.sig then
+					fail(("the copy on tape drive %s does not match the file of the master"):format(drive.address))
+				end
+			end
+			return drive.address, true
+		end
+
+		local path = source.path
+		if source_sig(path, false) == setup.sig then
+			print(("%s has the video already"):format(path))
+			return path, false
+		end
+		print(("copying the video from the master to %s"):format(path))
+		local dir = fs.path(path)
+		if dir and dir ~= "" and not fs.exists(dir) then
+			fs.makeDirectory(dir)
+		end
+		local handle, reason = fs.open(path, "wb")
+		if not handle then
+			fail(("cannot write %s: %s"):format(path, tostring(reason)))
+		end
+		local ok, err = pcall(copy, self, setup, function(data)
+			local done, why = handle:write(data)
+			if not done then
+				fail(("cannot write %s: %s"):format(path, tostring(why)))
+			end
+		end)
+		handle:close()
+		if not ok then error(err, 0) end
+		if source_sig(path, false) ~= setup.sig then
+			fail(("the copy at %s does not match the file of the master"):format(path))
+		end
+		return path, false
+	end
 	function slave:ready()
 		self.readied = true
 		self.modem.send(self.master, self.port, tag, "ready")
@@ -2334,7 +2373,7 @@ if ops.h or ops.help then
 	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
-	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. the master copies the file onto a tape of the slave first and labels it with the file name, like burn: the tape with that label, else a blank tape, else give --tape=<drive> to write over a tape"):format(net.default_port))
+	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. the slave reads the file from the same place as the master: the same path, or a tape with the same label. when it does not have the file there, the master copies it there first (onto the labeled tape, else a blank tape). --tape=<drive> on the slave puts the copy on that drive. the master also sets --fps, --hold, --no-video, --diff, --no-back, --one-buf and --batch-check for the slave"):format(net.default_port))
 	print("   --master[=port]", "find the slaves on the port. a track whose --cfg surface is on a screen of a slave plays on that slave, the rest play here. the slaves follow the clock of the master")
 	return
 end
@@ -2401,13 +2440,17 @@ do
 			link = net.slave(net.port(ops.slave), tape_given)
 		elseif ops.master and not (ops.p or ops.probe) then
 			link = net.master(net.port(ops.master))
-			--the name the slaves label their tapes with: the file name, or the label of the tape the master plays
+			--the slaves read the file from the same place: the same path, or a tape with the same label
 			if ops.tape then
 				local drive = component.proxy(path and component.get(path, "tape_drive") or default_tape_drive())
 				local label = drive and drive.getLabel()
-				link.name = label ~= "" and label or nil
+				link.source = {label = label ~= "" and label or net.default_label}
 			else
-				link.name = fs.name(path)
+				link.source = {path = shell.resolve(path)}
+			end
+			link.ops = {}
+			for _, k in ipairs(net.shared_ops) do
+				link.ops[k] = ops[k]
 			end
 		end
 	end)
@@ -2428,15 +2471,19 @@ local function slave_main()
 			if not err then return end --interrupted
 			local setup = err
 			ok, err = xpcall(function()
-				--the master sends the file first, unless the tape has it
-				local addr = link:fetch(setup)
-				link:sync()
-				local function open_tape()
-					return linear_stream.open(addr, "rb", true)
+				--the master controls how the slave plays
+				for _, k in ipairs(net.shared_ops) do
+					ops[k] = setup.ops and setup.ops[k]
 				end
-				local tape = assert(open_tape())
-				play(gpu, tape, setup.surfaces, open_tape, link)
-				tape:close()
+				--the master sends the file first, unless the slave has it already
+				local src, is_tape = link:fetch(setup)
+				link:sync()
+				local function open_source()
+					return linear_stream.open(src, "rb", is_tape)
+				end
+				local file = assert(open_source())
+				play(gpu, file, setup.surfaces, open_source, link)
+				file:close()
 			end, errHandler)
 		end
 		if ok then
