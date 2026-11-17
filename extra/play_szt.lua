@@ -1221,6 +1221,7 @@ end
 local net = {}
 do
 	net.default_port = 5741
+	local discover_min, discover_quiet, discover_max = 1, 1.5, 30 --seconds the master waits for the claims of the slaves
 	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so "start" reaches the slaves first
 	net.default_label = "szt video" --the tape label when the master plays an unlabeled tape
 	--the options of the master that the slaves play with. --fast and --loop are not here: the clock of the master paces the slaves
@@ -1333,7 +1334,21 @@ do
 		print(("looking for slaves on port %i"):format(self.port))
 		self.claims = {}
 		self.modem.broadcast(self.port, tag, "hello")
-		os.sleep(1) --the listener collects the claims
+		--the listener collects the claims. a relay forwards only a few messages each second,
+		--so the claims of many slaves come in one by one. wait until no new claim comes for a while
+		local begin = computer.uptime()
+		local last_new, num_claims = begin, 0
+		while true do
+			os.sleep(0.25)
+			local count = 0
+			for _ in pairs(self.claims) do count = count + 1 end
+			local t = computer.uptime()
+			if count > num_claims then
+				num_claims, last_new = count, t
+			end
+			if t - begin >= discover_min and t - last_new >= discover_quiet then break end
+			if t - begin >= discover_max then break end
+		end
 		local claims = self.claims
 		self.claims = nil
 
