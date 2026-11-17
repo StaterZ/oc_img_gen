@@ -2200,8 +2200,6 @@ local function play(gpu, file, surfaces, open_file, link, header)
 							track.is_slave_live = false
 							num_live_tracks = num_live_tracks - 1
 							num_slave_live = num_slave_live - 1
-						elseif num_live_tracks == num_slave_live and packet_index + 1 >= num_total_packets and not ops.fast then
-							os.sleep(math.min(time_left, 0.5)) --nothing else to do here, so wait but still send the clock
 						end
 					elseif track.is_live then --pcm
 						if ops.fps then
@@ -2215,6 +2213,12 @@ local function play(gpu, file, surfaces, open_file, link, header)
 							num_live_tracks = num_live_tracks - 1
 						end
 					end
+				end
+				--when only the slaves and the pcm tape play, this player has nothing to do. wait, but still send the clock.
+				--without this wait the loop runs all the time and uses up the call budget
+				local num_waiting = num_slave_live + (play_pcm and pcm_track.is_live and 1 or 0)
+				if num_slave_live > 0 and num_live_tracks == num_waiting and packet_index + 1 >= num_total_packets and not ops.fast then
+					os.sleep(0.1)
 				end
 				if master_link then
 					master_link:tick()
