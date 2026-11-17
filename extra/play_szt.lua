@@ -242,6 +242,7 @@ local szt = {
 }
 
 local args, ops = shell.parse(...)
+local tape_given = ops.tape --a slave only reads a tape when it is told to
 ops.tape = ops.tape or #args == 0 --with no file, play the primary tape drive
 ops.no_video = ops["no-video"]
 ops.no_audio = ops["no-audio"]
@@ -1057,7 +1058,8 @@ do --pcm player
 end
 
 --a master player sends the packets of some video tracks over a modem to slave players, which play them on their screens.
---  only the master has a --cfg. a slave answers "hello" with the addresses of its screens.
+--  only the master has a --cfg. a slave answers "hello" with the addresses of its screens, and the signature of its own file if it has one.
+--  a slave with the same file reads its packets itself, so the master only sends it the clock. else the master streams the packets to it.
 --  the master plays a track itself when the screen of its surface is here, else it gives the track to the slave with that screen.
 --  the slave syncs its uptime with the master by ping and pong, then the master clock reaches it as (clock, master uptime) samples.
 --  a sample does not age in the network, because the slave turns the master uptime into its own uptime.
@@ -1164,7 +1166,8 @@ do
 
 	--asks the slaves on the port which screens they have.
 	--a video track whose surface is on a screen of a slave goes to that slave, with its surface
-	function master:discover(header, surfaces)
+	--sig is the signature of the header of the file of this player
+	function master:discover(header, surfaces, sig)
 		print(("looking for slaves on port %i"):format(self.port))
 		self.claims = {}
 		self.modem.broadcast(self.port, tag, "hello")
@@ -1174,9 +1177,14 @@ do
 
 		local owner = {} --screen address -> slave
 		local found = {}
-		for addr, screens in pairs(claims) do
+		for addr, claim in pairs(claims) do
+			claim = type(claim) == "table" and claim or {}
 			local slave = {address = addr, descs = {}, surfaces = {}, ids = {}}
-			for _, screen in ipairs(type(screens) == "table" and screens or {}) do
+			slave.file_mode = claim.file ~= nil and claim.file == sig
+			if claim.file and not slave.file_mode then
+				print(("slave %s has another file, so it gets the packets over the network"):format(addr:sub(1, 8)))
+			end
+			for _, screen in ipairs(claim.screens or {}) do
 				owner[screen] = slave
 			end
 			table.insert(found, addr:sub(1, 8))
@@ -1195,7 +1203,8 @@ do
 				table.insert(slave.descs, desc)
 				table.insert(slave.surfaces, surface)
 				slave.ids[i] = #slave.descs - 1
-				self.by_track[i] = {slave}
+				--a slave with the file reads the track itself, so the master forwards nothing
+				self.by_track[i] = slave.file_mode and {} or {slave}
 				self.slaves[slave.address] = slave
 			end
 		end
@@ -1205,7 +1214,8 @@ do
 			for _, desc in ipairs(slave.descs) do
 				table.insert(names_text, desc.name)
 			end
-			print(("slave %s plays %s"):format(addr:sub(1, 8), table.concat(names_text, ", ")))
+			print(("slave %s plays %s %s"):format(addr:sub(1, 8), table.concat(names_text, ", "),
+				slave.file_mode and "from its own file" or "from packets that the master sends"))
 		end
 	end
 
@@ -1238,6 +1248,7 @@ do
 						pos_x = surface.pos_x,
 						pos_y = surface.pos_y,
 					},
+					file_mode = slave.file_mode or nil,
 					name = desc.name,
 					kind = desc.kind,
 					num_packets = desc.num_packets,
@@ -1274,6 +1285,13 @@ do
 			end
 		end
 		self.active = next(self.slaves) ~= nil
+		--only slaves without the file need packets
+		self.streaming = false
+		for _, slave in pairs(self.slaves) do
+			if not slave.file_mode then
+				self.streaming = true
+			end
+		end
 	end
 
 	--clock gives the play time of the pass
@@ -1400,14 +1418,16 @@ do
 	local slave = {}
 	slave.__index = slave
 
-	--the master sends the surfaces, so a slave needs no --cfg
-	function net.slave(port)
+	--the master sends the surfaces, so a slave needs no --cfg.
+	--file_sig is the signature of the header of the file of this slave, or nil without a file
+	function net.slave(port, file_sig)
 		local modem, was_open = open_modem(port)
 		local self = setmetatable({
 			is_slave = true,
 			modem = modem,
 			port = port,
 			was_open = was_open,
+			file_sig = file_sig,
 		}, slave)
 		self:end_session()
 		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c, d, e)
@@ -1440,7 +1460,7 @@ do
 				for addr in component.list("screen") do
 					table.insert(screens, addr)
 				end
-				self.modem.send(from, self.port, tag, "claim", serialization.serialize(screens))
+				self.modem.send(from, self.port, tag, "claim", serialization.serialize({screens = screens, file = self.file_sig}))
 			elseif kind == "setup" then
 				self.master = from
 				self:push({kind = kind, data = a})
@@ -1531,7 +1551,8 @@ do
 		end
 	end
 
-	--returns the header of the tracks this slave plays, or nil when interrupted
+	--returns what to play, or nil when interrupted: the surfaces, and for a slave without the file the header of its tracks.
+	--file_mode tells which one it is
 	function slave:wait_setup()
 		print(("waiting for a master on port %i"):format(self.port))
 		while not self.quit do
@@ -1540,6 +1561,15 @@ do
 				self.heard = computer.uptime()
 				local descs = serialization.unserialize(msg.data)
 				self:sync()
+
+				self.file_mode = descs[1] ~= nil and descs[1].file_mode == true
+				if self.file_mode then
+					local surfaces = {}
+					for _, desc in ipairs(descs) do
+						surfaces[desc.name] = desc.surface
+					end
+					return {surfaces = surfaces}
+				end
 
 				local stream = {index = 0, offset = 0, num_bytes = 0, tracks = {}, num_packets = 0}
 				local surfaces = {}
@@ -1631,6 +1661,7 @@ do
 	--true when a packet can be read without waiting for the network
 	function slave:has_data()
 		self:check()
+		if self.file_mode then return true end --the packets come from the file
 		if #self.buffer > self.pos then return true end
 		local msg = self.queue[self.head]
 		return msg ~= nil and msg.kind == "data"
@@ -1735,6 +1766,18 @@ local function read_header(file)
 	}
 end
 
+--two players with the same signature have the same file
+local function header_sig(header)
+	local parts = {header.magic, tostring(header.version)}
+	for _, track in ipairs(header.tracks) do
+		table.insert(parts, ("%s/%i/%i/%i/%i"):format(track.name, track.kind, track.num_packets, track.time_base_num, track.time_base_denom))
+	end
+	for _, stream in ipairs(header.streams) do
+		table.insert(parts, ("%i/%i"):format(stream.offset, stream.num_bytes))
+	end
+	return table.concat(parts, ";")
+end
+
 local function probe_header(file)
 	local header = read_header(file)
 	print(("magic: %s %s"):format(header.magic, header.magic == szt.magic and "OK" or "ERR"))
@@ -1830,7 +1873,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 	local master_link = link and not link.is_slave and link or nil
 	local slave_link = link and link.is_slave and link or nil
 	if master_link then
-		master_link:discover(header, surfaces)
+		master_link:discover(header, surfaces, header_sig(header))
 	end
 
 	local max_size_x, max_size_y = 0, 0
@@ -1851,7 +1894,8 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			--a track plays here, or on the slave that has its screen
 			track.remotes = master_link and master_link:remotes_of(i)
 			local surface = not track.remotes and surfaces[track_desc.name] or nil
-			if not surface and not track.remotes then
+			--a slave with the file plays only the tracks that the master gave it
+			if not surface and not track.remotes and not slave_link then
 				error(("missing surface for track '%s'"):format(track_desc.name))
 			end
 			--a screen of another computer can't be drawn here, so skip the track
@@ -1892,8 +1936,8 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		track_of[track_desc] = track
 	end
 	local play_video = has_video and not ops.no_video
-	local play_audio = has_audio and not ops.no_audio
-	local play_pcm   = pcm_track and not ops.no_pcm
+	local play_audio = has_audio and not ops.no_audio and not slave_link --the master plays the audio
+	local play_pcm   = pcm_track and not ops.no_pcm and not slave_link
 	for _, track in ipairs(tracks) do
 		track.is_shown = play_video and track.surface ~= nil
 	end
@@ -1906,7 +1950,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		local is_read = false
 		for _, track_desc in ipairs(stream_desc.tracks) do
 			local track = track_of[track_desc]
-			if track.is_shown or track.remotes or (track_desc.kind == 0x01 and play_audio) then
+			if track.is_shown or (track.remotes and #track.remotes > 0) or (track_desc.kind == 0x01 and play_audio) then
 				is_read = true
 			end
 		end
@@ -1984,6 +2028,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			return computer.uptime() - video_begin_time_up
 		end
 		local num_live_tracks = 0
+		local num_slave_live = 0
 		for _, track in ipairs(tracks) do
 			track.packet_index = 0
 			track.presented_packet_index = 0
@@ -1994,6 +2039,10 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			elseif track.remotes and #track.remotes > 0 then --video on slaves only, live until the last packet is sent
 				track.is_remote_live = true
 				num_live_tracks = num_live_tracks + 1
+			elseif track.remotes then --on a slave that reads its own file, live until it played out, so the clock goes on
+				track.is_slave_live = true
+				num_live_tracks = num_live_tracks + 1
+				num_slave_live = num_slave_live + 1
 			elseif track.kind == 0x01 and play_audio then --audio
 				num_live_tracks = num_live_tracks + 1
 			elseif track == pcm_track and play_pcm then
@@ -2041,7 +2090,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 
 		--a master reads ahead into memory, so it can fill whole messages for the slaves.
 		--the frames for its own screens wait in the queue of their track until a back-buffer is free
-		local read_ahead = master_link and master_link.active and not ops.no_back
+		local read_ahead = master_link and master_link.streaming and not ops.no_back
 		local num_queued = 0
 		for _, track in ipairs(tracks) do
 			track.queue, track.queue_head, track.queue_tail = {}, 1, 0
@@ -2177,6 +2226,15 @@ local function play(gpu, file, surfaces, open_file, link, header)
 						end
 						if track.presented_packet_index == track.num_packets then
 							num_live_tracks = num_live_tracks - 1
+						end
+					elseif track.is_slave_live then
+						local time_left = track.num_packets * track.time_base - play_clock()
+						if time_left <= 0 then
+							track.is_slave_live = false
+							num_live_tracks = num_live_tracks - 1
+							num_slave_live = num_slave_live - 1
+						elseif num_live_tracks == num_slave_live and packet_index + 1 >= num_total_packets and not ops.fast then
+							os.sleep(math.min(time_left, 0.5)) --nothing else to do here, so wait but still send the clock
 						end
 					elseif track.is_live then --pcm
 						if ops.fps then
@@ -2367,7 +2425,7 @@ if ops.h or ops.help then
 	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
-	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it sends. a slave needs no --cfg, it tells the master its screens"):format(net.default_port))
+	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. give it the same file or --tape as the master, so it reads the packets itself. without one, the master sends the packets, which is only fast enough for little data"):format(net.default_port))
 	print("   --master[=port]", "find the slaves on the port. a track whose --cfg surface is on a screen of a slave plays on that slave, the rest play here. the slaves follow the clock of the master")
 	return
 end
@@ -2409,7 +2467,9 @@ local function open_file()
 	return linear_stream.open(path, "rb", ops.tape)
 end
 local file
-if not ops.slave then --a slave gets its packets from the master
+--a slave without a file or --tape gets its packets from the master
+local has_file = not ops.slave or args[1] ~= nil or tape_given
+if has_file then
 	local reason
 	file, reason = open_file()
 	if not file then
@@ -2431,7 +2491,11 @@ local link
 do
 	local ok, err = pcall(function()
 		if ops.slave then
-			link = net.slave(net.port(ops.slave))
+			local file_sig
+			if file then
+				file_sig = header_sig(read_header(file))
+			end
+			link = net.slave(net.port(ops.slave), file_sig)
 		elseif ops.master and not (ops.p or ops.probe) then
 			link = net.master(net.port(ops.master))
 		end
@@ -2451,7 +2515,12 @@ local function slave_main()
 		local ok, err = xpcall(link.wait_setup, errHandler, link)
 		if ok then
 			if not err then return end --interrupted
-			ok, err = xpcall(play, errHandler, gpu, link, err.surfaces, nil, link, err)
+			if link.file_mode then
+				file:seek("set", 0)
+				ok, err = xpcall(play, errHandler, gpu, file, err.surfaces, open_file, link)
+			else
+				ok, err = xpcall(play, errHandler, gpu, link, err.surfaces, nil, link, err)
+			end
 		end
 		if ok then
 			if not ops.no_back then
