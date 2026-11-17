@@ -1222,7 +1222,7 @@ local net = {}
 do
 	net.default_port = 5741
 	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so "start" reaches the slaves first
-	net.slave_label = "szt slave" --the slave names the tape it burns the file onto, so it can find it again
+	net.default_label = "szt video" --the tape label when the master has no file name to give
 	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too
 	local resync_interval = 5 --a slave measures the uptime offset again this often
 	local timeout = 5 --a slave drops a master that is quiet this long
@@ -1390,6 +1390,7 @@ do
 		for addr, slave in pairs(self.slaves) do
 			local text = serialization.serialize({
 				sig = net.header_sig(header),
+				name = self.name or net.default_label, --the slave labels its tape with this, like the burn command
 				size = size,
 				chunk_size = self.chunk_size,
 				tracks = slave.tracks,
@@ -1671,7 +1672,7 @@ do
 	end
 
 	--the drive for the file: the one --tape names, else the tape with the slave label, else a blank tape
-	local function pick_drive(self, size)
+	local function pick_drive(self, size, label)
 		local addr
 		if not component.isAvailable("tape_drive") then
 			fail("this computer has no tape drive. the slave needs one to hold the video")
@@ -1683,7 +1684,7 @@ do
 		else
 			for candidate in component.list("tape_drive") do
 				local d = component.proxy(candidate)
-				if d.isReady() and d.getLabel() == net.slave_label then
+				if d.isReady() and d.getLabel() == label then
 					addr = candidate
 					break
 				end
@@ -1716,7 +1717,8 @@ do
 
 	--makes sure a tape holds the file of the master, and copies it from the master when not. returns the drive address
 	function slave:fetch(setup)
-		local drive = pick_drive(self, setup.size)
+		local label = setup.name or net.default_label
+		local drive = pick_drive(self, setup.size, label)
 		drive.stop()
 		if tape_sig(drive.address) == setup.sig then
 			print(("tape drive %s has the video already"):format(drive.address))
@@ -1761,8 +1763,8 @@ do
 		end
 		print()
 		drive.seek(-drive.getPosition())
-		if drive.getLabel() ~= net.slave_label then
-			drive.setLabel(net.slave_label)
+		if drive.getLabel() ~= label then
+			drive.setLabel(label)
 		end
 		if tape_sig(drive.address) ~= setup.sig then
 			fail(("the copy on tape drive %s does not match the file of the master"):format(drive.address))
@@ -2332,7 +2334,7 @@ if ops.h or ops.help then
 	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
-	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. the master copies the file onto a tape of the slave first: the tape named '%s', else a blank tape, else give --tape=<drive> to write over a tape"):format(net.default_port, net.slave_label))
+	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it gives this computer. a slave needs no --cfg, it tells the master its screens. the master copies the file onto a tape of the slave first and labels it with the file name, like burn: the tape with that label, else a blank tape, else give --tape=<drive> to write over a tape"):format(net.default_port))
 	print("   --master[=port]", "find the slaves on the port. a track whose --cfg surface is on a screen of a slave plays on that slave, the rest play here. the slaves follow the clock of the master")
 	return
 end
@@ -2399,6 +2401,14 @@ do
 			link = net.slave(net.port(ops.slave), tape_given)
 		elseif ops.master and not (ops.p or ops.probe) then
 			link = net.master(net.port(ops.master))
+			--the name the slaves label their tapes with: the file name, or the label of the tape the master plays
+			if ops.tape then
+				local drive = component.proxy(path and component.get(path, "tape_drive") or default_tape_drive())
+				local label = drive and drive.getLabel()
+				link.name = label ~= "" and label or nil
+			else
+				link.name = fs.name(path)
+			end
 		end
 	end)
 	if not ok then
