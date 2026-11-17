@@ -1096,6 +1096,25 @@ do
 		return modem, was_open
 	end
 
+	--counts messages, bytes and the time a send blocked, over the last second, for --fps
+	local function new_meter()
+		return {msgs = 0, bytes = 0, busy = 0, since = computer.uptime(), rate = "0msg/s 0.0KB/s 0%send"}
+	end
+	local function meter_add(meter, num_bytes, busy)
+		meter.msgs = meter.msgs + 1
+		meter.bytes = meter.bytes + num_bytes
+		meter.busy = meter.busy + (busy or 0)
+	end
+	local function meter_rate(meter)
+		local now = computer.uptime()
+		local span = now - meter.since
+		if span >= 1 then
+			meter.rate = ("%imsg/s %.1fKB/s %i%%send"):format(math.floor(meter.msgs / span + 0.5), meter.bytes / span / 1024, math.floor(meter.busy / span * 100 + 0.5))
+			meter.msgs, meter.bytes, meter.busy, meter.since = 0, 0, 0, now
+		end
+		return meter.rate
+	end
+
 	--slave errors that stop a session are tables, so they don't print a traceback
 	local function fail(msg)
 		error({net = msg}, 0)
@@ -1118,6 +1137,7 @@ do
 			slaves = {}, --by address
 			by_track = {}, --by track index (from 1), the slaves that play the track
 			gen = 0,
+			meter = new_meter(),
 		}, master)
 		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a)
 			if msg_port == port and msg_tag == tag then
@@ -1276,11 +1296,27 @@ do
 		local now = computer.uptime()
 		self.clock_sent = now
 		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time, now)
+		meter_add(self.meter, 0, computer.uptime() - now)
 	end
 
 	function master:send_data(slave, data)
 		slave.seq = slave.seq + 1
-		self.modem.send(slave.address, self.port, tag, "data", self.gen, slave.seq, data, self.clock(), computer.uptime())
+		local before = computer.uptime()
+		self.modem.send(slave.address, self.port, tag, "data", self.gen, slave.seq, data, self.clock(), before)
+		meter_add(self.meter, #data, computer.uptime() - before)
+	end
+
+	--read_lead is how far the reader is ahead of the clock, in seconds
+	function master:stats_line(read_lead)
+		local pending = 0
+		for _, slave in pairs(self.slaves) do
+			pending = pending + (slave.pending_len or 0)
+		end
+		return ("N|master: %s %+.2fs read %ib pending %i slaves"):format(meter_rate(self.meter), read_lead or 0, pending, (function()
+			local n = 0
+			for _ in pairs(self.slaves) do n = n + 1 end
+			return n
+		end)())
 	end
 
 	--sends the pending packets of the slave as one message
@@ -1388,6 +1424,7 @@ do
 	end
 
 	function slave:end_session()
+		self.meter = new_meter()
 		self.master = nil
 		self.queue, self.head, self.tail = {}, 1, 0
 		self.buffer, self.pos = "", 0
@@ -1413,6 +1450,9 @@ do
 		if from ~= self.master then return end --a slave serves one master at a time
 
 		self.heard = computer.uptime()
+		if kind == "data" then
+			meter_add(self.meter, #c)
+		end
 		if kind == "pong" then
 			self:on_pong(a, b)
 		elseif kind == "clock" then
@@ -1574,6 +1614,18 @@ do
 		local sample = self.clocks[self.gen]
 		local master_now = computer.uptime() - self.offset
 		return sample.play_time + (master_now - sample.uptime)
+	end
+
+	function slave:stats_line()
+		local sample = self.clocks[self.gen]
+		local age = sample and computer.uptime() - self.offset - sample.uptime or -1
+		return ("N|slave: %s %imsgs %ib queued sample %.1fs old rtt %.0fms"):format(
+			(meter_rate(self.meter):gsub(" %d+%%send", "")), --a slave only receives
+			self.tail - self.head + 1,
+			#self.buffer - self.pos,
+			age,
+			self.best_rtt * 1000
+		)
 	end
 
 	--true when a packet can be read without waiting for the network
@@ -2141,6 +2193,10 @@ local function play(gpu, file, surfaces, open_file, link, header)
 				end
 				if num_queued > 0 then
 					draw_queued()
+				end
+				if ops.fps and link then
+					local read_lead = read_wait and read_wait + net.lead - play_clock()
+					stats[#tracks + 1] = master_link and master_link:stats_line(read_lead) or slave_link:stats_line()
 				end
 				--don't read too far ahead, the packets would pile up in memory
 				local is_ahead = read_wait ~= nil and not ops.fast and play_clock() < read_wait
