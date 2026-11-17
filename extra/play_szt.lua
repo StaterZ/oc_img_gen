@@ -1227,7 +1227,8 @@ do
 	--the options of the master that the slaves play with. --fast and --loop are not here: the clock of the master paces the slaves
 	net.shared_ops = {"fps", "hold", "no_video", "diff", "no_back", "one_buf", "batch_check"}
 	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too
-	local resync_interval = 5 --a slave measures the uptime offset again this often
+	local resync_interval = 10 --a slave measures the uptime offset again this often. each pong costs the master a tick
+	local lost_after = clock_interval + 1.5 --a slave that hears nothing this long pings each second to check the master
 	local timeout = 5 --a slave drops a master that is quiet this long
 	local chunk_timeout = 2 --a slave asks again for a chunk of the file that did not come in this long
 	local window = 4 --a slave asks for this many chunks of the file at once
@@ -1646,7 +1647,8 @@ do
 		if quiet > timeout and not self.ended then
 			fail(("the master is quiet for %.0fs"):format(quiet))
 		end
-		if now - self.last_ping >= (quiet > 1 and 1 or resync_interval) then
+		--the clock comes each second, so only a longer gap means the master may be gone
+		if now - self.last_ping >= (quiet > lost_after and 1 or resync_interval) then
 			self:ping()
 		end
 	end
