@@ -1065,10 +1065,12 @@ end
 local net = {}
 do
 	net.default_port = 5741
-	net.lead = 2 --the master reads packets for slaves up to this many seconds before they play
+	--each modem message costs the sender a tick, so the master sends few and full messages
+	net.lead = 2 --the master reads packets up to this many seconds before they play
 	net.preroll = 0.25 --without pcm, the master starts its clock this much later
-	local flush_ahead = 1 --and sends a part-full message once its first packet plays within this many seconds
-	local clock_interval = 0.5 --the master sends its clock this often, so the slaves follow a pcm tape too
+	local flush_ahead = 1 --while the reader waits, a part-full message goes once its first packet plays within this many seconds.
+	--while the reader reads, only full messages go. a master that is behind reads without a wait, so it sends full messages and catches up
+	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too. each data message has it too
 	local resync_interval = 5 --a slave measures the uptime offset again this often
 	local timeout = 5 --a slave drops a master that is quiet this long
 	local tag = "szt"
@@ -1112,7 +1114,7 @@ do
 			port = port,
 			was_open = was_open,
 			--the message size minus room for the tag, kind, gen and seq. older OpenComputers has no maxPacketSize, its limit is 8192
-			budget = (modem.maxPacketSize and modem.maxPacketSize() or 8192) - 64,
+			budget = (modem.maxPacketSize and modem.maxPacketSize() or 8192) - 96,
 			slaves = {}, --by address
 			by_track = {}, --by track index (from 1), the slaves that play the track
 			gen = 0,
@@ -1276,55 +1278,63 @@ do
 		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time, now)
 	end
 
-	--payload is the packet without its track id
+	function master:send_data(slave, data)
+		slave.seq = slave.seq + 1
+		self.modem.send(slave.address, self.port, tag, "data", self.gen, slave.seq, data, self.clock(), computer.uptime())
+	end
+
+	--sends the pending packets of the slave as one message
+	function master:send_pending(slave)
+		if slave.pending_len == 0 then return end
+		self:send_data(slave, table.concat(slave.pending))
+		slave.pending = {}
+		slave.pending_len = 0
+		slave.pending_time = nil
+	end
+
+	--payload is the packet without its track id.
+	--a message holds whole packets, so a slave never waits for the rest of a packet while it has frames to present
 	function master:forward(track, payload)
 		if not self.active then return end
 		local index = track.index + 1
 		local time = track.packet_index * track.time_base
+		local budget = self.budget
 		for _, slave in ipairs(self.by_track[index]) do
-			local pending = slave.pending
-			pending[#pending + 1] = string.char(slave.ids[index]) .. payload
-			slave.pending_len = slave.pending_len + 1 + #payload
-			slave.pending_time = slave.pending_time or time
+			local packet = string.char(slave.ids[index]) .. payload
+			if slave.pending_len + #packet > budget then
+				self:send_pending(slave)
+			end
+			if #packet > budget then
+				--a packet bigger than a message goes at once, in parts that follow each other
+				for p = 1, #packet, budget do
+					self:send_data(slave, packet:sub(p, p + budget - 1))
+				end
+			else
+				slave.pending[#slave.pending + 1] = packet
+				slave.pending_len = slave.pending_len + #packet
+				slave.pending_time = slave.pending_time or time
+			end
 		end
-		self:flush(false)
 	end
 
-	--sends full messages, and the rest when it plays soon or force is set
-	function master:flush(force)
+	--sends the part-full messages that play soon, or all of them when force is set. blocked is true while the reader waits
+	function master:flush(force, blocked)
 		if not self.active then return end
-		local budget = self.budget
 		local play_time
 		for _, slave in pairs(self.slaves) do
-			local len = slave.pending_len
-			if len > 0 then
+			if slave.pending_len > 0 then
 				play_time = play_time or self.clock()
-				local due = force or slave.pending_time - play_time < flush_ahead
-				if due or len >= budget then
-					local data = table.concat(slave.pending)
-					local sent = 0
-					while len - sent >= budget or (due and sent < len) do
-						slave.seq = slave.seq + 1
-						self.modem.send(slave.address, self.port, tag, "data", self.gen, slave.seq, data:sub(sent + 1, sent + budget))
-						sent = sent + budget
-					end
-					if sent >= len then
-						slave.pending = {}
-						slave.pending_len = 0
-						slave.pending_time = nil
-					else --the rest is less than a message. its first packet is not older than pending_time, so keep that
-						slave.pending = {data:sub(sent + 1)}
-						slave.pending_len = len - sent
-					end
+				if force or (blocked and slave.pending_time - play_time < flush_ahead) then
+					self:send_pending(slave)
 				end
 			end
 		end
 	end
 
-	--call this often during a pass
-	function master:tick()
+	--call this often during a pass. blocked is true while the reader waits
+	function master:tick(blocked)
 		if not self.active then return end
-		self:flush(false)
+		self:flush(false, blocked)
 		if computer.uptime() - self.clock_sent >= clock_interval then
 			self:send_clock()
 		end
@@ -1364,9 +1374,9 @@ do
 			was_open = was_open,
 		}, slave)
 		self:end_session()
-		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c)
+		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c, d, e)
 			if msg_port == port and msg_tag == tag then
-				self:receive(from, kind, a, b, c)
+				self:receive(from, kind, a, b, c, d, e)
 			end
 		end
 		self.on_interrupt = function()
@@ -1386,7 +1396,7 @@ do
 		self.stopped, self.ended, self.readied = false, false, false
 	end
 
-	function slave:receive(from, kind, a, b, c)
+	function slave:receive(from, kind, a, b, c, d, e)
 		if not self.master then
 			if kind == "hello" then
 				local screens = {}
@@ -1410,6 +1420,9 @@ do
 		elseif kind == "stop" then
 			self.stopped = true
 		elseif kind == "start" or kind == "data" or kind == "end" then
+			if kind == "data" and d then
+				self.clocks[a] = {play_time = d, uptime = e}
+			end
 			if kind == "end" then
 				self.ended = true
 			end
@@ -1941,7 +1954,55 @@ local function play(gpu, file, surfaces, open_file, link, header)
 		if master_link then
 			master_link:begin_pass(play_clock)
 		end
-		local remote_wait --the master reads the next packet for slaves after this play time
+
+		local function draw_frame(track, commands_len, data)
+			local draw_begin_time = os.clock()
+			local draw_gpu
+			if commands_len > 0 then
+				if ops.no_back then
+					draw_gpu = video.bind(track.surface.screen_addr)
+				else
+					draw_gpu = video.begin_commit(track)
+				end
+				if ops.diff then
+					draw_gpu.setBackground(0x000000)
+					draw_gpu.setForeground(0xff0000)
+					draw_gpu.fill(1, 1, track.size_x, track.size_y, "*")
+				end
+			else
+				if not ops.no_back then
+					video.begin_dummy_commit(track)
+				end
+				draw_gpu = video.any_gpu() --an empty frame draws nothing
+			end
+
+			local command_count = video.draw_track_frame(draw_gpu, data, track, commands_len)
+			if ops.fps then
+				video.update_stats(track, draw_begin_time, play_clock(), commands_len, command_count)
+			end
+		end
+
+		--a master reads ahead into memory, so it can fill whole messages for the slaves.
+		--the frames for its own screens wait in the queue of their track until a back-buffer is free
+		local read_ahead = master_link and master_link.active and not ops.no_back
+		local num_queued = 0
+		for _, track in ipairs(tracks) do
+			track.queue, track.queue_head, track.queue_tail = {}, 1, 0
+		end
+		local function draw_queued()
+			for _, track in ipairs(tracks) do
+				local queue = track.queue
+				while queue[track.queue_head] and not video.is_stalled() do
+					local frame = queue[track.queue_head]
+					queue[track.queue_head] = nil
+					track.queue_head = track.queue_head + 1
+					num_queued = num_queued - 1
+					draw_frame(track, frame.commands_len, frame.data)
+				end
+			end
+		end
+
+		local read_wait --the master reads the next packet after this play time, so it reads ahead at most net.lead
 		local packet_index = 0
 		while num_live_tracks > 0 do
 			local frame_begin_time, frame_begin_time_up = os.clock(), computer.uptime()
@@ -1985,38 +2046,24 @@ local function play(gpu, file, surfaces, open_file, link, header)
 					end
 					if is_remote then
 						master_link:forward(track, string.pack("<I2", commands_len) .. data)
-						remote_wait = track.packet_index * track.time_base - net.lead
 						if track.is_remote_live and track.packet_index + 1 == track.num_packets then
 							track.is_remote_live = false
 							num_live_tracks = num_live_tracks - 1
 						end
 					end
+					if is_remote or (read_ahead and track.is_shown) then
+						read_wait = track.packet_index * track.time_base - net.lead
+					end
 					if track.is_shown then
-						local draw_gpu
-						if commands_len > 0 then
-							if ops.no_back then
-								draw_gpu = video.bind(track.surface.screen_addr)
-							else
-								draw_gpu = video.begin_commit(track)
-							end
-							if ops.diff then
-								draw_gpu.setBackground(0x000000)
-								draw_gpu.setForeground(0xff0000)
-								draw_gpu.fill(1, 1, track.size_x, track.size_y, "*")
-							end
+						if read_ahead then
+							track.queue_tail = track.queue_tail + 1
+							track.queue[track.queue_tail] = {commands_len = commands_len, data = data}
+							num_queued = num_queued + 1
 						else
-							if not ops.no_back then
-								video.begin_dummy_commit(track)
-							end
-							draw_gpu = video.any_gpu() --an empty frame draws nothing
-						end
-
-						local command_count = video.draw_track_frame(draw_gpu, data, track, commands_len)
-						if ops.fps then
-							video.update_stats(track, frame_begin_time, play_clock(), commands_len, command_count)
+							draw_frame(track, commands_len, data)
 						end
 					end
-					--a track only on slaves is paced by remote_wait instead
+					--a track only on slaves is paced by read_wait instead
 					if ops.no_back and (track.is_shown or not is_remote) then
 						track.presented_packet_index = track.presented_packet_index + 1
 						if track.is_shown and track.presented_packet_index == track.num_packets then
@@ -2087,22 +2134,30 @@ local function play(gpu, file, surfaces, open_file, link, header)
 						end
 					end
 				end
-				if master_link then
-					master_link:tick()
+				if num_queued > 0 then
+					draw_queued()
 				end
-				--don't read packets for slaves too far ahead, they would pile up in memory
-				local remote_ahead = remote_wait ~= nil and not ops.fast and play_clock() < remote_wait
+				--don't read too far ahead, the packets would pile up in memory
+				local is_ahead = read_wait ~= nil and not ops.fast and play_clock() < read_wait
+				--only back-buffers can stall. with read_ahead the reader goes on, and the frames wait in the queue.
+				--once all is read, wait for a frame to present instead of a busy loop
+				local is_read = packet_index + 1 >= num_total_packets
+				local is_stalled = play_video and not ops.no_back and video.is_stalled()
+					and (not read_ahead or (num_queued > 0 and is_read))
+				if master_link then
+					--while the reader waits, send what the slaves have. while it reads, send only full messages
+					master_link:tick(is_ahead or is_stalled or is_read)
+				end
 				if ops.fps and (play_audio or play_pcm) and not play_video and gpu then
 					draw_stats(gpu)
-					if not remote_ahead then break end
+					if not is_ahead then break end
 				end
 
-				local is_stalled = play_video and not ops.no_back and video.is_stalled() --only back-buffers can stall
-				if not is_stalled and not remote_ahead then break end
+				if not is_stalled and not is_ahead then break end
 
 				local wake_time = next_present_time
-				if remote_ahead then
-					wake_time = math.min(wake_time, remote_wait)
+				if is_ahead then
+					wake_time = math.min(wake_time, read_wait)
 				end
 				if wake_time ~= math.huge and not ops.fast then
 					repeat
