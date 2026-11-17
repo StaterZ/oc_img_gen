@@ -1802,6 +1802,11 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			if not surface and not track.remotes then
 				error(("missing surface for track '%s'"):format(track_desc.name))
 			end
+			--a screen of another computer can't be drawn here, so skip the track
+			if surface and surface.screen_addr and select(2, pcall(component.type, surface.screen_addr)) ~= "screen" then
+				print(("skipping track '%s': screen %s is not on this computer"):format(track_desc.name, surface.screen_addr))
+				surface = nil
+			end
 			track.size_x = track_desc.size_x
 			track.size_y = track_desc.size_y
 
