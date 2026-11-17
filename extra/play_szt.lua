@@ -1215,21 +1215,22 @@ end
 --  only the master has a --cfg. a slave answers "hello" with the addresses of its screens.
 --  the master gives each slave the video tracks whose surfaces are on its screens.
 --  a slave plays the szt file from its own tape. at setup the master sends it the file, unless its tape has the file already.
---  the slave syncs its uptime with the master by ping and pong, then the master clock reaches it as (clock, master uptime) samples.
---  a sample does not age in the network, because the slave turns the master uptime into its own uptime.
---  messages: tag "szt", then the kind and its values. a pass is "start", then "end" or "stop"
+--  the master broadcasts its clock each second. there is no ping: a slave that the master found stays in the session.
+--  a sample can only come late, never early, so the slave follows the sample that is the most ahead.
+--  messages: tag "szt", then the kind and its values. a pass starts with the first clock of a new gen, and ends with "end" or "stop"
 local net = {}
 do
 	net.default_port = 5741
 	local discover_min, discover_quiet, discover_max = 1, 1.5, 30 --seconds the master waits for the claims of the slaves
-	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so "start" reaches the slaves first
+	net.preroll = 0.25 --without pcm, the master starts its clock this much later, so the first clock reaches the slaves first
 	net.default_label = "szt video" --the tape label when the master plays an unlabeled tape
 	--the options of the master that the slaves play with. --fast and --loop are not here: the clock of the master paces the slaves
 	net.shared_ops = {"fps", "hold", "no_video", "diff", "no_back", "one_buf", "batch_check"}
 	local clock_interval = 1 --the master sends its clock this often, so the slaves follow a pcm tape too
-	local resync_interval = 10 --a slave measures the uptime offset again this often. each pong costs the master a tick
-	local lost_after = clock_interval + 1.5 --a slave that hears nothing this long pings each second to check the master
-	local timeout = 5 --a slave drops a master that is quiet this long
+	local latency = 0.05 --a message takes at least one tick
+	local num_samples = 3 --a slave follows the best of the last clock samples
+	local timeout = 30 --a slave drops a master that is quiet this long, so a crashed master does not hold it forever
+	local resend_after = 3 --the master sends the setup again to a slave that did not answer this long
 	local chunk_timeout = 2 --a slave asks again for a chunk of the file that did not come in this long
 	local window = 4 --a slave asks for this many chunks of the file at once
 	local tag = "szt"
@@ -1311,9 +1312,11 @@ do
 	end
 
 	function master:receive(from, kind, a)
-		if kind == "ping" then
-			self.modem.send(from, self.port, tag, "pong", a, computer.uptime())
-		elseif kind == "claim" and self.claims then
+		local slave = self.slaves[from]
+		if slave then
+			slave.heard = computer.uptime()
+		end
+		if kind == "claim" and self.claims then
 			self.claims[from] = serialization.unserialize(a)
 		elseif kind == "want" then
 			local slave = self.slaves[from]
@@ -1419,20 +1422,33 @@ do
 			end
 			slave.state = "setup"
 			slave.sent = 0
+			slave.text = text
+			slave.heard = computer.uptime()
 			self.modem.send(addr, self.port, tag, "setup", text)
 		end
 
+		--a slave that the master found stays in. the master waits for each one until it is ready or fails.
+		--a lost message only makes it wait longer: the setup goes out again, and the slave asks again for a chunk
 		local handle --the file again, so the chunks don't move the play position
-		local deadline = computer.uptime() + 15
 		local next_print = 0
-		while computer.uptime() < deadline do
-			local waiting = false
-			for _, slave in pairs(self.slaves) do
+		local next_wait_print = computer.uptime() + 5
+		while true do
+			if check_interrupted() then fail("interrupted") end
+			local waiting = {}
+			for addr, slave in pairs(self.slaves) do
 				if slave.state == "setup" then
-					waiting = true
+					table.insert(waiting, addr:sub(1, 8))
+					if computer.uptime() - slave.heard >= resend_after then
+						slave.heard = computer.uptime()
+						self.modem.send(addr, self.port, tag, "setup", slave.text)
+					end
 				end
 			end
-			if not waiting then break end
+			if #waiting == 0 then break end
+			if computer.uptime() >= next_wait_print then
+				next_wait_print = computer.uptime() + 5
+				print(("waiting for slaves %s (ctrl+c stops)"):format(table.concat(waiting, " ")))
+			end
 
 			local want = table.remove(self.wants, 1)
 			if want then
@@ -1447,7 +1463,7 @@ do
 					self.modem.send(want.slave.address, self.port, tag, "chunk", want.offset, handle:read(n))
 					want.slave.sent = math.max(want.slave.sent, want.offset + n)
 				end
-				deadline = computer.uptime() + 15 --a copy can take long, but it must go on
+				next_wait_print = computer.uptime() + 5
 				if computer.uptime() >= next_print then
 					next_print = computer.uptime() + 1
 					for addr, slave in pairs(self.slaves) do
@@ -1466,8 +1482,9 @@ do
 		self.wants = {}
 
 		for addr, slave in pairs(self.slaves) do
+			slave.text = nil
 			if slave.state ~= "ready" then
-				print(("dropping slave %s: %s"):format(addr:sub(1, 8), slave.reason or "it did not answer"))
+				print(("dropping slave %s: %s"):format(addr:sub(1, 8), slave.reason or "it failed"))
 				self.slaves[addr] = nil
 			end
 		end
@@ -1479,15 +1496,13 @@ do
 		if not self.active then return end
 		self.gen = self.gen + 1
 		self.clock = clock
-		self.modem.broadcast(self.port, tag, "start", self.gen)
-		self:send_clock()
+		self:send_clock() --the first clock of a new gen starts the pass on the slaves
 	end
 
 	function master:send_clock()
 		local play_time = self.clock()
-		local now = computer.uptime()
-		self.clock_sent = now
-		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time, now)
+		self.clock_sent = computer.uptime()
+		self.modem.broadcast(self.port, tag, "clock", self.gen, play_time)
 	end
 
 	--call this often during a pass
@@ -1507,13 +1522,18 @@ do
 	--completed is false when the player was interrupted
 	function master:finish(completed)
 		if not self.active then return end
-		self.modem.broadcast(self.port, tag, completed and "end" or "stop")
+		--twice, so one lost message does not leave the slaves waiting
+		for _ = 1, 2 do
+			self.modem.broadcast(self.port, tag, completed and "end" or "stop", self.gen)
+		end
 		self.finished = true
 	end
 
 	function master:close()
 		if self.active and not self.finished then
-			self.modem.broadcast(self.port, tag, "stop")
+			for _ = 1, 2 do
+				self.modem.broadcast(self.port, tag, "stop", self.gen)
+			end
 		end
 		event.ignore("modem_message", self.listener)
 		if not self.was_open then
@@ -1554,9 +1574,8 @@ do
 		self.queue, self.head, self.tail = {}, 1, 0
 		self.chunks = {}
 		self.clocks = {}
-		self.gen = nil
-		self.stopped, self.ended, self.readied = false, false, false
-		self.offset, self.best_rtt, self.num_pongs, self.last_ping = 0, math.huge, 0, 0
+		self.gen = 0
+		self.stopped, self.ended, self.readied, self.failed = false, false, false, false
 	end
 
 	function slave:push(msg)
@@ -1589,56 +1608,32 @@ do
 		end
 		if from ~= self.master then return end --a slave serves one master at a time
 
-		self.heard = computer.uptime()
-		if kind == "pong" then
-			self:on_pong(a, b)
-		elseif kind == "clock" then
-			self.clocks[a] = {play_time = b, uptime = c}
+		local now = computer.uptime()
+		self.heard = now
+		if kind == "clock" then
+			--the play time minus the uptime it came in at. a late sample gives a lower value, so take the highest
+			local entry = self.clocks[a] or {bases = {}}
+			self.clocks[a] = entry
+			table.insert(entry.bases, b - now)
+			if #entry.bases > num_samples then
+				table.remove(entry.bases, 1)
+			end
+			entry.base = math.max(table.unpack(entry.bases))
 		elseif kind == "chunk" then
 			self.chunks[a] = b
 		elseif kind == "stop" then
 			self.stopped = true
-		elseif kind == "start" or kind == "end" then
-			if kind == "end" then
-				self.ended = true
-			end
-			self:push({kind = kind, gen = a})
-		end
-	end
-
-	function slave:ping()
-		self.last_ping = computer.uptime()
-		self.modem.send(self.master, self.port, tag, "ping", self.last_ping)
-	end
-
-	--the offset is the slave uptime minus the master uptime. a short round trip gives a good offset, so keep the best ones
-	function slave:on_pong(sent, master_uptime)
-		local now = computer.uptime()
-		local rtt = now - sent
-		if rtt <= self.best_rtt + 0.05 then
-			self.best_rtt = math.min(self.best_rtt, rtt)
-			self.offset = (sent + now) / 2 - master_uptime
-		end
-		self.num_pongs = self.num_pongs + 1
-	end
-
-	function slave:sync()
-		self.best_rtt = math.huge
-		for _ = 1, 8 do
-			local before = self.num_pongs
-			self:ping()
-			local deadline = computer.uptime() + 1
-			while self.num_pongs == before and computer.uptime() < deadline and not self.quit do
-				os.sleep(0.05)
+		elseif kind == "end" then
+			self.ended = true
+		elseif kind == "setup" then
+			--the master did not hear the answer, so send it again
+			if self.readied then
+				self.modem.send(self.master, self.port, tag, "ready")
 			end
 		end
-		if self.best_rtt == math.huge then
-			fail("the master did not answer the clock sync")
-		end
-		print(("synced with master %s (round trip %.0fms)"):format(self.master:sub(1, 8), self.best_rtt * 1000))
 	end
 
-	--raises an error when the session ends. it also pings, to check the master and keep the offset fresh
+	--raises an error when the session ends
 	function slave:check()
 		if self.quit then fail("interrupted") end
 		if self.stopped then fail("the master stopped") end
@@ -1646,10 +1641,6 @@ do
 		local quiet = now - self.heard
 		if quiet > timeout and not self.ended then
 			fail(("the master is quiet for %.0fs"):format(quiet))
-		end
-		--the clock comes each second, so only a longer gap means the master may be gone
-		if now - self.last_ping >= (quiet > lost_after and 1 or resync_interval) then
-			self:ping()
 		end
 	end
 
@@ -1840,49 +1831,40 @@ do
 		end
 	end
 
-	function slave:wait_msg()
-		while true do
-			self:check()
-			local msg = self:pop()
-			if msg then return msg end
-			os.sleep(0.05)
-		end
-	end
-
-	--waits for the master to start a pass. returns false when the master is done
+	--waits for the master to start a pass: the first clock of a new gen. returns false when the master is done
 	function slave:begin_pass()
 		while true do
-			local msg = self:wait_msg()
-			if msg.kind == "start" then
-				self.gen = msg.gen
-				while not self.clocks[self.gen] do
-					self:check()
-					os.sleep(0.05)
+			self:check()
+			local newest
+			for gen in pairs(self.clocks) do
+				if gen > self.gen and (not newest or gen > newest) then
+					newest = gen
 				end
+			end
+			if newest then
+				self.gen = newest
 				for gen in pairs(self.clocks) do
 					if gen < self.gen then
 						self.clocks[gen] = nil
 					end
 				end
 				return true
-			elseif msg.kind == "end" then
+			end
+			if self.ended then
 				return false
 			end
+			os.sleep(0.05)
 		end
 	end
 
-	--the play time of the master, from its latest sample
+	--the play time of the master, from the best of its latest samples
 	function slave:clock()
 		self:check()
-		local sample = self.clocks[self.gen]
-		local master_now = computer.uptime() - self.offset
-		return sample.play_time + (master_now - sample.uptime)
+		return self.clocks[self.gen].base + computer.uptime() + latency
 	end
 
 	function slave:stats_line()
-		local sample = self.clocks[self.gen]
-		local age = sample and computer.uptime() - self.offset - sample.uptime or -1
-		return ("N|slave: clock sample %.1fs old, rtt %.0fms"):format(age, self.best_rtt * 1000)
+		return ("N|slave: last heard from the master %.1fs ago"):format(computer.uptime() - self.heard)
 	end
 
 	function slave:close()
@@ -2494,7 +2476,6 @@ local function slave_main()
 				end
 				--the master sends the file first, unless the slave has it already
 				local src, is_tape = link:fetch(setup)
-				link:sync()
 				local function open_source()
 					return linear_stream.open(src, "rb", is_tape)
 				end
