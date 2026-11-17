@@ -615,7 +615,7 @@ do --video player
 			num_free = num_free + #pool.free
 			num_buffers = num_buffers + pool.size
 		end
-		stats[track.index + 1] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
+		stats[track.stats_row] = ("V|%s: %05i %05i %s %04.1flag %irdy %i/%ipool %04.ffps %05.fms %05ib %04icmds"):format(
 			track.name,
 			track.packet_index,
 			track.presented_packet_index,
@@ -787,7 +787,7 @@ do --audio player
 		local committed_left = committed_time - play_time
 		local buffered_left = buffered_time - play_time
 		local function percentify(v) return (v - buf_min) / (buf_max - buf_min) * 100 end
-		stats[track.index + 1] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
+		stats[track.stats_row] = ("A|%s: %05i %05i INS:%03i BUF:%07.1fms COM:%07.1fms/%04.0f%%"):format(
 			track.name,
 			track.packet_index,
 			track.presented_packet_index,
@@ -1052,7 +1052,7 @@ do --pcm player
 
 	function pcm.update_stats(track)
 		local elapsed = pcm.time(track)
-		stats[track.index + 1] = ("P|%s: %s/%s %iHz x%.2f %s %+05.2fs drift"):format(
+		stats[track.stats_row] = ("P|%s: %s/%s %iHz x%.2f %s %+05.2fs drift"):format(
 			track.name,
 			time_fmt(math.min(elapsed, track.duration)),
 			time_fmt(track.duration),
@@ -2000,6 +2000,18 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			os.sleep(2)
 		end
 	end
+	--only the tracks this player plays get a --fps row, so the rows have no gaps
+	for k in pairs(stats) do
+		stats[k] = nil
+	end
+	local num_stats_rows = 0
+	for _, track in ipairs(tracks) do
+		if track.is_shown or (track.kind == 0x01 and play_audio) or (track == pcm_track and play_pcm) then
+			num_stats_rows = num_stats_rows + 1
+			track.stats_row = num_stats_rows
+		end
+	end
+
 	if play_video then
 		local num_buffers = video.init(max_size_x, max_size_y)
 		
@@ -2224,7 +2236,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 					master_link:tick()
 				end
 				if ops.fps and link then
-					stats[#tracks + 1] = link:stats_line()
+					stats[num_stats_rows + 1] = link:stats_line()
 				end
 				if ops.fps and (play_audio or play_pcm) and not play_video and gpu then
 					draw_stats(gpu)
