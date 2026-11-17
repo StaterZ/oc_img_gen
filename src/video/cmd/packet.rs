@@ -406,7 +406,7 @@ impl<'a> VideoEncoder<'a> {
 				},
 				None => Frac::ZERO,
 			};
-			let cpu_pixels_per_sec = Frac::new(1, 120000); //rough experimentally measured speed of lua playback engine
+			let cpu_pixels_per_sec = Frac::new(1, 70000); //rough experimentally measured speed of lua playback engine
 			let cpu_cost = cpu_pixels_per_sec * stats.num_set_pixels;
 
 			let tick_rate = 20;
