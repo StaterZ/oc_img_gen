@@ -1057,7 +1057,8 @@ do --pcm player
 end
 
 --a master player sends the packets of some video tracks over a modem to slave players, which play them on their screens.
---  a slave answers "hello" with the names of its surfaces. the master gives it the video tracks with those names.
+--  only the master has a --cfg. a slave answers "hello" with the addresses of its screens.
+--  the master plays a track itself when the screen of its surface is here, else it gives the track to the slave with that screen.
 --  the slave syncs its uptime with the master by ping and pong, then the master clock reaches it as (clock, master uptime) samples.
 --  a sample does not age in the network, because the slave turns the master uptime into its own uptime.
 --  messages: tag "szt", then the kind and its values. the master sends each pass as "start", "data"..., then "end" or "stop"
@@ -1139,8 +1140,9 @@ do
 		end
 	end
 
-	--asks the slaves on the port which surfaces they have, and gives each one the video tracks with those names
-	function master:discover(header)
+	--asks the slaves on the port which screens they have.
+	--a video track whose surface is on a screen of a slave goes to that slave, with its surface
+	function master:discover(header, surfaces)
 		print(("looking for slaves on port %i"):format(self.port))
 		self.claims = {}
 		self.modem.broadcast(self.port, tag, "hello")
@@ -1148,31 +1150,40 @@ do
 		local claims = self.claims
 		self.claims = nil
 
-		for addr, names in pairs(claims) do
-			local wanted = {}
-			for _, name in ipairs(type(names) == "table" and names or {}) do
-				wanted[name] = true
+		local owner = {} --screen address -> slave
+		local found = {}
+		for addr, screens in pairs(claims) do
+			local slave = {address = addr, descs = {}, surfaces = {}, ids = {}}
+			for _, screen in ipairs(type(screens) == "table" and screens or {}) do
+				owner[screen] = slave
 			end
-			local slave = {address = addr, descs = {}, ids = {}}
-			for i, desc in ipairs(header.tracks) do
-				if desc.kind == 0x00 and wanted[desc.name] then
-					table.insert(slave.descs, desc)
-					slave.ids[i] = #slave.descs - 1
-					self.by_track[i] = self.by_track[i] or {}
-					table.insert(self.by_track[i], slave)
+			table.insert(found, addr:sub(1, 8))
+		end
+		print(("found %i slaves %s"):format(#found, table.concat(found, " ")))
+
+		for i, desc in ipairs(header.tracks) do
+			local surface = surfaces[desc.name]
+			local screen = surface and surface.screen_addr
+			--a screen of this computer plays here
+			if desc.kind == 0x00 and screen and select(2, pcall(component.type, screen)) ~= "screen" then
+				local slave = owner[screen]
+				if not slave then
+					error(("no computer has the screen %s of track '%s'. start its slave first"):format(screen, desc.name), 0)
 				end
-			end
-			if #slave.descs > 0 then
-				self.slaves[addr] = slave
-				local names_text = {}
-				for _, desc in ipairs(slave.descs) do
-					table.insert(names_text, desc.name)
-				end
-				print(("slave %s plays %s"):format(addr:sub(1, 8), table.concat(names_text, ", ")))
+				table.insert(slave.descs, desc)
+				table.insert(slave.surfaces, surface)
+				slave.ids[i] = #slave.descs - 1
+				self.by_track[i] = {slave}
+				self.slaves[slave.address] = slave
 			end
 		end
-		if not next(self.slaves) then
-			print("no slave has a surface for these tracks")
+
+		for addr, slave in pairs(self.slaves) do
+			local names_text = {}
+			for _, desc in ipairs(slave.descs) do
+				table.insert(names_text, desc.name)
+			end
+			print(("slave %s plays %s"):format(addr:sub(1, 8), table.concat(names_text, ", ")))
 		end
 	end
 
@@ -1196,8 +1207,15 @@ do
 	function master:setup()
 		for addr, slave in pairs(self.slaves) do
 			local descs = {}
-			for _, desc in ipairs(slave.descs) do
+			for k, desc in ipairs(slave.descs) do
+				local surface = slave.surfaces[k]
 				table.insert(descs, {
+					surface = {
+						screen_addr = surface.screen_addr,
+						is_fullscreen = surface.is_fullscreen,
+						pos_x = surface.pos_x,
+						pos_y = surface.pos_y,
+					},
 					name = desc.name,
 					kind = desc.kind,
 					num_packets = desc.num_packets,
@@ -1336,15 +1354,14 @@ do
 	local slave = {}
 	slave.__index = slave
 
-	--names are the surfaces this slave has
-	function net.slave(port, names)
+	--the master sends the surfaces, so a slave needs no --cfg
+	function net.slave(port)
 		local modem, was_open = open_modem(port)
 		local self = setmetatable({
 			is_slave = true,
 			modem = modem,
 			port = port,
 			was_open = was_open,
-			names = names,
 		}, slave)
 		self:end_session()
 		self.listener = function(_, _, from, msg_port, _, msg_tag, kind, a, b, c)
@@ -1372,7 +1389,11 @@ do
 	function slave:receive(from, kind, a, b, c)
 		if not self.master then
 			if kind == "hello" then
-				self.modem.send(from, self.port, tag, "claim", serialization.serialize(self.names))
+				local screens = {}
+				for addr in component.list("screen") do
+					table.insert(screens, addr)
+				end
+				self.modem.send(from, self.port, tag, "claim", serialization.serialize(screens))
 			elseif kind == "setup" then
 				self.master = from
 				self:push({kind = kind, data = a})
@@ -1468,7 +1489,9 @@ do
 				self:sync()
 
 				local stream = {index = 0, offset = 0, num_bytes = 0, tracks = {}, num_packets = 0}
+				local surfaces = {}
 				for _, desc in ipairs(descs) do
+					surfaces[desc.name] = desc.surface
 					desc.stream_id = 0
 					table.insert(stream.tracks, desc)
 					stream.num_packets = stream.num_packets + desc.num_packets
@@ -1479,6 +1502,7 @@ do
 					settings = "",
 					tracks = descs,
 					streams = {stream},
+					surfaces = surfaces,
 				}
 			end
 			os.sleep(0.25)
@@ -1741,7 +1765,7 @@ local function play(gpu, file, surfaces, open_file, link, header)
 	local master_link = link and not link.is_slave and link or nil
 	local slave_link = link and link.is_slave and link or nil
 	if master_link then
-		master_link:discover(header)
+		master_link:discover(header, surfaces)
 	end
 
 	local max_size_x, max_size_y = 0, 0
@@ -1759,9 +1783,9 @@ local function play(gpu, file, surfaces, open_file, link, header)
 			name = track_desc.name,
 		}
 		if track_desc.kind == 0x00 then
-			--a track can play here, on slaves, or both
-			local surface = surfaces[track_desc.name]
+			--a track plays here, or on the slave that has its screen
 			track.remotes = master_link and master_link:remotes_of(i)
+			local surface = not track.remotes and surfaces[track_desc.name] or nil
 			if not surface and not track.remotes then
 				error(("missing surface for track '%s'"):format(track_desc.name))
 			end
@@ -2227,8 +2251,8 @@ if ops.h or ops.help then
 	print("   --pcm-tape", "scratch tape drive for pcm audio (default: the first drive the video doesn't read from). it keeps the audio it burned, by checksum, until a new one doesn't fit. it names the tape '" .. scratch_label .. "' to find it again")
 	print("   --pcm-format", "erase the pcm tape if it isn't blank or a scratch tape")
 	print("   --tape", "read from a tape drive instead of a file. the arg is the drive address (default: primary). with no args at all, it plays the primary drive. write tapes with 'burn'")
-	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it sends. a slave plays the tracks named like the surfaces of its --cfg"):format(net.default_port))
-	print("   --master[=port]", "find the slaves on the port, then send each slave the video tracks that it has surfaces for. the slaves follow the clock of the master")
+	print("   --slave[=port]", ("wait for a master on a modem port (default: %i) and play the video tracks that it sends. a slave needs no --cfg, it tells the master its screens"):format(net.default_port))
+	print("   --master[=port]", "find the slaves on the port. a track whose --cfg surface is on a screen of a slave plays on that slave, the rest play here. the slaves follow the clock of the master")
 	return
 end
 if ops.v or ops.version then
@@ -2291,11 +2315,7 @@ local link
 do
 	local ok, err = pcall(function()
 		if ops.slave then
-			local names = {}
-			for name in pairs(surfaces) do
-				table.insert(names, name)
-			end
-			link = net.slave(net.port(ops.slave), names)
+			link = net.slave(net.port(ops.slave))
 		elseif ops.master and not (ops.p or ops.probe) then
 			link = net.master(net.port(ops.master))
 		end
@@ -2315,7 +2335,7 @@ local function slave_main()
 		local ok, err = xpcall(link.wait_setup, errHandler, link)
 		if ok then
 			if not err then return end --interrupted
-			ok, err = xpcall(play, errHandler, gpu, link, surfaces, nil, link, err)
+			ok, err = xpcall(play, errHandler, gpu, link, err.surfaces, nil, link, err)
 		end
 		if ok then
 			if not ops.no_back then
