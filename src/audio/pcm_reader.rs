@@ -126,8 +126,12 @@ impl<'a> Reader<'a> for PcmReader<'a> {
 
 	fn on_eof(&mut self) {
 		//the resampler holds back the tail
-		while self.resampler.flush(&mut self.resampler_buffer).unwrap().is_some() && self.resampler_buffer.samples() > 0 {
+		//flush returns no delay once it is empty, but the samples of that last call still count
+		loop {
+			let delay = self.resampler.flush(&mut self.resampler_buffer).unwrap();
+			if self.resampler_buffer.samples() == 0 { break; }
 			self.push_resampled();
+			if delay.is_none() { break; }
 		}
 
 		//DFPWM has 1 bit per sample, so use the whole 8 bit range it encodes from
