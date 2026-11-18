@@ -452,6 +452,12 @@ fn build_audio_configs(args: &AudioOpts, audio_specs: &[AudioSpec], pcm_specs: &
 		}
 		config.hop_length = spec.hop_length.unwrap_or(config.hop_length);
 		config.guard = spec.guard.unwrap_or(config.guard);
+
+		anyhow::ensure!(config.num_voices <= u8::MAX as usize, "audio track '{}' has {} voices, but a track holds at most {}", config.name, config.num_voices, u8::MAX);
+		anyhow::ensure!(config.analysis_rate >= 1, "audio track '{}' needs an analysis rate of at least 1Hz", config.name);
+		anyhow::ensure!((1..=config.fft_window_size).contains(&config.hop_length), "audio track '{}' has a hop length of {}, but it must be 1 to the fft window size ({})", config.name, config.hop_length, config.fft_window_size);
+		//the track rate is seconds per hop, stored as a u16 fraction
+		anyhow::ensure!(Frac::new(config.hop_length, config.analysis_rate as usize).try_cast::<u16>().is_some(), "audio track '{}' can not store a hop of {} at {}Hz, pick numbers with a larger common divisor", config.name, config.hop_length, config.analysis_rate);
 		configs.push(config);
 	}
 	for (index, spec) in pcm_specs.iter().enumerate() {
