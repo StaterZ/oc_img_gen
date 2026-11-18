@@ -109,7 +109,7 @@ pub enum AppError {
 	#[error("Failed to write output file. INNER: {0}")]
 	WriteFailed(std::io::Error),
 
-	#[error("track name '{name}' ({{name.as_bytes().len()}} bytes) is too long. max length is: {max_length}")]
+	#[error("track name '{name}' ({} bytes) is too long. max length is: {max_length}", name.len())]
 	TrackNameTooLong {
 		name: String,
 		max_length: usize,

@@ -6,7 +6,7 @@ use palette::{Srgb, rgb::channels::Argb};
 
 use crate::{
 	EXT, audio::{Mode as AudioMode, dfpwm}, encoder::{
-		AudioConfig, EncoderConfig, VideoConfig, VideoDescData,
+		AppError, AudioConfig, EncoderConfig, VideoConfig, VideoDescData,
 		track_spec::{AudioSpec, Offset, PcmSpec, TracksConfig, VideoSpec, default_name},
 	}, math::{Frac, Point, Rect, Size}, video::{self, cmd::machine::{Machine, Tier}}
 };
@@ -48,6 +48,16 @@ pub fn process_args(mut args: Cli) -> anyhow::Result<EncoderConfig> {
 	if video_config.is_none() && audio_configs.is_empty() {
 		anyhow::bail!("there are no tracks to encode. add one with --video, --audio or --pcm");
 	}
+	//the file stores track names with a u8 length and the track count as a u8
+	let names = video_config.iter().flat_map(|video_config| video_config.track_descs_data.iter().map(|desc| &desc.name))
+		.chain(audio_configs.iter().map(|audio| &audio.name));
+	for name in names {
+		if name.len() > u8::MAX as usize {
+			return Err(AppError::TrackNameTooLong { name: name.clone(), max_length: u8::MAX as usize }.into());
+		}
+	}
+	let num_tracks = video_config.as_ref().map_or(0, |video_config| video_config.track_descs_data.len()) + audio_configs.len();
+	anyhow::ensure!(num_tracks <= u8::MAX as usize, "there are {num_tracks} tracks, but a file holds at most {}", u8::MAX);
 	eprintln!("V:{} | A:{}", video_config.as_ref().map_or(0, |video_config| video_config.track_descs_data.len()), audio_configs.len());
 	let settings = describe_settings(&args, video_config.as_ref(), &audio_configs);
 	
