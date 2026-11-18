@@ -163,28 +163,66 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 		vec![&mut self.encoder as &mut dyn PacketWriter]
 	}
 
-	fn process(&mut self, _stream_time_s: Frac<i64>, should_force_emit: bool) {
+	//the tail is padded once in on_eof, after the last frame
+	fn process(&mut self, _stream_time_s: Frac<i64>, _should_force_emit: bool) {
 		let frame = &self.reader_data.receive_buffer;
 		
-		let frame = crate::stage("Audio  | Preamble  | Resample", || {
+		crate::stage("Audio  | Preamble  | Resample", || {
 			self.resampler.run(&frame, &mut self.resampler_buffer).unwrap();
-			&mut self.resampler_buffer
 		});
+		self.push_resampled();
+		self.analyze();
+	}
 
-		let nb_samples = frame.samples() as usize;
-		let data = frame.data(0);
-		let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, nb_samples) }; //SAFETY: interpret as f32 slice
-		self.pcm.extend(slice);
+	fn on_eof(&mut self) {
+		//the resampler holds back the tail
+		loop {
+			let delay = self.resampler.flush(&mut self.resampler_buffer).unwrap();
+			if self.resampler_buffer.samples() == 0 { break; }
+			self.push_resampled();
+			if delay.is_none() { break; }
+		}
 
-		if should_force_emit {
-			//TODO: stupid shit, remove me
+		//pad the tail with silence so the last hop gets a full window
+		if !self.pcm.is_empty() {
 			let last_full_start = ((self.pcm.len() - 1) / self.config.hop_length) * self.config.hop_length;
 			let needed_len = last_full_start + self.config.fft_window_size;
 			if needed_len > self.pcm.len() {
 				self.pcm.resize(needed_len, 0.0);
 			}
 		}
-		
+		self.analyze();
+
+		optimize_channel_jumping(&mut self.timeline);
+		let master_volume = if self.config.normalize { 1.0 / self.global_peak.max(1e-9) } else { 1.0 };
+		self.encoder.samples = encode_audio(master_volume, &self.timeline).into();
+	}
+
+	fn report(&self) -> Vec<String> {
+		let num_samples = self.encoder.samples.len() + self.encoder.desc.num_packets as usize;
+		let num_bytes = num_samples * (1 + self.config.num_voices * 3); //track id, then volume u8 & frequency u16 per voice
+		vec![format!("{:>6} {} voices @ {:.2}Hz | {} samples | {} ({}/sample) | peak {:.3}",
+			self.config.name,
+			self.config.num_voices,
+			Frac::new(self.config.analysis_rate as usize, self.config.hop_length).into_flt::<f32>(),
+			num_samples,
+			crate::format_bytes(num_bytes),
+			crate::format_bytes(1 + self.config.num_voices * 3),
+			self.global_peak,
+		)]
+	}
+}
+
+impl AudioReader<'_> {
+	fn push_resampled(&mut self) {
+		let nb_samples = self.resampler_buffer.samples();
+		let data = self.resampler_buffer.data(0);
+		let slice = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, nb_samples) }; //SAFETY: interpret as f32 slice
+		self.pcm.extend(slice);
+	}
+
+	/// runs the fft over every full window in `pcm` and adds a timeline row per hop
+	fn analyze(&mut self) {
 		crate::stage("Audio  | Preamble  | FFT", || {
 			// Window/Hop analysis
 			while self.pcm.len() >= self.config.fft_window_size {
@@ -239,29 +277,11 @@ impl<'a> Reader<'a> for AudioReader<'a> {
 					self.global_peak = self.global_peak.max(local_peak.volume);
 				}
 
+				//the guard can leave fewer free bins than voices, the rest stay silent
+				chosen.resize(self.config.num_voices, VoiceStateFlt::default());
 				self.timeline.push_row(chosen);
 				let _ = self.pcm.drain(..self.config.hop_length); //pop!
 			}
 		});
-	}
-
-	fn on_eof(&mut self) {
-		optimize_channel_jumping(&mut self.timeline);
-		let master_volume = if self.config.normalize { 1.0 / self.global_peak.max(1e-9) } else { 1.0 };
-		self.encoder.samples = encode_audio(master_volume, &self.timeline).into();
-	}
-
-	fn report(&self) -> Vec<String> {
-		let num_samples = self.encoder.samples.len() + self.encoder.desc.num_packets as usize;
-		let num_bytes = num_samples * (1 + self.config.num_voices * 3); //track id, then volume u8 & frequency u16 per voice
-		vec![format!("{:>6} {} voices @ {:.2}Hz | {} samples | {} ({}/sample) | peak {:.3}",
-			self.config.name,
-			self.config.num_voices,
-			Frac::new(self.config.analysis_rate as usize, self.config.hop_length).into_flt::<f32>(),
-			num_samples,
-			crate::format_bytes(num_bytes),
-			crate::format_bytes(1 + self.config.num_voices * 3),
-			self.global_peak,
-		)]
 	}
 }

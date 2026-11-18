@@ -55,7 +55,7 @@ pub fn encode(master_volume: f32, timeline: &Grid<VoiceStateFlt>) -> Vec<Sample>
 }
 
 pub fn optimize_channel_jumping(timeline: &mut Grid<VoiceStateFlt>) {
-	for t in 0..(timeline.rows() - 1) {
+	for t in 0..timeline.rows().saturating_sub(1) {
 		let n = timeline.cols();
 		let mut cost = lapjv::Matrix::<f32>::zeros((n, n));
 		for i in 0..n {
