@@ -403,7 +403,7 @@ fn render(state: &mut RenderState, args: &Cli) -> anyhow::Result<()> {
 		state.next_packet_index += 1;
 	}
 
-	if state.next_packet_index + 1 >= state.packets.len() {
+	if state.next_packet_index >= state.packets.len() {
 		state.is_done = true;
 		for voice in state.sound_card.voices.input_buffer_publisher().iter_mut() {
 			voice.frequency = 0.0;
